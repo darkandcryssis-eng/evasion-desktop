@@ -221,6 +221,9 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 	case routed <- s.router.latencyHint(candidate.id):
 	default:
 	}
+	// Отмена попытки (победил другой маршрут) закрывает сокет сразу: иначе
+	// проигравший WritePacket, не знающий о контексте, держал бы его до таймаута.
+	stopClose := context.AfterFunc(ctx, func() { _ = upstream.Close() })
 	label := telegramRouteLabel(candidate, h.dc)
 	init, tgEnc, tgDec, err := relayHandshake(h)
 	if err == nil {
@@ -235,7 +238,11 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 	if err == nil {
 		firstReply, err = readFirstUpstream(ctx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
 	}
+	if err == nil && !stopClose() {
+		err = ctx.Err()
+	}
 	if err != nil {
+		stopClose()
 		_ = upstream.Close()
 		if ctx.Err() != nil {
 			return nil, false, ctx.Err()
