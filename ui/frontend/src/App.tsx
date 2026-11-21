@@ -4,7 +4,7 @@ import { api, phaseLabel, type StartOptions } from "./api";
 import { useEngine } from "./useEngine";
 import { UpdateBanner, useUpdateAvailable } from "./Update";
 import { loadOptions, readPreference, savePreference } from "./preferences";
-import { Boundary, Button, Dialog, Icon, type IconName } from "./ui";
+import { Boundary, Button, Dialog, Icon, Tips, type IconName } from "./ui";
 import { HomeScreen, telegramMode } from "./screens/Home";
 import { DiagnosticsScreen, GamesScreen, ServicesScreen, SettingsScreen, TelegramScreen } from "./screens/Pages";
 import type { Page, Theme } from "./types";
@@ -83,15 +83,19 @@ export default function App() {
   return (
     <main className="shell" data-phase={phase} data-page={page}>
       <header className="bar">
-        <div className="brand" aria-label="Evasion"><span className="brand__mark" aria-hidden="true"><i /></span><span className="brand__name">evasion</span></div>
+        <div className="brand" aria-label="Evasion"><svg className="brand__mark" viewBox="0 0 30 30" aria-hidden="true">
+            <defs><linearGradient id="brand-run" gradientUnits="userSpaceOnUse" x1="14" y1="15" x2="23" y2="15"><stop stopColor="#7c6cff" /><stop offset="1" stopColor="#fff" /></linearGradient></defs>
+            <path d="M16.8 9.15H11.55A3.6 3.6 0 0 0 7.95 12.75V17.25A3.6 3.6 0 0 0 11.55 20.85H16.8" />
+            <path className="brand__run" d="M14.85 15H22.65" />
+          </svg><span className="brand__name">evasion</span></div>
         <Navigation page={page} onChange={setPage} />
         <div className="bar__tools">
           <span className="engine-pill" data-phase={phase}><i />{engine.state ? phaseLabel[phase] : "Получаем состояние"}</span>
-          <button type="button" className="tool" title={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><Icon name={theme === "black" ? "sun" : "moon"} size={15} /></button>
+          <button type="button" className="tool" data-tip={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><Icon name={theme === "black" ? "sun" : "moon"} size={15} /></button>
           <div className="window-actions">
-            <button type="button" className="tool" aria-label="Свернуть" onClick={WindowMinimise}><Icon name="minus" size={15} /></button>
-            <button type="button" className="tool" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}><Icon name="square" size={12} /></button>
-            <button type="button" className="tool tool--close" aria-label="Закрыть" onClick={() => setClosing(true)}><Icon name="x" size={15} /></button>
+            <button type="button" className="tool" data-tip="Свернуть" aria-label="Свернуть" onClick={WindowMinimise}><Icon name="minus" size={15} /></button>
+            <button type="button" className="tool" data-tip="Развернуть" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}><Icon name="square" size={12} /></button>
+            <button type="button" className="tool tool--close" data-tip="Закрыть" aria-label="Закрыть" onClick={() => setClosing(true)}><Icon name="x" size={15} /></button>
           </div>
         </div>
       </header>
@@ -102,6 +106,7 @@ export default function App() {
       {booting && <div className="boot" aria-live="polite"><svg viewBox="0 0 120 120" aria-hidden="true"><circle className="boot__ring" cx="60" cy="60" r="44" pathLength="1" /><circle className="boot__dot" cx="60" cy="60" r="5" /></svg><span>evasion</span></div>}
       <Dialog open={closing} onClose={() => setClosing(false)} icon="power" title="Остаться на связи?" text="Сверните Evasion в трей, чтобы соединение продолжало работать."><button type="button" className="choice" onClick={() => { setClosing(false); void api.minimiseToTray(); }}><Icon name="tray" size={17} /><span><strong>Свернуть в трей</strong><small>Оставить обход работать в фоне</small></span></button><button type="button" className="choice choice--quit" onClick={() => void api.exitApplication()}><Icon name="power" size={17} /><span><strong>Завершить работу</strong><small>Остановить движок и выйти</small></span></button></Dialog>
       <Dialog open={pending !== null} onClose={() => setPending(null)} icon="send" title="Telegram — тоже?" text="Включить встроенный прокси вместе с обходом? При первом запуске подтвердите подключение в Telegram."><Button kind="ghost" onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, false); }}>Только обход</Button><Button kind="solid" data-autofocus onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, true); }}>Включить Telegram</Button></Dialog>
+      <Tips />
     </main>
   );
 }
@@ -127,7 +132,7 @@ function Navigation({ page, onChange }: { page: Page; onChange: (p: Page) => voi
     <nav className="nav" aria-label="Разделы приложения" ref={root}>
       {box && <span className="nav__marker" style={{ transform: `translateX(${box.left}px)`, width: box.width }} aria-hidden="true" />}
       {pages.map((p) => (
-        <button key={p.id} type="button" className="nav__item" aria-label={p.title} title={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => onChange(p.id)}>
+        <button key={p.id} type="button" className="nav__item" aria-label={p.title} data-tip={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => onChange(p.id)}>
           <Icon name={p.icon} size={15} /><span className="nav__label">{p.title}</span>
           {p.id === "settings" && update && <span className="nav__alert" title="Доступно обновление" aria-label="Доступно обновление">!</span>}
         </button>
