@@ -68,15 +68,17 @@ function drawOn(c: CanvasRenderingContext2D, t: number, dpr: number, s: Scene) {
   // The ring grows from the bottom up both sides and closes at the top.
   const a = easeInOut(span(t, 0, 0.34)) * Math.PI;
   const breath = t >= 1 ? 1 + 0.07 * Math.sin(s.clock / 900) : 1;
-  glowStroke(c, () => { c.beginPath(); c.arc(CX, CY, R, Math.PI / 2 - a, Math.PI / 2 + a); }, span(t, 0, 0.05), dpr, STROKE, breath + s.hover * 0.25);
-  // The connection is still being established: a bright comet orbits the ring.
+  glowStroke(c, () => { c.beginPath(); c.arc(CX, CY, R, Math.PI / 2 - a, Math.PI / 2 + a); }, span(t, 0, 0.05) * (1 - 0.74 * s.busy), dpr, STROKE, breath + s.hover * 0.25);
+  // The connection is still being established: the ring dims and a bright comet orbits it.
   if (s.busy > 0.01) {
     const head = (s.clock / 1150) * Math.PI * 2;
-    for (let i = 0; i < 16; i++) {
-      c.save(); c.globalAlpha = s.busy * (1 - i / 16) * 0.5; c.lineCap = "round"; c.strokeStyle = "#fff"; c.lineWidth = STROKE + 1.4;
-      c.shadowColor = `rgba(${CORE},1)`; c.shadowBlur = 16 * dpr;
+    for (let i = 0; i < 22; i++) {
+      c.save(); c.globalAlpha = s.busy * (1 - i / 22) ** 1.6; c.lineCap = "round"; c.strokeStyle = "#fff"; c.lineWidth = STROKE + 2.2 - i * 0.07;
+      c.shadowColor = `rgba(${CORE},1)`; c.shadowBlur = 18 * dpr;
       c.beginPath(); c.arc(CX, CY, R, head - i * 0.085 - 0.09, head - i * 0.085); c.stroke(); c.restore();
     }
+    c.save(); c.globalAlpha = s.busy; c.fillStyle = "#fff"; c.shadowColor = `rgba(${CORE},1)`; c.shadowBlur = 22 * dpr;
+    c.beginPath(); c.arc(CX + Math.cos(head) * R, CY + Math.sin(head) * R, STROKE + 1.3, 0, Math.PI * 2); c.fill(); c.restore();
   }
   // A swell at the base of the ring feeds the drop.
   const swell = Math.sin(Math.PI * span(t, 0.24, 0.86)) ** 0.7;
@@ -201,6 +203,8 @@ export function PowerOrb({ mode, motion = true }: { mode: OrbMode; motion?: bool
       const still = reduced();
       s.clock = still ? 0 : now;
       if (still) { s.stage = s.want ? "on" : "off"; s.t = 1; }
+      // A failed start must not finish the connect animation and then play the disconnect one.
+      else if (m === "failed" && s.stage === "toOn") { s.stage = "off"; s.t = 1; }
       else if (s.stage === "off" && s.want) { s.stage = "toOn"; s.t = 0; }
       else if (s.stage === "on" && !s.want) { s.stage = "toOff"; s.t = 0; }
       else if (s.stage === "toOn") { s.t += (dt / ON_MS) * (s.want ? 1 : 2.6); if (s.t >= 1) { s.stage = "on"; s.t = 1; } }
