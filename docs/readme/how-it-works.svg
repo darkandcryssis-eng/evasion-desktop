@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="470" viewBox="0 0 1280 470" role="img" aria-label="Схема: приложение отправляет запрос, Evasion меняет первые пакеты соединения, фильтр провайдера не распознаёт сайт, сервер получает запрос целым.">
+  <defs>
+    <linearGradient id="acc" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#7c6cff"/><stop offset="1" stop-color="#4d38ff"/></linearGradient>
+    <filter id="blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="22"/></filter>
+    <clipPath id="clip"><rect width="1280" height="470" rx="36"/></clipPath>
+  </defs>
+  <g clip-path="url(#clip)" font-family="'Segoe UI Variable Display','Segoe UI',Inter,-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif">
+    <rect width="1280" height="470" fill="#050506"/>
+    <g transform="translate(40 64)">
+      <rect width="262" height="190" rx="30" fill="#121214" stroke="#fff" stroke-opacity=".09"/>
+      <circle cx="46" cy="50" r="24" fill="#19191c" stroke="#fff" stroke-opacity=".14"/><g transform="translate(34 38) scale(1.0)" fill="none" stroke="#f5f5f7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></g>
+      <text x="24" y="118" font-size="21" font-weight="600" fill="#fff" letter-spacing="-.5">Ваше приложение</text>
+      <text x="24" y="146" font-size="15" fill="#a9a9b4">Discord, браузер, игра</text>
+      <text x="24" y="167" font-size="15" fill="#a9a9b4">открывает соединение</text>
+    </g>
+    <g><path d="M302 159h50" stroke="#7c6cff" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="2 8"><animate attributeName="stroke-dashoffset" from="20" to="0" dur="1.1s" repeatCount="indefinite"/></path>
+      <path d="M348 152l8 7-8 7" fill="none" stroke="#7c6cff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+    <rect x="376" y="94" width="222" height="160" rx="30" fill="#5b47ff" opacity=".55" filter="url(#blur)"/><g transform="translate(356 64)">
+      <rect width="262" height="190" rx="30" fill="url(#acc)" stroke="#fff" stroke-opacity=".3"/>
+      <circle cx="46" cy="50" r="24" fill="#fff"/><g transform="translate(34 38) scale(1.0)" fill="none" stroke="#4d38ff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></g>
+      <text x="24" y="118" font-size="21" font-weight="600" fill="#fff" letter-spacing="-.5">Evasion</text>
+      <text x="24" y="146" font-size="15" fill="#fff" fill-opacity=".82">меняет только первые</text>
+      <text x="24" y="167" font-size="15" fill="#fff" fill-opacity=".82">пакеты соединения</text>
+    </g>
+    <g><path d="M618 159h50" stroke="#7c6cff" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="2 8"><animate attributeName="stroke-dashoffset" from="20" to="0" dur="1.1s" repeatCount="indefinite"/></path>
+      <path d="M664 152l8 7-8 7" fill="none" stroke="#7c6cff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+    <g transform="translate(672 64)">
+      <rect width="262" height="190" rx="30" fill="#121214" stroke="#fff" stroke-opacity=".09"/>
+      <circle cx="46" cy="50" r="24" fill="#19191c" stroke="#fff" stroke-opacity=".14"/><g transform="translate(34 38) scale(1.0)" fill="none" stroke="#f5f5f7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></g>
+      <text x="24" y="118" font-size="21" font-weight="600" fill="#fff" letter-spacing="-.5">Фильтр провайдера</text>
+      <text x="24" y="146" font-size="15" fill="#a9a9b4">не может прочитать,</text>
+      <text x="24" y="167" font-size="15" fill="#a9a9b4">какой сайт вы открыли</text>
+    </g>
+    <g><path d="M934 159h50" stroke="#7c6cff" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="2 8"><animate attributeName="stroke-dashoffset" from="20" to="0" dur="1.1s" repeatCount="indefinite"/></path>
+      <path d="M980 152l8 7-8 7" fill="none" stroke="#7c6cff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+    <g transform="translate(988 64)">
+      <rect width="262" height="190" rx="30" fill="#121214" stroke="#fff" stroke-opacity=".09"/>
+      <circle cx="46" cy="50" r="24" fill="#19191c" stroke="#fff" stroke-opacity=".14"/><g transform="translate(34 38) scale(1.0)" fill="none" stroke="#f5f5f7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></g>
+      <text x="24" y="118" font-size="21" font-weight="600" fill="#fff" letter-spacing="-.5">Сервер</text>
+      <text x="24" y="146" font-size="15" fill="#a9a9b4">собирает запрос целым</text>
+      <text x="24" y="167" font-size="15" fill="#a9a9b4">и отвечает как обычно</text>
+    </g>
+    <g transform="translate(40 290)">
+      <rect width="1200" height="144" rx="30" fill="#0b0b0d" stroke="#fff" stroke-opacity=".07"/>
+      <text x="28" y="49" font-size="13" fill="#8f8f9b" font-weight="600" letter-spacing="1">БЕЗ EVASION</text>
+      <rect x="170" y="24" width="446" height="40" rx="12" fill="#19191c" stroke="#fff" stroke-opacity=".14"/><text x="393.0" y="49" font-size="14" text-anchor="middle" fill="#d6d6de" font-family="'Cascadia Mono','JetBrains Mono',Consolas,ui-monospace,Menlo,monospace">ClientHello · SNI = discord.com</text>
+      <text x="640" y="49" font-size="15.5" fill="#ff9c5b">фильтр видит имя сайта и обрывает соединение</text>
+      <text x="28" y="105" font-size="13" fill="#a79dff" font-weight="600" letter-spacing="1">С EVASION</text>
+      <rect x="170" y="80" width="120" height="40" rx="12" fill="#0b0b0d" stroke="#8f8f9b" stroke-opacity=".5" stroke-dasharray="4 5"/><text x="230.0" y="105" font-size="14" text-anchor="middle" fill="#8f8f9b" font-family="'Cascadia Mono','JetBrains Mono',Consolas,ui-monospace,Menlo,monospace">ложный пакет</text>
+      <rect x="298" y="80" width="82" height="40" rx="12" fill="#221d52" stroke="#7c6cff"/><text x="339.0" y="105" font-size="14" text-anchor="middle" fill="#e9e7ff" font-family="'Cascadia Mono','JetBrains Mono',Consolas,ui-monospace,Menlo,monospace">Client</text>
+      <rect x="388" y="80" width="118" height="40" rx="12" fill="#221d52" stroke="#7c6cff"/><text x="447.0" y="105" font-size="14" text-anchor="middle" fill="#e9e7ff" font-family="'Cascadia Mono','JetBrains Mono',Consolas,ui-monospace,Menlo,monospace">Hello · SNI</text>
+      <rect x="514" y="80" width="46" height="40" rx="12" fill="#221d52" stroke="#7c6cff"/><text x="537.0" y="105" font-size="14" text-anchor="middle" fill="#e9e7ff" font-family="'Cascadia Mono','JetBrains Mono',Consolas,ui-monospace,Menlo,monospace">dis</text>
+      <rect x="568" y="80" width="48" height="40" rx="12" fill="#221d52" stroke="#7c6cff"/><text x="592.0" y="105" font-size="14" text-anchor="middle" fill="#e9e7ff" font-family="'Cascadia Mono','JetBrains Mono',Consolas,ui-monospace,Menlo,monospace">cord</text>
+      <text x="640" y="105" font-size="15.5" fill="#c9c2ff">имя сайта не читается — соединение проходит</text>
+    </g>
+  </g>
+  <rect x=".5" y=".5" width="1279" height="469" rx="35.5" fill="none" stroke="#fff" stroke-opacity=".09"/>
+</svg>
