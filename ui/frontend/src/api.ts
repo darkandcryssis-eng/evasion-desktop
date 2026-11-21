@@ -22,6 +22,8 @@ import {
   GetPortfolio,
   GetState,
   GetTargets,
+  GetCustomIPs,
+  SetCustomIPs,
   MinimiseToTray,
   OpenDataFolder,
   RestartDiscord,
@@ -119,6 +121,8 @@ export type TelegramState = {
   logs: LogLine[];
 };
 
+export type CustomIPs = { text: string; count: number; path: string };
+
 export type TargetGroup = {
   name: string;
   domains: string[];
@@ -203,6 +207,8 @@ export const api = {
   setAutoStart: (enabled: boolean, options: StartOptions): Promise<void> => SetAutoStart(enabled, options as never),
   getState: (): Promise<AppState> => (GetState() as Promise<AppState>).then(normState),
   getTargets: (): Promise<TargetGroup[]> => (GetTargets() as Promise<TargetGroup[]>).then((list) => arr(list).map((g) => ({ ...g, domains: arr(g.domains) }))),
+  getCustomIPs: (): Promise<CustomIPs> => GetCustomIPs() as Promise<CustomIPs>,
+  setCustomIPs: (text: string): Promise<CustomIPs> => SetCustomIPs(text) as Promise<CustomIPs>,
   getDiagnostics: (): Promise<DiagnosticItem[]> => (GetDiagnostics() as Promise<DiagnosticItem[]>).then(arr),
   getPortfolio: (): Promise<PortfolioView> => (GetPortfolio() as Promise<PortfolioView>).then((p) => ({ ...p, holdings: arr(p?.holdings) })),
   runDoctor: (): Promise<DoctorCheck[]> => (RunDoctor() as Promise<DoctorCheck[]>).then(arr),

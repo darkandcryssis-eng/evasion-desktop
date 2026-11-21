@@ -103,6 +103,7 @@ func runCommand(ctx context.Context, args []string) error {
 		discordProfile  = fs.String("discord-tunnel-profile", "", "intercept: зашифрованный VLESS-профиль резервного маршрута Discord")
 		youtubeProfile  = fs.String("youtube-tunnel-profile", "", "intercept: зашифрованный VLESS-профиль автоматического резерва YouTube")
 		telegramProfile = fs.String("telegram-tunnel-profile", "", "intercept: зашифрованный VLESS-профиль резервного маршрута Telegram")
+		ipListFlag      = fs.String("ip-list", "", "intercept: файл со своими IP и подсетями, к которым обход применяется по адресу назначения")
 		redirectF       = fs.Bool("rtc-redirect", false, "intercept: переклеивать душимые RTC-порты Discord (2053/2083/2087/2096) на живой 8443")
 		jsonOut         = fs.Bool("json", false, "машинно-читаемый вывод")
 		stdinStop       = fs.Bool("stop-on-stdin-eof", false, "штатно остановиться, когда закроется stdin (запуск из оболочки Evasion UI)")
@@ -204,7 +205,7 @@ func runCommand(ctx context.Context, args []string) error {
 		if *ytProfile != "" && !youtubeProfileAllowed(*ytProfile) {
 			return fmt.Errorf("неизвестный профиль YouTube %q", *ytProfile)
 		}
-		return runIntercept(ctx, cfg, domainSet, groupNames, logger, *jsonOut, *autoPilot, *searchGen, voice, *redirectF, *ytProfile, *discordProfile, *youtubeProfile, *telegramProfile)
+		return runIntercept(ctx, cfg, domainSet, groupNames, logger, *jsonOut, *autoPilot, *searchGen, voice, *redirectF, *ytProfile, *discordProfile, *youtubeProfile, *telegramProfile, *ipListFlag)
 	}
 
 	// Горячая таблица и контур управления (M6). Прокси получает policy.Table

@@ -3,7 +3,7 @@ import { UpdateCard } from "../Update";
 import { useEffect, useId, useMemo, useState } from "react";
 import { ClipboardSetText } from "../../wailsjs/runtime/runtime";
 import {
-  api, type AppState, type DiagnosticItem, type DiagnosticTone, type DoctorCheck, type GameFilterSettings, type GameFilterView,
+  api, type AppState, type CustomIPs, type DiagnosticItem, type DiagnosticTone, type DoctorCheck, type GameFilterSettings, type GameFilterView,
   type NetworkTuningView, type PortfolioView, type ServiceDiagnostic, type SpeedSample, type TargetGroup, type TelegramRoute, type TelegramState,
 } from "../api";
 import { loadOptions } from "../preferences";
@@ -53,6 +53,7 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
           ))}
           {!filtered.length && <p className="empty">{targets.value ? "Ничего не найдено" : "Загрузка…"}</p>}
         </div>
+        <CustomIPList running={state?.engine?.phase === "running" || state?.engine?.phase === "starting"} />
       </> : <>
         {portfolio.error && <Note tone="warn" icon="alert">{portfolio.error}</Note>}
         <div className="stats">
@@ -68,6 +69,38 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
         )}
       </>}
     </div>
+  );
+}
+
+/* Свои IP и подсети: обход по адресу назначения, как ipset в zapret. */
+function CustomIPList({ running }: { running: boolean }) {
+  const [saved, setSaved] = useState<CustomIPs | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ text: string; warn?: boolean } | null>(null);
+  useEffect(() => {
+    api.getCustomIPs().then((v) => { setSaved(v); setText(v.text); }).catch((e) => setNotice({ text: String(e), warn: true }));
+  }, []);
+  const save = async () => {
+    setBusy(true);
+    try {
+      const v = await api.setCustomIPs(text);
+      setSaved(v); setText(v.text);
+      setNotice({ text: running ? "Сохранено. Список начнёт действовать после переподключения." : "Сохранено." });
+    } catch (e) {
+      setNotice({ text: String(e), warn: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Disclosure icon="route" title="Свои IP-адреса" note={saved?.count ? `Записей: ${saved.count}` : "Если сервис блокируют по адресу, а не по имени"}>
+      <p className="probe__sum" style={{ marginBottom: 10 }}>По одному адресу или подсети на строку: <span className="mono">203.0.113.7</span> или <span className="mono">203.0.113.0/24</span>. Обход включается для защищённых соединений (HTTPS) к этим адресам, даже если сайта нет в списке сервисов.</p>
+      <textarea className="field field--area mono" aria-label="Свои IP-адреса и подсети" spellCheck={false} rows={6} value={text} disabled={!saved || busy}
+        placeholder={"# комментарий\n203.0.113.7\n203.0.113.0/24\n2001:db8::/48"} onChange={(e) => { setText(e.target.value); setNotice(null); }} />
+      {notice && <Note tone={notice.warn ? "warn" : undefined} icon={notice.warn ? "alert" : "info"}>{notice.text}</Note>}
+      <div className="inline"><Button kind="solid" disabled={!saved || busy || text === saved.text} onClick={() => void save()}>{busy ? "Сохраняем…" : "Сохранить"}</Button></div>
+    </Disclosure>
   );
 }
 
