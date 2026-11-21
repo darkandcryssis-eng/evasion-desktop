@@ -20,6 +20,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/flow"
 	"github.com/fitting-1c/evasion/internal/intercept"
+	"github.com/fitting-1c/evasion/internal/iplist"
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/packetexec"
 	"github.com/fitting-1c/evasion/internal/policy"
@@ -146,6 +147,8 @@ type interceptInfo struct {
 	// Overrides — подгрупповые переопределения стратегий (cfg.Strategies) в
 	// порядке применения. Пусто, если переопределений нет (поведение прежнее).
 	Overrides []overrideInfo `json:"overrides,omitempty"`
+	// IPList — число записей пользовательского списка IP (--ip-list).
+	IPList int `json:"ip_list,omitempty"`
 }
 
 // overrideInfo — одно подгрупповое правило: имя группы и идентификатор её
@@ -247,7 +250,7 @@ func buildInterceptProvider(cfg *config.Config, radius *config.DomainSet, groupN
 // отдельно, чтобы при --groups отобрать те записи cfg.Strategies, которые
 // попадают в выбранный радиус, а остальные тихо пропустить (ошибкой это не
 // является: радиус выбирают, strategies — лишь способ разнести его).
-func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.DomainSet, groupNames []string, logger *slog.Logger, jsonOut, auto, search bool, voice voiceMode, redirect bool, ytStartProfile, discordProfile, youtubeProfile, telegramProfile string) error {
+func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.DomainSet, groupNames []string, logger *slog.Logger, jsonOut, auto, search bool, voice voiceMode, redirect bool, ytStartProfile, discordProfile, youtubeProfile, telegramProfile, ipListPath string) error {
 	if !auto {
 		domainSet, _ = prepareYouTubeAuto(cfg, domainSet, groupNames)
 	}
@@ -299,6 +302,9 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 		if redirect {
 			logger.Warn("--rtc-redirect не поддержан вместе с --auto, проигнорирован")
 		}
+		if ipListPath != "" {
+			logger.Warn("--ip-list не поддержан вместе с --auto, проигнорирован")
+		}
 		return runInterceptAuto(ctx, cfg, domainSet, logger, jsonOut, search, voice, discordListen)
 	}
 	if search {
@@ -328,6 +334,22 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 			return err
 		}
 		provider = youtube
+	}
+	// Свой список IP (--ip-list): обход по адресу назначения для того, что не
+	// входит в группы доменов. Битый список — отказ запуска с номером строки,
+	// а не молчаливая работа без него.
+	ipEntries := 0
+	if ipListPath != "" {
+		ips, err := iplist.Load(ipListPath)
+		if err != nil {
+			return fmt.Errorf("список IP %s: %w", ipListPath, err)
+		}
+		if ipEntries = ips.Len(); ipEntries > 0 && !cfg.Observe {
+			if provider, err = newIPListProvider(provider, ips); err != nil {
+				return err
+			}
+			logger.Info("свой список IP подключён", "записей", ipEntries)
+		}
 	}
 	// Диагностика: периодически печатаем топ SNI в пределах радиуса. Нужна,
 	// когда что-то в радиусе не работает (например, голос Discord виснет), а
@@ -489,6 +511,7 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 		DiscordProxy:    discordListen,
 		YouTubeProxy:    youtubeListen,
 		Overrides:       overrideInfos,
+		IPList:          ipEntries,
 	}
 	if s := cfg.Strategy; s != nil && !cfg.Observe {
 		info.StrategyID = s.ID.String()

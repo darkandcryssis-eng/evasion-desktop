@@ -203,6 +203,7 @@ func (m *engineManager) start(l layout, opts StartOptions, gameFlags ...string) 
 			"--telegram-tunnel-profile", filepath.Join(l.Base, gameRouteFile),
 		)
 	}
+	args = append(args, customIPArgs(l.Base)...)
 	if len(gameFlags) > 0 {
 		args = append([]string{"run", "--game-only", "--json", "--stop-on-stdin-eof"}, gameFlags...)
 	}
