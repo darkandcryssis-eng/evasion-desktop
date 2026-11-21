@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -73,6 +74,7 @@ type trayPopup struct {
 	preview       bool
 	keyboard      bool // focus ring only after keyboard navigation
 	down          int  // control the pointer went down on, when the panel itself got the click
+	parked        int  // control that lost the focus by being disabled
 
 	// The picture lives in a DIB section that is handed to the layered window.
 	dc, bitmap, oldBitmap uintptr
@@ -153,14 +155,13 @@ func startTrayPopup(view func() trayView, action func(string), ready func(toggle
 			if result <= 0 {
 				break
 			}
-			if msg.Message == 0x100 && msg.WParam == 27 {
-				p.hide()
-				continue
-			}
-			switch {
-			case msg.Message == 0x100:
+			switch msg.Message {
+			case 0x100, 0x104:
 				p.keyboard = true
-			case msg.Message == 0x201:
+				if p.key(msg.WParam) {
+					continue
+				}
+			case 0x201:
 				p.keyboard = false
 			}
 			if trayU("IsDialogMessageW", p.hwnd, uintptr(unsafe.Pointer(&msg))) != 0 {
@@ -268,6 +269,55 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) (resul
 	return trayU("DefWindowProcW", hwnd, uintptr(message), wparam, lparam)
 }
 
+// key handles what the dialog manager gets wrong for this panel: Esc with no
+// focused control, Enter on an owner-drawn button, and the first Tab or arrow
+// while no control has the focus yet.
+func (p *trayPopup) key(code uintptr) bool {
+	if !p.visible {
+		return false
+	}
+	if int16(trayU("GetKeyState", 18)) < 0 {
+		return false
+	}
+	focus := trayU("GetFocus")
+	if focus == 0 {
+		focus = p.hwnd
+		trayU("SetFocus", p.hwnd)
+	}
+	at := 0
+	for id, h := range p.buttons {
+		if h == focus {
+			at = id
+		}
+	}
+	switch code {
+	case 27:
+		p.hide()
+		return true
+	case 13:
+		if at != 0 && trayU("IsWindowEnabled", focus) != 0 {
+			p.action(trayKinds[at])
+		}
+		return true
+	case 9, 37, 38, 39, 40:
+		if at != 0 {
+			return false
+		}
+		order := []int{trayDPIButton, trayTelegramButton, trayDiagnoseButton, trayOpenButton, trayExitButton}
+		if code == 37 || code == 38 || code == 9 && int16(trayU("GetKeyState", 16)) < 0 {
+			slices.Reverse(order)
+		}
+		for _, id := range order {
+			if trayU("IsWindowEnabled", p.buttons[id]) != 0 {
+				trayU("SetFocus", p.buttons[id])
+				break
+			}
+		}
+		return true
+	}
+	return false
+}
+
 var trayKinds = map[int]string{trayDPIButton: "dpi", trayTelegramButton: "telegram", trayDiagnoseButton: "diagnose", trayOpenButton: "open", trayExitButton: "quit"}
 
 func (p *trayPopup) show() {
@@ -298,12 +348,13 @@ func (p *trayPopup) show() {
 	p.width, p.height = bounds.Right-bounds.Left+2*m, bounds.Bottom-bounds.Top+2*m
 	trayU("SetWindowPos", p.hwnd, ^uintptr(0), trayInt(bounds.Left-m), trayInt(bounds.Top-m), trayInt(p.width), trayInt(p.height), 0x10)
 	p.layout()
-	p.keyboard, p.down, p.press = false, 0, trayPress{}
+	p.keyboard, p.down, p.parked, p.press = false, 0, 0, trayPress{}
 	p.visible = true
 	p.sync(p.view())
 	trayU("ShowWindow", p.hwnd, 5)
 	trayU("SetForegroundWindow", p.hwnd)
-	trayU("SetFocus", p.buttons[trayDPIButton])
+	// No control is focused until the keyboard is used, so a stray Space does nothing.
+	trayU("SetFocus", p.hwnd)
 	trayU("SetTimer", p.hwnd, 1, 1000, 0)
 	trayU("SetTimer", p.hwnd, 2, 30, 0)
 }
@@ -402,7 +453,19 @@ func (p *trayPopup) sync(next trayView) {
 			enabled = 0
 		}
 		if (trayU("IsWindowEnabled", p.buttons[id]) != 0) != (enabled == 1) {
+			// Disabling the focused control would leave the panel without keyboard
+			// focus; park it on the panel and hand it back when the control returns.
+			if enabled == 0 && trayU("GetFocus") == p.buttons[id] {
+				p.parked = id
+				trayU("SetFocus", p.hwnd)
+			}
 			trayU("EnableWindow", p.buttons[id], enabled)
+			if enabled == 1 && p.parked == id {
+				p.parked = 0
+				if p.visible && trayU("GetFocus") == p.hwnd {
+					trayU("SetFocus", p.buttons[id])
+				}
+			}
 		}
 	}
 	p.render()

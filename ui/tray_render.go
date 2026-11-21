@@ -296,9 +296,9 @@ func paintTray(c *trayCanvas, v trayView, press trayPress) {
 	fill = th.solid
 	switch trayOpenButton {
 	case press.pressed:
-		fill = th.solid.mix(th.accent, .34)
+		fill = th.solid.mix(th.accent, .48)
 	case press.hover:
-		fill = th.solid.mix(th.accent, .16)
+		fill = th.solid.mix(th.accent, .26)
 	}
 	c.fillBox(b, 20, fill, 1)
 	if press.focus == trayOpenButton {

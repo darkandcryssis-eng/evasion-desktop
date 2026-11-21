@@ -187,7 +187,7 @@ export function PowerOrb({ mode, motion = true }: { mode: OrbMode; motion?: bool
     const initial = live.current.mode === "on" || live.current.mode === "busy";
     const s: Scene = { stage: initial ? "on" : "off", t: 1, want: initial, busy: 0, warm: 0, hover: 0, clock: 0 };
     const reduced = () => !live.current.motion || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let hovering = false, raf = 0, last = performance.now();
+    let hovering = false, raf = 0, last = performance.now(), was = live.current.mode;
     const enter = () => { hovering = true; }, leave = () => { hovering = false; };
     const host = el.closest("button") ?? el;
     host.addEventListener("pointerenter", enter); host.addEventListener("pointerleave", leave);
@@ -204,11 +204,12 @@ export function PowerOrb({ mode, motion = true }: { mode: OrbMode; motion?: bool
       s.clock = still ? 0 : now;
       if (still) { s.stage = s.want ? "on" : "off"; s.t = 1; }
       // A failed start must not finish the connect animation and then play the disconnect one.
-      else if (m === "failed" && s.stage === "toOn") { s.stage = "off"; s.t = 1; }
+      else if (m === "failed" && (s.stage === "toOn" || was === "busy")) { s.stage = "off"; s.t = 1; }
       else if (s.stage === "off" && s.want) { s.stage = "toOn"; s.t = 0; }
       else if (s.stage === "on" && !s.want) { s.stage = "toOff"; s.t = 0; }
       else if (s.stage === "toOn") { s.t += (dt / ON_MS) * (s.want ? 1 : 2.6); if (s.t >= 1) { s.stage = "on"; s.t = 1; } }
       else if (s.stage === "toOff") { s.t += (dt / OFF_MS) * (s.want ? 2.6 : 1); if (s.t >= 1) { s.stage = "off"; s.t = 1; } }
+      was = m;
       const k = still ? 1 : 1 - Math.exp(-dt / 160);
       s.busy += ((m === "busy" && s.stage === "on" && !still ? 1 : 0) - s.busy) * k;
       s.warm += ((m === "failed" ? 1 : 0) - s.warm) * k;
