@@ -74,7 +74,10 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   // The ring answers the press at once; the engine phase takes over when it arrives.
   const [intent, setIntent] = useState<"on" | "off" | null>(null);
   useEffect(() => { if (!busy) setIntent(null); }, [busy, phase]);
+  // aria-disabled instead of disabled: the ring keeps keyboard focus while the engine changes state.
+  const locked = busy || transit || (!active && !ready);
   const press = () => {
+    if (locked) return;
     if (active) { setIntent("off"); void stop(); return; }
     setIntent("on"); onConnect(options);
   };
@@ -93,7 +96,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
             <h1 aria-live="polite" key={phase}>{state ? <><span>{lead}</span> <strong>{strong}</strong></> : <span>Получаем состояние…</span>}</h1>
             <p key={`hint-${phase}`}>{hint[phase]}</p>
           </div>
-          <button type="button" className="power" aria-label={action} aria-pressed={active} title={action} disabled={busy || transit || (!active && !ready)} onClick={press}>
+          <button type="button" className="power" aria-label={action} aria-pressed={active} title={action} aria-disabled={locked} onClick={press}>
             <PowerOrb mode={orb} motion={motion} />
           </button>
           <div className="hero__foot">

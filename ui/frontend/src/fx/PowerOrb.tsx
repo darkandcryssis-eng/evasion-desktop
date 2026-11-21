@@ -205,7 +205,7 @@ export function PowerOrb({ mode, motion = true }: { mode: OrbMode; motion?: bool
       else if (s.stage === "on" && !s.want) { s.stage = "toOff"; s.t = 0; }
       else if (s.stage === "toOn") { s.t += (dt / ON_MS) * (s.want ? 1 : 2.6); if (s.t >= 1) { s.stage = "on"; s.t = 1; } }
       else if (s.stage === "toOff") { s.t += (dt / OFF_MS) * (s.want ? 2.6 : 1); if (s.t >= 1) { s.stage = "off"; s.t = 1; } }
-      const k = 1 - Math.exp(-dt / 160);
+      const k = still ? 1 : 1 - Math.exp(-dt / 160);
       s.busy += ((m === "busy" && s.stage === "on" && !still ? 1 : 0) - s.busy) * k;
       s.warm += ((m === "failed" ? 1 : 0) - s.warm) * k;
       s.hover += ((hovering ? 1 : 0) - s.hover) * k;
