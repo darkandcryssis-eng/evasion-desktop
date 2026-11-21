@@ -47,6 +47,16 @@ type Options struct {
 	Alive AliveFunc
 }
 
+// entryAlive возвращает проверку живости записи: внедрённую по PID либо
+// системную defaultAlive, которая дополнительно сверяет запись с процессом
+// (не завершился ли он и не достался ли PID другому процессу).
+func entryAlive(alive AliveFunc) func(Entry) bool {
+	if alive == nil {
+		return defaultAlive
+	}
+	return func(e Entry) bool { return alive(e.PID) }
+}
+
 // Acquire пытается захватить замок.
 //
 // Если никто живой на пересекающемся фильтре не висит, пишет свою запись и
@@ -63,10 +73,7 @@ func Acquire(opts Options) (*Lock, error) {
 	if pid == 0 {
 		pid = os.Getpid()
 	}
-	alive := opts.Alive
-	if alive == nil {
-		alive = defaultAlive
-	}
+	alive := entryAlive(opts.Alive)
 
 	// Читаем существующие записи, фильтруем мёртвые.
 	entries, err := loadEntries(opts.Path)
@@ -81,7 +88,7 @@ func Acquire(opts Options) (*Lock, error) {
 			// заменим свежей.
 			continue
 		}
-		if !alive(e.PID) {
+		if !alive(e) {
 			continue
 		}
 		live = append(live, e)
@@ -156,16 +163,14 @@ func (l *Lock) Entry() Entry {
 // файла. Нужна команде doctor для показа «кто запущен» и команде cleanup,
 // чтобы вывести предупреждение. Мёртвые записи отфильтровываются.
 func ListLive(path string, alive AliveFunc) ([]Entry, error) {
-	if alive == nil {
-		alive = defaultAlive
-	}
+	live := entryAlive(alive)
 	entries, err := loadEntries(path)
 	if err != nil {
 		return nil, err
 	}
 	out := entries[:0]
 	for _, e := range entries {
-		if alive(e.PID) {
+		if live(e) {
 			out = append(out, e)
 		}
 	}
