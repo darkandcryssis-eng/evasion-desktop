@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	wr "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -43,17 +45,36 @@ type reportTraffic struct {
 	Rejected    uint64        `json:"rejected"`
 	Speeds      []SpeedSample `json:"speeds"`
 }
+type reportEngine struct {
+	Voice       string `json:"voice"`
+	Quic        string `json:"quic"`
+	Boost       bool   `json:"boost"`
+	Restarts    int    `json:"restarts"`
+	Complete    int64  `json:"helloComplete"`
+	Assembled   int64  `json:"helloAssembled"`
+	Skipped     int64  `json:"helloSkipped"`
+	Retransmits int64  `json:"helloRetransmits"`
+}
+type reportConflicts struct {
+	Stopped []string `json:"stopped"`
+	Failed  []string `json:"failed"`
+}
 type safeReport struct {
-	YouTube     *YouTubeHealthView `json:"youtube,omitempty"`
-	Games       *reportGames       `json:"games,omitempty"`
-	Driver      *reportDriver      `json:"driver,omitempty"`
-	Schema      int                `json:"schema"`
-	GeneratedAt string             `json:"generatedAt"`
-	Platform    string             `json:"platform"`
-	EnginePhase string             `json:"enginePhase"`
-	Services    []reportService    `json:"services"`
-	Routes      []reportRoute      `json:"routes"`
-	Telegram    reportTraffic      `json:"telegram"`
+	Version         string             `json:"version,omitempty"`
+	Elevated        bool               `json:"elevated"`
+	PreviousUnclean bool               `json:"previousUnclean"`
+	Engine          *reportEngine      `json:"engine,omitempty"`
+	Conflicts       *reportConflicts   `json:"conflicts,omitempty"`
+	YouTube         *YouTubeHealthView `json:"youtube,omitempty"`
+	Games           *reportGames       `json:"games,omitempty"`
+	Driver          *reportDriver      `json:"driver,omitempty"`
+	Schema          int                `json:"schema"`
+	GeneratedAt     string             `json:"generatedAt"`
+	Platform        string             `json:"platform"`
+	EnginePhase     string             `json:"enginePhase"`
+	Services        []reportService    `json:"services"`
+	Routes          []reportRoute      `json:"routes"`
+	Telegram        reportTraffic      `json:"telegram"`
 }
 
 func allowed(value string, values ...string) string {
@@ -122,6 +143,53 @@ func buildSafeReport(phase string, telegram TelegramState, services []ServiceDia
 	return r
 }
 
+// safeVersion пропускает только номер релиза: в сборке без -ldflags там "dev".
+func safeVersion(v string) string {
+	n, ok := parseVersion(v)
+	if !ok {
+		return "dev"
+	}
+	return fmt.Sprintf("%d.%d.%d", n[0], n[1], n[2])
+}
+
+func safeEngineReport(st EngineState) *reportEngine {
+	r := &reportEngine{Voice: "unknown", Quic: "unknown", Boost: st.Options.Boost, Restarts: max(0, st.Restarts)}
+	if allowedVoice[st.Options.Voice] {
+		r.Voice = st.Options.Voice
+	}
+	if allowedQuic[st.Options.Quic] {
+		r.Quic = st.Options.Quic
+	}
+	if h := st.Hello; h != nil {
+		r.Complete, r.Assembled, r.Skipped, r.Retransmits = max(0, h.Complete), max(0, h.Assembled), max(0, h.Skipped), max(0, h.Retransmits)
+	}
+	return r
+}
+
+// safeConflicts оставляет только известные имена: имя чужой службы с подходящим
+// бинарником произвольно и в отчёт не попадает.
+func safeConflicts(c conflictReport) *reportConflicts {
+	known := func(names []string) []string {
+		out := []string{}
+		for _, name := range names {
+			kind := ""
+			if rest, ok := strings.CutPrefix(name, "служба "); ok {
+				name, kind = rest, "service:"
+			}
+			switch {
+			case strings.Contains(name, "WinDivert"):
+				out = append(out, "windivert-stale")
+			case isConflictProcess(name) || slices.ContainsFunc(conflictServices, func(k string) bool { return strings.EqualFold(k, name) }):
+				out = append(out, kind+strings.ToLower(name))
+			default:
+				out = append(out, kind+"other")
+			}
+		}
+		return out
+	}
+	return &reportConflicts{Stopped: known(c.Stopped), Failed: known(c.Failed)}
+}
+
 func writeReport(path string, report safeReport) error {
 	b, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -157,7 +225,20 @@ func (a *App) ExportDiagnosticReport() (string, error) {
 	if filepath.Ext(path) == "" {
 		path += ".json"
 	}
-	report := buildSafeReport(string(a.engine.snapshot().Phase), a.GetTelegramState(), a.GetServiceDiagnostics(), a.GetTelegramRoutes(), a.driverDiagnostic())
+	engine := a.engine.snapshot()
+	// Без проверки связи в отчёте нет данных о Discord: при работающем обходе
+	// запускаем её сами.
+	if engine.Phase == phaseRunning && len(a.GetServiceDiagnostics()) == 0 {
+		_, _ = a.RunServiceDiagnostics()
+	}
+	report := buildSafeReport(string(engine.Phase), a.GetTelegramState(), a.GetServiceDiagnostics(), a.GetTelegramRoutes(), a.driverDiagnostic())
+	report.Version = safeVersion(appVersion)
+	report.Elevated, _ = isElevated()
+	report.Engine = safeEngineReport(engine)
+	a.settingsMu.Lock()
+	report.PreviousUnclean = a.previousUnclean
+	report.Conflicts = safeConflicts(a.conflicts)
+	a.settingsMu.Unlock()
 	report.Games = safeGameReport(a.GetGameFilter())
 	youtube := sanitizeYouTubeHealth(a.youTubeHealth())
 	report.YouTube = &youtube
