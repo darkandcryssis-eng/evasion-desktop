@@ -1,13 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="sky" x2=".8" y2="1"><stop stop-color="#f4fbff"/><stop offset="1" stop-color="#b7d3e9"/></linearGradient>
-    <linearGradient id="glass" x2="0" y2="1"><stop stop-color="#fff" stop-opacity=".8"/><stop offset="1" stop-color="#fff" stop-opacity=".12"/></linearGradient>
+    <radialGradient id="wash"><stop stop-color="#2a1c96"/><stop offset="1" stop-color="#2a1c96" stop-opacity="0"/></radialGradient>
+    <filter id="halo" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="46"/></filter>
+    <filter id="core" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="14"/></filter>
   </defs>
-  <rect x="36" y="36" width="952" height="952" rx="236" fill="url(#sky)"/>
-  <rect x="59" y="59" width="906" height="906" rx="216" fill="url(#glass)" stroke="#fff" stroke-opacity=".7" stroke-width="8"/>
-  <g transform="translate(160 160) scale(29.333333)" fill="none" stroke="#365d77" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12.8 19.6A2 2 0 1 0 14 16H2"/>
-    <path d="M17.5 8a2.5 2.5 0 1 1 2 4H2"/>
-    <path d="M9.8 4.4A2 2 0 1 1 11 8H2"/>
+  <rect x="26" y="26" width="972" height="972" rx="240" fill="#040406"/>
+  <circle cx="512" cy="512" r="430" fill="url(#wash)" opacity=".55"/>
+  <circle cx="512" cy="512" r="276" fill="#0d0d14"/>
+  <g fill="none" stroke-linecap="round">
+    <circle cx="512" cy="512" r="276" stroke="#5442ff" stroke-width="72" filter="url(#halo)"/>
+    <circle cx="512" cy="512" r="276" stroke="#7c6cff" stroke-width="42" filter="url(#core)"/>
+    <circle cx="512" cy="512" r="276" stroke="#f1efff" stroke-width="28"/>
   </g>
+  <circle cx="512" cy="512" r="68" fill="#7c6cff" filter="url(#core)"/>
+  <circle cx="512" cy="512" r="45" fill="#fff"/>
 </svg>

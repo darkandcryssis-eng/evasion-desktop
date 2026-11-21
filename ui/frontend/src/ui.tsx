@@ -1,13 +1,13 @@
 // Accessible, familiar controls shared by the desktop screens.
 import { Component, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { House, Layers, Gamepad2, Send, Activity, Settings, Power, RefreshCw, ChevronDown, Copy, ExternalLink, Folder, Trash2, Plus, Shield, TriangleAlert, Download, Search, Eye, X, ArrowDownLeft, ArrowUpRight, PanelBottom, Info, Play, Zap, Route } from "lucide-react";
+import { House, Layers, Gamepad2, Send, Activity, Settings, Power, RefreshCw, ChevronDown, Copy, ExternalLink, Folder, Trash2, Plus, Shield, TriangleAlert, Download, Search, Eye, X, ArrowDownLeft, ArrowUpRight, PanelBottom, Info, Play, Zap, Route, Sun, Moon, Minus, Square } from "lucide-react";
 
 const glyphs = {
   home: House, layers: Layers, game: Gamepad2, send: Send, pulse: Activity,
   settings: Settings, power: Power, refresh: RefreshCw, chevron: ChevronDown, copy: Copy,
   external: ExternalLink, folder: Folder, trash: Trash2, plus: Plus, shield: Shield,
   alert: TriangleAlert, download: Download, search: Search, eye: Eye, x: X,
-  down: ArrowDownLeft, up: ArrowUpRight, tray: PanelBottom, info: Info, play: Play, bolt: Zap, route: Route,
+  down: ArrowDownLeft, up: ArrowUpRight, tray: PanelBottom, info: Info, play: Play, bolt: Zap, route: Route, sun: Sun, moon: Moon, minus: Minus, square: Square,
 };
 export type IconName = keyof typeof glyphs;
 export function Icon({ name, size = 18, stroke = 1.7, className = "" }: { name: IconName; size?: number; stroke?: number; className?: string }) {

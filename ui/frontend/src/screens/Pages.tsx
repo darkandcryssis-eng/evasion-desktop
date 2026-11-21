@@ -343,7 +343,7 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
       <Glass className="card">
         <header className="card-head"><span className="kicker">Оформление</span></header>
         <Row title="Светлая и тёмная тема" note="Переключаются кнопкой вверху окна. Выбранная тема сохраняется и применяется к трею." />
-        <Row title="Мягкие анимации" note="Маленький ASCII-кот и плавные переходы. Системная настройка уменьшения движения имеет приоритет."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
+        <Row title="Мягкие анимации" note="Анимация кнопки включения, переходы и живой фон. Системная настройка уменьшения движения имеет приоритет."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
         <Row title="Стартовый экран" note="Действует со следующего запуска"><Toggle label="Стартовый экран" checked={startup} onChange={onStartup} /></Row>
       </Glass>
       <Glass className="card">

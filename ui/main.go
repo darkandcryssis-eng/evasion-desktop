@@ -27,7 +27,7 @@ func main() {
 		DisableResize:    false,
 		Frameless:        true,
 		StartHidden:      false,
-		BackgroundColour: &options.RGBA{R: 24, G: 24, B: 26, A: 255},
+		BackgroundColour: &options.RGBA{R: 5, G: 5, B: 6, A: 255},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,

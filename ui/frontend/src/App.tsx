@@ -7,7 +7,6 @@ import { Boundary, Button, Dialog, Icon, type IconName } from "./ui";
 import { HomeScreen, telegramMode } from "./screens/Home";
 import { DiagnosticsScreen, GamesScreen, ServicesScreen, SettingsScreen, TelegramScreen } from "./screens/Pages";
 import type { Page, Theme } from "./types";
-import { AsciiCat } from "./fx/AsciiCat";
 
 const pages: { id: Page; title: string; icon: IconName }[] = [
   { id: "home", title: "Главная", icon: "home" }, { id: "services", title: "Сервисы", icon: "layers" },
@@ -47,7 +46,7 @@ export default function App() {
   }, [motion, startup, theme]);
   useEffect(() => {
     WindowSetSize(900, 700); WindowSetMinSize(700, 540); WindowCenter();
-    const timer = window.setTimeout(() => setBooting(false), 500);
+    const timer = window.setTimeout(() => setBooting(false), 1500);
     return () => window.clearTimeout(timer);
   }, []);
   useLayoutEffect(() => { if (viewport.current) viewport.current.scrollTop = 0; }, [page]);
@@ -81,22 +80,54 @@ export default function App() {
     }
   };
   return (
-    <main className="workspace" data-phase={phase}>
-      <header className="workspace__header">
-        <div className="identity" aria-label="Evasion"><span aria-hidden="true">/\_/\</span> evasion</div>
-        <div className="header-tools"><span className="engine-indicator" data-phase={phase}><i />{engine.state ? phaseLabel[phase] : "Получаем состояние"}</span>
-          <button type="button" className="theme-switch" title={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><span aria-hidden="true">{theme === "black" ? "☼" : "◐"}</span></button>
-          <div className="window-actions"><button type="button" aria-label="Свернуть" onClick={WindowMinimise}>_</button><button type="button" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}>□</button><button type="button" aria-label="Закрыть" onClick={() => setClosing(true)}>×</button></div>
+    <main className="shell" data-phase={phase} data-page={page}>
+      <header className="bar">
+        <div className="brand" aria-label="Evasion"><span className="brand__mark" aria-hidden="true"><i /></span><span className="brand__name">evasion</span></div>
+        <Navigation page={page} onChange={setPage} />
+        <div className="bar__tools">
+          <span className="engine-pill" data-phase={phase}><i />{engine.state ? phaseLabel[phase] : "Получаем состояние"}</span>
+          <button type="button" className="tool" title={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><Icon name={theme === "black" ? "sun" : "moon"} size={15} /></button>
+          <div className="window-actions">
+            <button type="button" className="tool" aria-label="Свернуть" onClick={WindowMinimise}><Icon name="minus" size={15} /></button>
+            <button type="button" className="tool" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}><Icon name="square" size={12} /></button>
+            <button type="button" className="tool tool--close" aria-label="Закрыть" onClick={() => setClosing(true)}><Icon name="x" size={15} /></button>
+          </div>
         </div>
       </header>
-      <nav className="navigation" aria-label="Разделы приложения">{pages.map((p) => <button key={p.id} type="button" className={`nav-item${page === p.id ? " nav-item--active" : ""}`} aria-label={p.title} title={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => setPage(p.id)}>{p.title}</button>)}</nav>
-      <section className="workspace__viewport" ref={viewport}>
-        <div className="workspace__page" key={page}><Boundary resetKey={page}>{renderPage()}</Boundary></div>
-        <footer className="workspace__footer">Evasion · работает на вашем устройстве</footer>
+      <section className="stage" ref={viewport}>
+        <div className="stage__page" key={page}><Boundary resetKey={page}>{renderPage()}</Boundary></div>
       </section>
-      {booting && <div className="boot" aria-live="polite"><AsciiCat /><span>Запускаем Evasion…</span></div>}
+      {booting && <div className="boot" aria-live="polite"><svg viewBox="0 0 120 120" aria-hidden="true"><circle className="boot__ring" cx="60" cy="60" r="44" pathLength="1" /><circle className="boot__dot" cx="60" cy="60" r="5" /></svg><span>evasion</span></div>}
       <Dialog open={closing} onClose={() => setClosing(false)} icon="power" title="Остаться на связи?" text="Сверните Evasion в трей, чтобы соединение продолжало работать."><button type="button" className="choice" onClick={() => { setClosing(false); void api.minimiseToTray(); }}><Icon name="tray" size={17} /><span><strong>Свернуть в трей</strong><small>Оставить обход работать в фоне</small></span></button><button type="button" className="choice choice--quit" onClick={() => void api.exitApplication()}><Icon name="power" size={17} /><span><strong>Завершить работу</strong><small>Остановить движок и выйти</small></span></button></Dialog>
       <Dialog open={pending !== null} onClose={() => setPending(null)} icon="send" title="Telegram — тоже?" text="Включить встроенный прокси вместе с обходом? При первом запуске подтвердите подключение в Telegram."><Button kind="ghost" onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, false); }}>Только обход</Button><Button kind="solid" data-autofocus onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, true); }}>Включить Telegram</Button></Dialog>
     </main>
+  );
+}
+
+// Pill navigation: the active marker glides between sections and the active label unfolds.
+function Navigation({ page, onChange }: { page: Page; onChange: (p: Page) => void }) {
+  const root = useRef<HTMLElement>(null);
+  const [box, setBox] = useState<{ left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const measure = () => {
+      const active = el.querySelector<HTMLElement>("[aria-current=page]");
+      if (active) setBox({ left: active.offsetLeft, width: active.offsetWidth });
+    };
+    measure();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    el.querySelectorAll("button").forEach((b) => ro?.observe(b));
+    return () => ro?.disconnect();
+  }, [page]);
+  return (
+    <nav className="nav" aria-label="Разделы приложения" ref={root}>
+      {box && <span className="nav__marker" style={{ transform: `translateX(${box.left}px)`, width: box.width }} aria-hidden="true" />}
+      {pages.map((p) => (
+        <button key={p.id} type="button" className="nav__item" aria-label={p.title} title={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => onChange(p.id)}>
+          <Icon name={p.icon} size={15} /><span className="nav__label">{p.title}</span>
+        </button>
+      ))}
+    </nav>
   );
 }

@@ -21,7 +21,7 @@ import (
 //go:embed assets/tray.ico
 var trayIcon []byte
 
-// One cat identity for the executable, taskbar, Alt+Tab and tray.
+// One ring identity for the executable, taskbar, Alt+Tab and tray.
 //
 //go:embed build/windows/icon.ico
 var windowIcon []byte
@@ -33,13 +33,18 @@ func trayIconBytes() []byte {
 // startTray поднимает значок в системном трее. Нужен, потому что окно умеет
 // сворачиваться в трей (диалог закрытия), а Wails v2 своего трея не имеет.
 // systray.Run блокирует собственным циклом сообщений, поэтому — в горутине.
+var (
+	trayGone     = make(chan struct{})
+	trayGoneOnce sync.Once
+)
+
 func (a *App) startTray() {
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		// Трей — вторичная функция: его сбой не должен ронять окно.
 		defer func() { _ = recover() }()
-		systray.Run(a.trayReady, func() {})
+		systray.Run(a.trayReady, func() { trayGoneOnce.Do(func() { close(trayGone) }) })
 	}()
 }
 
@@ -186,9 +191,18 @@ func (a *App) showWindow() {
 }
 
 func (a *App) trayQuit() {
-	a.trayAvailable.Store(false)
+	shown := a.trayAvailable.Swap(false)
 	if a.tray != nil {
 		a.tray.close()
 	}
 	systray.Quit()
+	if !shown {
+		return
+	}
+	// Quit only posts a message; leaving before the tray thread handles it
+	// strands a dead icon in the notification area.
+	select {
+	case <-trayGone:
+	case <-time.After(1500 * time.Millisecond):
+	}
 }

@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type EnginePhase, type NetworkTuningView, type StartOptions } from "../api";
 import type { EngineController } from "../useEngine";
 import { useConnectionOptions, readPreference, savePreference } from "../preferences";
 import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
-import { AsciiCat } from "../fx/AsciiCat";
+import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
 import { Badge, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type IconName, type Tone } from "../ui";
 import type { Page } from "../types";
 
@@ -31,7 +31,8 @@ export function telegramMode(): TelegramMode {
   return v === "yes" || v === "no" ? v : "ask";
 }
 
-const headline: Record<EnginePhase, string> = { stopped: "Всё готово к подключению", starting: "Подключаемся…", running: "Вы подключены", stopping: "Отключаемся…", failed: "Не удалось подключиться" };
+// Two-tone headline: a quiet lead-in and the word that matters.
+const headline: Record<EnginePhase, [string, string]> = { stopped: ["Всё готово", "к запуску"], starting: ["Секунду,", "соединяем"], running: ["Вы", "подключены"], stopping: ["Возвращаем", "сеть"], failed: ["Не удалось", "подключить"] };
 const hint: Record<EnginePhase, string> = {
   stopped: "Включите обход для Discord и YouTube. Остальное настроим за вас.",
   starting: "Это займёт несколько секунд.",
@@ -70,38 +71,70 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   const ytState: [string, Tone] = !active ? ["Ждёт включения обхода", "neutral"] : ytPhase[yt?.fresh ? yt.phase : "waiting"] ?? ["Проверяется", "neutral"];
   const [ytLabel, ytTone] = ytState;
 
+  // The ring answers the press at once; the engine phase takes over when it arrives.
+  const [intent, setIntent] = useState<"on" | "off" | null>(null);
+  useEffect(() => { if (!busy) setIntent(null); }, [busy, phase]);
+  // aria-disabled instead of disabled: the ring keeps keyboard focus while the engine changes state.
+  const locked = busy || transit || (!active && !ready);
   const press = () => {
-    if (active) { void stop(); return; }
-    onConnect(options);
+    if (locked) return;
+    if (active) { setIntent("off"); void stop(); return; }
+    setIntent("on"); onConnect(options);
   };
+  const lit = intent === "off" && busy ? false : phase === "starting" || running || (busy && intent === "on");
+  const orb: OrbMode = lit ? (running ? "on" : "busy") : phase === "failed" ? "failed" : "off";
+  const action = transit ? (phase === "starting" ? "Подключаем…" : "Отключаем…") : running ? "Выключить обход" : phase === "failed" ? "Попробовать снова" : "Включить обход";
+  const [lead, strong] = headline[phase];
+  const [hours, minutes, seconds] = elapsed.split(":");
 
   return (
-    <div className="dashboard">
-      <section className="connection-panel" aria-label="Управление подключением" data-phase={phase}>
-        <AsciiCat active={motion && running} />
-        <h1 aria-live="polite">{state ? headline[phase] : "Получаем состояние…"}</h1>
-        <p>{hint[phase]}</p>
-        <div className="connection-command">
-          <button type="button" className="connect-button" disabled={busy || transit || (!active && !ready)} onClick={press}><Icon name="power" size={17} />{transit ? phase === "starting" ? "Подключаем…" : "Отключаем…" : running ? "Выключить обход" : phase === "failed" ? "Попробовать снова" : "Включить обход"}</button>
-          {running && <button type="button" className="reconnect-button" title="Переподключить" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={18} /></button>}
-        </div>
-        <span className="connection-caption">{running ? `Обход работает · ${elapsed}` : "Ctrl + Enter — быстрое подключение"}</span>
-      </section>
+    <div className="home">
+      <div className="bento">
+        <section className="tile hero" aria-label="Управление подключением" data-phase={phase} data-lit={lit || undefined}>
+          <div className="hero__copy">
+            <span className="eyebrow"><i />{running ? "Обход работает" : transit ? "Меняем состояние" : "Обход выключен"}</span>
+            <h1 aria-live="polite" key={phase}>{state ? <><span>{lead}</span> <strong>{strong}</strong></> : <span>Получаем состояние…</span>}</h1>
+            <p key={`hint-${phase}`}>{hint[phase]}</p>
+          </div>
+          <button type="button" className="power" aria-label={action} aria-pressed={active} title={action} aria-disabled={locked} onClick={press}>
+            <PowerOrb mode={orb} motion={motion} />
+          </button>
+          <div className="hero__foot">
+            <span className="hero__action" key={action}>{action}</span>
+            <span className="hero__keys">{running ? <>В сети <b>{elapsed}</b></> : <><kbd>Ctrl</kbd><kbd>Enter</kbd> быстрое подключение</>}</span>
+            {running && <button type="button" className="ghost-chip" title="Переподключить" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={14} />Переподключить</button>}
+          </div>
+        </section>
+
+        <section className="tile session" aria-label="Сессия" data-live={running || undefined}>
+          <div className="aurora" aria-hidden="true"><i /><i /><i /><i /></div>
+          <div className="folder">
+            <div className="folder__tab"><span>Сессия</span></div>
+            <div className="folder__body">
+              <div className="timer" aria-label={running ? `В сети ${elapsed}` : "Сессия не начата"}><b>{hours}</b><i>:</i><b>{minutes}</b><i>:</i><b>{seconds}</b></div>
+              <div className="folder__meta">
+                <div><strong>{running && hello ? <Ticker value={hello.complete + hello.assembled} /> : "—"}</strong><span>соединений</span></div>
+                <div><strong>{yt?.fresh && active ? yt.switches : "—"}</strong><span>замен способа</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <ServiceTile icon="bolt" name="Discord" note="Голос · чат · медиа" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
+        <ServiceTile icon="play" name="YouTube" note="Видео · прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
+        <ServiceTile icon="send" name="Telegram" note="Сообщения · MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
+        <button type="button" className="tile cta" onClick={() => onNavigate("diagnostics")}>
+          <span className="cta__arrow" aria-hidden="true"><Icon name="up" size={18} /></span>
+          <span className="cta__text"><small>Что-то не работает?</small><strong>Проверить связь</strong></span>
+        </button>
+      </div>
+
       <div className="connection-notices">
         {state && !state.elevated && <Note tone="warn" icon="alert">Для подключения запустите Evasion от имени администратора.</Note>}
         {state && !state.payload.engine && <Note tone="warn" icon="alert">Движок не встроен в эту сборку. Пересоберите приложение.</Note>}
         {state && !state.payload.config && !state.userConfig && <Note tone="warn" icon="alert">Не найден конфиг подключения. Откройте диагностику.</Note>}
         {error && <Note tone="warn" icon="alert">{error}</Note>}
       </div>
-      <section className="service-section" aria-label="Состояние сервисов">
-        <header className="section-heading"><span className="kicker">Ваши приложения</span><button type="button" className="link" onClick={() => onNavigate("services")}>Все сервисы →</button></header>
-        <div className="service-grid">
-          <ServiceRow icon="bolt" name="Discord" note="Голос / чат / медиа" tone={running ? "accent" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
-          <ServiceRow icon="play" name="YouTube" note="Видео / прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
-          <ServiceRow icon="send" name="Telegram" note="Сообщения / MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
-        </div>
-      </section>
-      <button type="button" className="check-connection" onClick={() => onNavigate("diagnostics")}>Что-то не работает? <span>Проверить связь →</span></button>
       <section className="dashboard-details" aria-label="Параметры и журнал">
         {!active && (
           <Disclosure icon="settings" title="Дополнительные параметры" note="Для большинства сетей менять ничего не нужно">
@@ -144,12 +177,12 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   );
 }
 
-function ServiceRow({ icon, name, note, tone, label, live, onClick }: { icon: IconName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
+function ServiceTile({ icon, name, note, tone, label, live, onClick }: { icon: IconName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
-    <button type="button" className={`service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
-      <span className="service__icon" aria-hidden="true"><Icon name={icon} size={18} /></span><span className="service__arrow" aria-hidden="true">›</span>
+    <button type="button" className={`tile service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
+      <span className="service__top"><span className="service__icon" aria-hidden="true"><Icon name={icon} size={17} /></span><span className="service__arrow" aria-hidden="true"><Icon name="up" size={15} /></span></span>
       <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
-      <Badge tone={tone}>{label}</Badge>
+      <Badge tone={tone} pulse={live}>{label}</Badge>
     </button>
   );
 }

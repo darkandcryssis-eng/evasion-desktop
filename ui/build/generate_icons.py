@@ -1,36 +1,49 @@
-"""Rebuild the cat identity with Pillow: python ui/build/generate_icons.py."""
+"""Rebuild the ring identity with Pillow: python ui/build/generate_icons.py."""
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 SIZES = [16, 20, 24, 28, 32, 40, 48, 64, 128, 256]
+INK, CORE, HALO = (241, 239, 255), (124, 108, 255), (84, 66, 255)
+
+
+def ring_layer(canvas, radius, width, colour):
+    layer = Image.new("RGB", (canvas, canvas))
+    c = canvas / 2
+    ImageDraw.Draw(layer).ellipse((c - radius, c - radius, c + radius, c + radius), outline=colour, width=max(1, round(width)))
+    return layer
 
 
 def icon(size):
-    scale = size * 4 / 512
-    image = Image.new("RGBA", (size * 4, size * 4))
-    draw = ImageDraw.Draw(image)
-    box = lambda values: tuple(round(v * scale) for v in values)
-    draw.rounded_rectangle(box((12, 12, 500, 500)), radius=round(116 * scale), fill="#26262a")
-    points = [(110, 270), (110, 120), (215, 183)]
+    """A luminous ring with its centre dot on a black tile; small sizes get a heavier stroke."""
+    scale = 4 if size >= 64 else 8
+    canvas = size * scale
+    small = size <= 32
+    radius = canvas * (0.3 if small else 0.27)
+    stroke = canvas * (0.075 if small else 0.027)
+    dot = canvas * (0.08 if small else 0.044)
+    power = 0.5 if small else 0.8
+    c = canvas / 2
 
-    def curve(a, b, c, d):
-        for step in range(1, 25):
-            t = step / 24
-            points.append(tuple((1-t)**3*a[i] + 3*(1-t)**2*t*b[i] + 3*(1-t)*t*t*c[i] + t**3*d[i] for i in (0, 1)))
+    art = Image.new("RGB", (canvas, canvas), (4, 4, 6))
+    wash = Image.new("RGB", (canvas, canvas))
+    ImageDraw.Draw(wash).ellipse((c - radius * 1.25, c - radius * 1.25, c + radius * 1.25, c + radius * 1.25), fill=(20, 13, 84) if not small else (0, 0, 0))
+    art = ImageChops.screen(art, wash.filter(ImageFilter.GaussianBlur(canvas * 0.12)))
+    ImageDraw.Draw(art).ellipse((c - radius, c - radius, c + radius, c + radius), fill=(13, 13, 20))
+    for tint, grow, blur in ((HALO, 2.6, 0.05), (CORE, 1.5, 0.016)):
+        colour = tuple(round(v * power) for v in tint)
+        glow = ring_layer(canvas, radius + stroke * (grow - 1) / 2, stroke * grow, colour)
+        ImageDraw.Draw(glow).ellipse((c - dot * 1.5, c - dot * 1.5, c + dot * 1.5, c + dot * 1.5), fill=colour)
+        art = ImageChops.screen(art, glow.filter(ImageFilter.GaussianBlur(canvas * blur)))
+    draw = ImageDraw.Draw(art)
+    draw.ellipse((c - radius, c - radius, c + radius, c + radius), outline=INK, width=max(1, round(stroke)))
+    draw.ellipse((c - dot, c - dot, c + dot, c + dot), fill=(255, 255, 255))
 
-    curve((215, 183), (242, 172), (270, 172), (297, 183))
-    points += [(402, 120), (402, 270)]
-    curve((402, 270), (402, 349), (342, 384), (256, 384))
-    curve((256, 384), (170, 384), (110, 349), (110, 270))
-    stroke = max(round(1.35 * 4), round(18 * scale))
-    draw.line([box(p) for p in points], fill="#eeeef0", width=stroke, joint="curve")
-    eye = max(9 * scale, 2.3)
-    for x in (201, 311):
-        x, y = x * scale, 266 * scale
-        draw.ellipse((x-eye, y-eye, x+eye, y+eye), fill="#eeeef0")
-    draw.line([box((241, 314)), box((256, 326)), box((271, 314))], fill="#eeeef0", width=max(4, round(12 * scale)), joint="curve")
-    return image.resize((size, size), Image.Resampling.LANCZOS)
+    mask = Image.new("L", (canvas, canvas))
+    inset = canvas * 0.025
+    ImageDraw.Draw(mask).rounded_rectangle((inset, inset, canvas - inset, canvas - inset), radius=canvas * 0.235, fill=255)
+    art.putalpha(mask)
+    return art.resize((size, size), Image.Resampling.LANCZOS)
 
 
 if __name__ == "__main__":
