@@ -3,6 +3,9 @@
 package main
 
 import (
+	_ "embed"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 
@@ -13,6 +16,9 @@ const (
 	toastAppID = "Evasion"
 	toastGUID  = "{682E81F5-F19E-47D0-BCBB-F38B65B0146D}"
 )
+
+//go:embed build/appicon.png
+var toastIcon []byte
 
 var (
 	toastSetup sync.Once
@@ -29,7 +35,13 @@ func (a *App) notifyUpdate(latest string) {
 			runtime.LockOSThread()
 			// ActivationExe не задаём: закрытое приложение Windows запустить
 			// не сможет, ему нужны права администратора.
-			_ = toast.SetAppData(toast.AppData{AppID: toastAppID, GUID: toastGUID})
+			data := toast.AppData{AppID: toastAppID, GUID: toastGUID}
+			// Значок Windows берёт только из файла.
+			icon := filepath.Join(dataDir(), "icon.png")
+			if os.MkdirAll(dataDir(), 0o755) == nil && os.WriteFile(icon, toastIcon, 0o644) == nil {
+				data.IconPath = icon
+			}
+			_ = toast.SetAppData(data)
 			toast.SetActivationCallback(func(string, []toast.UserData) { a.showWindow() })
 			for v := range toastQueue {
 				a.pushUpdateToast(v)
