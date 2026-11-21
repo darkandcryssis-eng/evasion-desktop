@@ -486,11 +486,13 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 			}
 			acted++
 			if acted == 1 || time.Since(lastReport) >= voiceReportEvery {
-				logger.Info("десинк голоса применён (Discord IP discovery)",
+				logger.Info("десинк голоса применён (Discord IP discovery / STUN)",
 					"применено", acted, "датаграмм_udp", dgrams)
 				lastReport = time.Now()
 			}
 			if ctx.Err() != nil {
+				logger.Info("десинк голоса остановлен",
+					"применено", acted, "датаграмм_udp", dgrams)
 				return
 			}
 			continue
@@ -508,6 +510,8 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 			lastReport = time.Now()
 		}
 		if ctx.Err() != nil {
+			logger.Info("десинк голоса остановлен",
+				"применено", acted, "датаграмм_udp", dgrams)
 			return
 		}
 	}
