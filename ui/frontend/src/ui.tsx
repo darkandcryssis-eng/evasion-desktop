@@ -1,0 +1,267 @@
+// Базовые элементы интерфейса «Mist»: иконки, стекло, переключатели, диалоги.
+// Без внешних библиотек — только React.
+import { Component, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+
+/* ───────────── Иконки (24×24, обводка) ───────────── */
+const paths: Record<string, string> = {
+  home: "M4 11.5 12 4l8 7.5M6.5 10v9.5h11V10M10 19.5v-5h4v5",
+  layers: "m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5",
+  game: "M7 8h10a5 5 0 0 1 4.9 6l-.6 3a2.6 2.6 0 0 1-4.6 1L15 16H9l-1.7 2a2.6 2.6 0 0 1-4.6-1l-.6-3A5 5 0 0 1 7 8Zm0 3v3m-1.5-1.5h3M15.5 11.5h.01M18 13.5h.01",
+  send: "M21 3 10.5 13.5M21 3l-6.5 18-4-7.5L3 9.5 21 3Z",
+  pulse: "M3 12h4l2.5-7 5 14 2.5-7h4",
+  settings: "M4 7h9m5 0h2M4 17h3m5 0h8M15.5 4.500v5M9.5 14.500v5",
+  power: "M12 3v9m5.7-6.200a8 8 0 1 1-11.4 0",
+  refresh: "M20 5v5h-5M4 19v-5h5m10.5-2A7.5 7.5 0 0 0 6.3 6.800L4 9m16 6-2.3 2.200A7.5 7.5 0 0 1 4.5 12",
+  chevron: "m6 9 6 6 6-6",
+  copy: "M9 9h10v11H9zM5 15V4h10",
+  external: "M14 4h6v6m0-6L11 13M18 14v6H4V6h6",
+  folder: "M3 7h6l2 2.500h10V19H3z",
+  trash: "M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13",
+  plus: "M12 5v14M5 12h14",
+  shield: "M12 3 4.5 6v5.500c0 4.5 3 8 7.5 9.5 4.5-1.5 7.5-5 7.5-9.500V6L12 3Zm-3 9 2.2 2.200L15.2 10",
+  alert: "M12 4 2.5 20h19L12 4Zm0 6v5m0 2.800v.01",
+  download: "M12 4v11m-4.5-4.500L12 15l4.5-4.500M5 19.500h14",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm9 3-4-4",
+  eye: "M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Zm9.5 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+  x: "M6 6l12 12M18 6 6 18",
+  down: "M5 19 19 5M5 9v10h10",
+  up: "M5 19 19 5M9 5h10v10",
+  tray: "M4 13v6h16v-6M12 4v10m-4-4 4 4 4-4",
+  info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-10v6m0-9.200v.01",
+  play: "M8 5.500v13l10-6.5-10-6.500Z",
+  bolt: "M13 3 5 13.500h6L10 21l8.5-11H12.500L13 3Z",
+  route: "M6 19a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Zm12-9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM8.5 16.500H14a3.5 3.5 0 0 0 0-7h-4a3.5 3.5 0 0 1 0-7",
+};
+
+export type IconName = keyof typeof paths;
+
+export function Icon({ name, size = 18, stroke = 1.6, className }: { name: IconName; size?: number; stroke?: number; className?: string }) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={paths[name]} />
+    </svg>
+  );
+}
+
+/* ───────────── SVG-фильтры: жидкое стекло и «гу» ───────────── */
+// lg-* — преломление фона по краю элемента (работает в Chromium/WebView2 через
+// backdrop-filter:url()). goo — слияние капель для морфинга кнопок.
+export function FilterDefs() {
+  return (
+    <svg className="fx-defs" width="0" height="0" aria-hidden="true" focusable="false">
+      <defs>
+        <filter id="goo" x="-20%" y="-60%" width="140%" height="220%" colorInterpolationFilters="sRGB">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="b" />
+          <feColorMatrix in="b" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -9" result="g" />
+          <feComposite in="SourceGraphic" in2="g" operator="atop" />
+        </filter>
+        <filter id="lg" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.008 0.012" numOctaves="2" seed="7" result="n" />
+          <feGaussianBlur in="n" stdDeviation="2" result="nb" />
+          <feDisplacementMap in="SourceGraphic" in2="nb" scale="28" xChannelSelector="R" yChannelSelector="G" result="d" />
+          <feGaussianBlur in="d" stdDeviation="5" />
+        </filter>
+      </defs>
+    </svg>
+  );
+}
+
+/* ───────────── Примитивы ───────────── */
+export type Tone = "neutral" | "accent" | "success" | "warning";
+
+export function Badge({ tone = "neutral", children, pulse }: { tone?: Tone; children: ReactNode; pulse?: boolean }) {
+  return <span className={`badge badge--${tone}${pulse ? " badge--pulse" : ""}`} role="status"><i />{children}</span>;
+}
+
+export function Glass({ className = "", children, as: Tag = "section", style, ...rest }: { className?: string; children: ReactNode; as?: "section" | "article" | "div" | "aside"; style?: CSSProperties } & Record<string, unknown>) {
+  return <Tag className={`glass ${className}`} style={style} {...rest}>{children}</Tag>;
+}
+
+export function Toggle({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} className={`toggle${checked ? " toggle--on" : ""}`} onClick={() => onChange(!checked)}>
+      <span className="toggle__drop" />
+    </button>
+  );
+}
+
+export function Button({ children, icon, kind = "soft", ...rest }: { children?: ReactNode; icon?: IconName; kind?: "soft" | "solid" | "ghost" | "danger" } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button type="button" {...rest} className={`btn btn--${kind} ${rest.className ?? ""}`}>
+      {icon && <Icon name={icon} size={15} />}{children && <span>{children}</span>}
+    </button>
+  );
+}
+
+// Сегментированный выбор с «каплей», переезжающей между вариантами.
+export function Segmented<T extends string>({ value, options, onChange, label, disabled }: { value: T; options: { id: T; label: string; hint?: string }[]; onChange: (v: T) => void; label: string; disabled?: boolean }) {
+  const root = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = root.current?.querySelector<HTMLButtonElement>(`[data-id="${value}"]`);
+      if (el) setBox({ left: el.offsetLeft, width: el.offsetWidth });
+    };
+    measure();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    if (ro && root.current) ro.observe(root.current);
+    return () => ro?.disconnect();
+  }, [value, options.length]);
+  return (
+    <div className="segmented" role="radiogroup" aria-label={label} ref={root} data-disabled={disabled || undefined}>
+      {box && <span className="segmented__drop" style={{ transform: `translateX(${box.left}px)`, width: box.width }} />}
+      {options.map((o) => (
+        <button key={o.id} type="button" role="radio" data-id={o.id} aria-checked={o.id === value} title={o.hint} disabled={disabled} onClick={() => onChange(o.id)}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// Плавное раскрытие по высоте (grid 0fr → 1fr).
+export function Collapse({ open, children }: { open: boolean; children: ReactNode }) {
+  return <div className={`collapse${open ? " collapse--open" : ""}`} aria-hidden={!open}><div className="collapse__inner">{children}</div></div>;
+}
+
+export function Disclosure({ icon, title, note, children, defaultOpen = false, className = "" }: { icon: IconName; title: string; note?: ReactNode; children: ReactNode; defaultOpen?: boolean; className?: string }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const id = useId();
+  return (
+    <Glass className={`disclosure ${className}${open ? " disclosure--open" : ""}`}>
+      <button type="button" className="disclosure__head" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
+        <span className="disclosure__icon"><Icon name={icon} /></span>
+        <span className="disclosure__text"><strong>{title}</strong>{note && <small>{note}</small>}</span>
+        <Icon name="chevron" size={15} className="disclosure__chev" />
+      </button>
+      <div id={id}><Collapse open={open}><div className="disclosure__body">{children}</div></Collapse></div>
+    </Glass>
+  );
+}
+
+export function Row({ title, note, children }: { title: ReactNode; note?: ReactNode; children?: ReactNode }) {
+  return <div className="row"><div className="row__text"><strong>{title}</strong>{note && <small>{note}</small>}</div>{children && <div className="row__side">{children}</div>}</div>;
+}
+
+export function Note({ children, tone, icon }: { children: ReactNode; tone?: "warn"; icon?: IconName }) {
+  return <p className={`note${tone ? ` note--${tone}` : ""}`} role={tone ? "alert" : undefined}>{icon && <Icon name={icon} size={14} />}<span>{children}</span></p>;
+}
+
+export function PageHead({ kicker, title, note, action }: { kicker?: string; title: string; note?: string; action?: ReactNode }) {
+  return (
+    <header className="pagehead">
+      <div>{kicker && <span className="kicker">{kicker}</span>}<h1>{title}</h1>{note && <p>{note}</p>}</div>
+      {action && <div className="pagehead__action">{action}</div>}
+    </header>
+  );
+}
+
+// Число, которое «докатывается» до нового значения.
+export function Ticker({ value, format }: { value: number; format?: (n: number) => string }) {
+  const [shown, setShown] = useState(value);
+  const from = useRef(value);
+  useEffect(() => {
+    const start = performance.now(), a = from.current, b = value;
+    if (a === b || document.documentElement.dataset.motion === "reduced") { from.current = b; setShown(b); return; }
+    let raf = 0;
+    const step = (now: number) => {
+      const p = Math.min(1, (now - start) / 520), e = 1 - Math.pow(1 - p, 3);
+      const v = a + (b - a) * e;
+      from.current = v; setShown(v);
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [value]);
+  const n = Math.round(shown);
+  return <>{format ? format(n) : n.toLocaleString("ru")}</>;
+}
+
+/* ───────────── Диалог ───────────── */
+export function Dialog({ open, onClose, title, text, icon, children }: { open: boolean; onClose: () => void; title: string; text?: string; icon: IconName; children: ReactNode }) {
+  const root = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  const id = useId();
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const buttons = () => Array.from(root.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? []);
+    (root.current?.querySelector<HTMLButtonElement>("[data-autofocus]") ?? buttons()[1])?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close.current();
+      if (e.key !== "Tab") return;
+      const list = buttons();
+      if (!list.length) return;
+      if (e.shiftKey && document.activeElement === list[0]) { e.preventDefault(); list[list.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === list[list.length - 1]) { e.preventDefault(); list[0].focus(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); previous?.focus(); };
+  }, [open]);
+  if (!open) return null;
+  return (
+    <div className="scrim" onMouseDown={onClose}>
+      <section ref={root} className="dialog glass glass--lens" role="dialog" aria-modal="true" aria-labelledby={id} onMouseDown={(e) => e.stopPropagation()}>
+        <button type="button" className="dialog__x" aria-label="Отмена" onClick={onClose}><Icon name="x" size={14} /></button>
+        <span className="dialog__mark"><Icon name={icon} size={20} /></span>
+        <h2 id={id}>{title}</h2>
+        {text && <p>{text}</p>}
+        <div className="dialog__actions">{children}</div>
+      </section>
+    </div>
+  );
+}
+
+/* ───────────── Журнал ───────────── */
+export type FeedLine = { at: string; level: string; msg: string; attrs: string };
+
+export function Feed({ logs, limit = 80, empty = "Здесь появятся события" }: { logs: FeedLine[]; limit?: number; empty?: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  const shown = logs.slice(-limit);
+  useEffect(() => { const el = box.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [shown.length, shown[shown.length - 1]?.at]);
+  if (!shown.length) return <p className="feed feed--empty">{empty}</p>;
+  return (
+    <div className="feed" ref={box} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }} tabIndex={0} aria-label="Журнал событий">
+      {shown.map((l, i) => {
+        const t = Date.parse(l.at);
+        const lvl = l.level.toUpperCase();
+        return (
+          <div className={`feed__line feed__line--${lvl === "ERROR" ? "err" : lvl === "WARN" ? "warn" : "info"}`} key={`${l.at}-${i}`} title={l.attrs || undefined}>
+            <time>{Number.isFinite(t) ? new Date(t).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}</time>
+            <span>{l.msg}{l.attrs && <em> {l.attrs}</em>}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function traffic(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 Б";
+  const units = ["Б", "КБ", "МБ", "ГБ"];
+  const index = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / 1024 ** index).toLocaleString("ru", { maximumFractionDigits: index ? 1 : 0 })} ${units[index]}`;
+}
+
+export function fileName(path: string) { return path.split(/[\\/]/).pop() || path; }
+
+/* ───────────── Защита от падения рендера ───────────── */
+// Ошибка в одном разделе не гасит всё окно: показываем карточку и даём повторить.
+export class Boundary extends Component<{ children: ReactNode; resetKey?: string }, { error: string }> {
+  state = { error: "" };
+  static getDerivedStateFromError(e: unknown) { return { error: e instanceof Error ? e.message : String(e) }; }
+  componentDidUpdate(prev: { resetKey?: string }) { if (prev.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: "" }); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="page-body">
+        <section className="glass card">
+          <header className="card-head"><span className="kicker">Раздел не загрузился</span></header>
+          <p className="lead">Что-то пошло не так при отрисовке.</p>
+          <p className="note note--warn"><span className="mono">{this.state.error}</span></p>
+          <div className="inline"><button type="button" className="btn btn--solid" onClick={() => this.setState({ error: "" })}><span>Повторить</span></button></div>
+        </section>
+      </div>
+    );
+  }
+}

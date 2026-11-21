@@ -1,0 +1,36 @@
+# Сборочные артефакты
+/evasion
+/evasion.exe
+/bin/
+/dist/
+
+# Профили и покрытие
+*.out
+*.prof
+*.test
+coverage.*
+
+# Данные фаззинга (корпус хранится отдельно, падения не коммитим)
+/internal/**/testdata/fuzz/
+
+# Локальное окружение
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+
+# Среды разработки
+.idea/
+.vscode/
+*~
+
+# Отчёты прогонов скрипта проверок
+/reports/
+
+# Рантайм-состояние движка (файл status для команд status/portfolio) — не код
+/state/
+/status.json
+
+# Локальная копия конфига: эталон — examples/config.json
+/cfg.json
+.tools/

@@ -1,0 +1,29 @@
+{
+  "groups": {
+    "video": ["youtube.com", "googlevideo.com", "ytimg.com"],
+    "discord": ["discord.com", "discord.gg", "discordapp.com", "discordapp.net"]
+  },
+  "vantage": { "operator": "unknown", "region": "RU-SPE", "access": "wired" },
+  "control_targets": ["example.com", "ya.ru"],
+  "strategy": {
+    "rules": [
+      {
+        "direction": "outbound",
+        "trigger": { "match": "client_hello" },
+        "action": {
+          "kind": "duplicate",
+          "left": {
+            "kind": "tamper",
+            "params": { "field": "ipv4_ttl", "mode": "replace", "value": 6 },
+            "left": {
+              "kind": "tamper",
+              "params": { "field": "payload", "mode": "replace", "length": 200 },
+              "left": { "kind": "send" }
+            }
+          },
+          "right": { "kind": "send" }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "groups": {
+    "discord_cdn": ["cdn.discordapp.com", "discordapp.net"]
+  },
+  "vantage": { "operator": "unknown", "region": "RU-SPE", "access": "wired" },
+  "control_targets": ["example.com", "ya.ru"],
+  "strategy": {
+    "rules": [
+      {
+        "direction": "outbound",
+        "trigger": { "match": "client_hello" },
+        "action": {
+          "kind": "tcp_overlap",
+          "params": { "preset": "tls_cover_681_yandex" }
+        }
+      }
+    ]
+  }
+}

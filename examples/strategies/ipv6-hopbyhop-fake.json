@@ -1,0 +1,24 @@
+{
+  "groups": {
+    "video": ["youtube.com", "googlevideo.com", "ytimg.com"],
+    "discord": ["discord.com", "discord.gg", "discordapp.com", "discordapp.net"]
+  },
+  "vantage": { "operator": "unknown", "region": "RU-SPE", "access": "wired" },
+  "control_targets": ["example.com", "ya.ru"],
+  "strategy": {
+    "rules": [
+      {
+        "direction": "outbound",
+        "trigger": { "match": "client_hello" },
+        "action": {
+          "kind": "duplicate",
+          "left": {
+            "kind": "ipv6_ext",
+            "left": { "kind": "send" }
+          },
+          "right": { "kind": "send" }
+        }
+      }
+    ]
+  }
+}

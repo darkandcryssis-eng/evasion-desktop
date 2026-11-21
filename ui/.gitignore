@@ -1,0 +1,27 @@
+# Готовый бинарник сборки
+build/bin/
+frontend/dist/
+
+# Зависимости и кэш фронтенда
+frontend/node_modules/
+frontend/.vite/
+
+# Локальные настройки
+.env
+.env.*
+
+# Локальный бинарник проверки Go
+/evasion-ui
+
+# Файлы, которые Wails генерирует при сборке
+/frontend/wailsjs/
+/frontend/package.json.md5
+
+# Встроенный пакет (движок + WinDivert + конфиг) собирает build-and-run.bat.
+# В git — только payload/README.md; сами артефакты не коммитим.
+/payload/*
+!/payload/README.md
+
+# build/appicon.png — исходная иконка приложения (в git). icon.ico Wails
+# генерирует из неё при сборке — его не коммитим.
+/build/windows/icon.ico
