@@ -22,8 +22,11 @@ import (
 // Локальная сборка остаётся "dev" и обновлений не ищет.
 var appVersion = "dev"
 
+// updateReleases — страница релизов; проверочная сборка может подменить её
+// через -X main.updateReleases=... и обновляться с тестового сервера.
+var updateReleases = "https://github.com/darkandcryssis-eng/evasion-desktop/releases"
+
 const (
-	updateReleases  = "https://github.com/darkandcryssis-eng/evasion-desktop/releases"
 	updateAsset     = "Evasion.exe"
 	updateInterval  = 6 * time.Hour
 	updatedFromFlag = "--updated-from="
