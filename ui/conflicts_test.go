@@ -25,6 +25,7 @@ func TestConflictDetection(t *testing.T) {
 		{"zapret_discord", `"C:\Program Files\zapret\bin\winws.exe" --wf-tcp=443`, true},
 		{"custom", `C:\tools\winws.exe --wf-tcp=443 --dpi-desync=fake`, true},
 		{"zapret_user", `C:\Users\alex.exeter\zapret\winws.exe --wf-tcp=443`, true},
+		{"tabbed", "C:\\zapret\\winws.exe\t--wf-tcp=443", true},
 		{"other", `C:\Users\alex.exeter\app\tool.exe winws.exe`, false},
 		{"WinDivert", `\??\C:\zapret\bin\WinDivert64.sys`, false},
 		{"BFE", `C:\Windows\system32\svchost.exe -k LocalServiceNoNetworkFirewall -p`, false},

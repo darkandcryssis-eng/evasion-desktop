@@ -68,7 +68,7 @@ func servicePath(imagePath string) string {
 			break
 		}
 		end := from + i + 4
-		if end <= len(lower) && (lower[from+i:end] == ".exe" || lower[from+i:end] == ".sys") && (end == len(lower) || lower[end] == ' ') {
+		if end <= len(lower) && (lower[from+i:end] == ".exe" || lower[from+i:end] == ".sys") && (end == len(lower) || lower[end] == ' ' || lower[end] == '\t') {
 			return s[:end]
 		}
 		from += i + 1
