@@ -38,7 +38,12 @@ type Conn struct {
 	// поток уже необратимо начат. Тот же смысл, что socketexec.Wrote.
 	sent         bool
 	segmentLimit int
+	tailAligned  bool
 }
+
+// SetSegmentTailAligned makes the last piece of a split payload full-sized
+// (the remainder goes first) instead of the first one.
+func (c *Conn) SetSegmentTailAligned(on bool) { c.tailAligned = on }
 
 // SetSegmentLimit bounds payloads when replaying a reassembled ClientHello.
 // Zero preserves the original emission behavior.
@@ -151,8 +156,15 @@ func (c *Conn) emit(payload []byte, streamOffset int, edits []strategy.TamperPar
 	if c.segmentLimit <= 0 || len(payload) <= c.segmentLimit {
 		return c.emitSegment(payload, streamOffset, edits, insertMD5, insertIPv6Ext)
 	}
+	first := c.segmentLimit
+	if rem := len(payload) % c.segmentLimit; c.tailAligned && rem != 0 {
+		first = rem
+	}
 	for start := 0; start < len(payload); {
 		end := min(start+c.segmentLimit, len(payload))
+		if start == 0 {
+			end = first
+		}
 		if err := c.emitSegment(payload[start:end], streamOffset+start, edits, insertMD5, insertIPv6Ext); err != nil {
 			return err
 		}
