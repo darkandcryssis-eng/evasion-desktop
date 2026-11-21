@@ -64,7 +64,9 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   const running = phase === "running";
   const active = running || phase === "starting" || phase === "stopping";
   const transit = phase === "starting" || phase === "stopping";
-  const ready = !!state && state.elevated && state.payload.engine && state.payload.windivert && (state.payload.config || state.userConfig);
+  // WinDivert may be installed in runtime even when it isn't embedded.
+  // The backend validates installed driver files when starting the engine.
+  const ready = !!state && state.elevated && state.payload.engine && (state.payload.config || state.userConfig);
   const elapsed = useElapsed(state?.engine.startedAt, running);
   const tuning = usePoll<NetworkTuningView>(() => api.getNetworkTuning(options), 3000).value;
 
@@ -101,7 +103,6 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
       <div className="connection-notices">
         {state && !state.elevated && <Note tone="warn" icon="alert">Для подключения запустите Evasion от имени администратора.</Note>}
         {state && !state.payload.engine && <Note tone="warn" icon="alert">Движок не встроен в эту сборку. Пересоберите приложение.</Note>}
-        {state && !state.payload.windivert && <Note tone="warn" icon="alert">Драйвер WinDivert недоступен. Откройте диагностику.</Note>}
         {state && !state.payload.config && !state.userConfig && <Note tone="warn" icon="alert">Не найден конфиг подключения. Откройте диагностику.</Note>}
         {error && <Note tone="warn" icon="alert">{error}</Note>}
       </div>

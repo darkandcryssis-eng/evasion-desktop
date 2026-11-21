@@ -63,7 +63,7 @@ export default function App() {
       const state = engine.state, phase = state?.engine.phase;
       if (engine.busy || !phase || phase === "starting" || phase === "stopping") return;
       if (phase === "running") void engine.stop();
-      else if (state?.elevated && state.payload.engine && state.payload.windivert && (state.payload.config || state.userConfig)) requestConnect(loadOptions());
+      else if (state?.elevated && state.payload.engine && (state.payload.config || state.userConfig)) requestConnect(loadOptions());
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
