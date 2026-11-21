@@ -143,6 +143,7 @@ func runQUICBlock(ctx context.Context, conn quicConn, domainSet *config.DomainSe
 	var shaped74Loose, shaped74Strict int // форма Discord IP discovery на udp:443: мягко (len==74) и строго (IsIPDiscoveryRequest)
 	var strictEndpoints []string          // первые N dstIP:port строгих — глазами видно, идёт ли к серверу Discord
 	var lastReport time.Time
+	flows := newQUICFlows()
 	for {
 		pkt, err := conn.Recv()
 		if err != nil {
@@ -190,7 +191,7 @@ func runQUICBlock(ctx context.Context, conn quicConn, domainSet *config.DomainSe
 		var selectedSNI string
 		var selectedScope bool
 		if len(youtubeMode) > 0 {
-			selectedSNI, selectedScope = quicShouldBlock(pkt, domainSet, reasm, time.Now())
+			selectedSNI, selectedScope = flows.shouldBlock(pkt, domainSet, reasm, time.Now())
 			if selectedScope && youtubetune.IsYouTube(selectedSNI) {
 				packetMode = youtubeMode[0]
 			}
@@ -235,7 +236,7 @@ func runQUICBlock(ctx context.Context, conn quicConn, domainSet *config.DomainSe
 		// Режим block.
 		sni, block := selectedSNI, selectedScope
 		if len(youtubeMode) == 0 {
-			sni, block = quicShouldBlock(pkt, domainSet, reasm, time.Now())
+			sni, block = flows.shouldBlock(pkt, domainSet, reasm, time.Now())
 		}
 		if block {
 			acted++
@@ -356,3 +357,109 @@ func quicShouldBlock(pkt capture.Packet, domainSet *config.DomainSet, reasm *qui
 	}
 	return sni, true
 }
+
+// Параметры таблицы потоков блокировки QUIC.
+const (
+	// quicFlowTTL — сколько поток остаётся заблокированным без новых пакетов.
+	quicFlowTTL = 60 * time.Second
+	// quicFlowMax — предел числа потоков; при переполнении новые не запоминаются.
+	quicFlowMax = 4096
+)
+
+// quicFlows помнит UDP-потоки (адреса и порты), чей ClientHello назвал домен
+// радиуса, и роняет все их последующие датаграммы.
+//
+// Одного вердикта по DCID мало. Первый Initial многопакетного ClientHello
+// уходит в сеть до того, как имя собрано; сервер подтверждает его и сообщает
+// свой connection ID, после чего клиент повторяет сброшенную часть уже с новым
+// DCID. Ключи Initial при этом остаются от исходного DCID, сборщик такой пакет
+// расшифровать не может и пропускает его — рукопожатие завершается, и QUIC к
+// радиусной цели идёт мимо блокировки.
+type quicFlows struct {
+	m         map[string]quicFlow
+	lastSweep time.Time
+}
+
+type quicFlow struct {
+	sni  string
+	seen time.Time
+}
+
+func newQUICFlows() *quicFlows { return &quicFlows{m: make(map[string]quicFlow)} }
+
+// shouldBlock — quicShouldBlock с памятью по потоку: датаграмма, имя которой
+// не достать, получает вердикт своего потока. Собранное имя вне радиуса
+// вердикт снимает (порт мог быть переиспользован другим соединением).
+func (f *quicFlows) shouldBlock(pkt capture.Packet, domainSet *config.DomainSet, reasm *quic.Reassembler, now time.Time) (string, bool) {
+	if pkt.Dir != core.DirectionOutbound {
+		return "", false
+	}
+	d, err := packet.Dissect(pkt.Data)
+	if err != nil || d.Protocol != packet.ProtoUDP {
+		return "", false
+	}
+	payload, ok := d.Payload(pkt.Data)
+	if !ok {
+		return "", false
+	}
+	key, keyed := quicFlowKey(pkt.Data, d)
+	f.sweep(now)
+	if sni, ok := reasm.Offer(payload, now); ok {
+		if !domainSet.Matches("", sni) {
+			delete(f.m, key)
+			return "", false
+		}
+		if keyed {
+			if _, known := f.m[key]; known || len(f.m) < quicFlowMax {
+				f.m[key] = quicFlow{sni: sni, seen: now}
+			}
+		}
+		return sni, true
+	}
+	if !keyed {
+		return "", false
+	}
+	fl, known := f.m[key]
+	if !known {
+		return "", false
+	}
+	fl.seen = now
+	f.m[key] = fl
+	return fl.sni, true
+}
+
+func (f *quicFlows) sweep(now time.Time) {
+	if now.Sub(f.lastSweep) < time.Second {
+		return
+	}
+	f.lastSweep = now
+	for k, fl := range f.m {
+		if now.Sub(fl.seen) > quicFlowTTL {
+			delete(f.m, k)
+		}
+	}
+}
+
+// quicFlowKey — ключ UDP-потока: адреса и порты обеих сторон.
+func quicFlowKey(buf []byte, d packet.Dissection) (string, bool) {
+	u, ok := d.UDP(buf)
+	if !ok {
+		return "", false
+	}
+	var src, dst []byte
+	if h, ok := d.IPv4(buf); ok {
+		src, dst = h.Src(), h.Dst()
+	} else if h, ok := d.IPv6(buf); ok {
+		src, dst = h.Src(), h.Dst()
+	} else {
+		return "", false
+	}
+	key := make([]byte, 0, len(src)+len(dst)+udpHeaderPorts)
+	key = append(key, src...)
+	key = append(key, dst...)
+	key = append(key, u[:udpHeaderPorts]...)
+	return string(key), true
+}
+
+// udpHeaderPorts — длина пары портов в начале заголовка UDP.
+const udpHeaderPorts = 4
