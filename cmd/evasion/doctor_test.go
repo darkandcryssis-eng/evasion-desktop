@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/fitting-1c/evasion/internal/control"
 	"github.com/fitting-1c/evasion/internal/core"
+	"github.com/fitting-1c/evasion/internal/enginelock"
 	"github.com/fitting-1c/evasion/internal/interception"
 	"github.com/fitting-1c/evasion/internal/quicwatch"
 )
@@ -384,4 +386,30 @@ func findCheck(t *testing.T, checks []check, id string) check {
 	}
 	t.Fatalf("проверка %q не найдена", id)
 	return check{}
+}
+
+// TestEngineSectionFromFixedMode — фиксированный режим не пишет status.json:
+// живой держатель engine.lock означает «запущен», а не engine_not_running.
+func TestEngineSectionFromFixedMode(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := enginelock.Acquire(enginelock.Options{Path: filepath.Join(dir, "engine.lock"), Filter: "tcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := engineSectionFrom(dir, 12*time.Hour, time.Now())
+	if !es.Running || !es.Fixed || es.State != nil {
+		t.Fatalf("живой замок без status.json: running=%v fixed=%v state=%v", es.Running, es.Fixed, es.State)
+	}
+	if c := engineCheck(es); c.Status != statusOK {
+		t.Errorf("ожидался ok, получено %s %s", c.Status, c.Reason)
+	}
+	var out bytes.Buffer
+	printEngine(&out, es)
+
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if es := engineSectionFrom(dir, 12*time.Hour, time.Now()); es.Running {
+		t.Errorf("после освобождения замка движок не запущен")
+	}
 }

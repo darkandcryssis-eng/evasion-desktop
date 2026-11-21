@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fitting-1c/evasion/internal/control"
+	"github.com/fitting-1c/evasion/internal/enginelock"
 	"github.com/fitting-1c/evasion/internal/interception"
 	"github.com/fitting-1c/evasion/internal/quicwatch"
 	"github.com/fitting-1c/evasion/internal/vantage"
@@ -160,6 +161,9 @@ type engineSection struct {
 	// Running — файл состояния найден и разобран. Ложь означает «не запущен
 	// или другой --state-dir», а не пустоту как данные.
 	Running bool `json:"running"`
+	// Fixed — движок жив по engine.lock, но состояния не ведёт: фиксированный
+	// режим без автопилота. State при этом nil.
+	Fixed bool `json:"fixed,omitempty"`
 	// Err — почему состояние не прочитано, кроме «файла нет». Пусто при «не
 	// запущен»: это полноценный ответ, а не ошибка.
 	Err string `json:"err,omitempty"`
@@ -476,7 +480,12 @@ func engineSectionFrom(stateDir string, staleAfter time.Duration, now time.Time)
 	st, err := readStatusFile(stateDir)
 	if err != nil {
 		if isNotRunning(err) {
-			return es // Running = false, без ошибки: движок просто не запущен.
+			// Файл состояния пишет только автопилот; фиксированный режим виден
+			// лишь по engine.lock.
+			live, _ := enginelock.ListLive(filepath.Join(stateDir, "engine.lock"), nil)
+			es.Running = len(live) > 0
+			es.Fixed = es.Running
+			return es
 		}
 		es.Err = err.Error()
 		return es
@@ -743,6 +752,10 @@ func printEngine(w io.Writer, e engineSection) {
 			return
 		}
 		fmt.Fprintf(w, "  не запущен (или запущен с другим --state-dir)\n")
+		return
+	}
+	if e.Fixed {
+		fmt.Fprintf(w, "  запущен в фиксированном режиме (состояние ведёт только --auto)\n")
 		return
 	}
 	st := e.State
