@@ -52,6 +52,8 @@ func TestNativeVoiceFilterSelectsOnlyDiscovery(t *testing.T) {
 			{"stun-high", 50010, 100, 1, 80, true, false, true, true},
 			{"stun-low", 19300, 20, 1, 0, true, false, true, true},
 			{"stun-foreign-port", 3478, 100, 1, 80, true, false, false, true},
+			{"stun-google", 19302, 100, 1, 80, true, false, false, true},
+			{"discovery-19302", 19302, 74, 1, 70, true, false, true, false},
 			{"stun-incoming", 50010, 100, 1, 80, false, false, false, true},
 			{"stun-response", 50010, 100, 0x0101, 80, true, false, false, true},
 		} {

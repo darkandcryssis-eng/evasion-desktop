@@ -425,7 +425,9 @@ func TestBuildVoiceDecoysOnSTUN(t *testing.T) {
 }
 
 func TestBuildVoiceDecoysSkipsForeignSTUN(t *testing.T) {
-	if _, applied := buildVoiceDecoys(udpSTUNPacket(t, 3478), discordvoice.FoolTTL, 6, 3, voicePayloadNeutral); applied {
-		t.Fatal("STUN вне медиа-портов Discord трогать нельзя")
+	for _, port := range []uint16{3478, 19302} {
+		if _, applied := buildVoiceDecoys(udpSTUNPacket(t, port), discordvoice.FoolTTL, 6, 3, voicePayloadNeutral); applied {
+			t.Fatalf("STUN на порт %d — не Discord, трогать нельзя", port)
+		}
 	}
 }

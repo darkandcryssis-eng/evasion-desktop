@@ -106,11 +106,16 @@ const (
 	// STUN opens the WebRTC media path (screen share). Limited to the Discord
 	// media port ranges so that other applications' STUN is left alone.
 	voiceSTUNMatch  = "(udp.PayloadLength >= 20 and udp.Payload16[0] == 0x0001 and udp.Payload32[1] == 0x2112A442 and " + voiceMediaPorts + ")"
-	voiceMediaPorts = "((udp.DstPort >= 19294 and udp.DstPort <= 19344) or (udp.DstPort >= 50000 and udp.DstPort <= 50100))"
+	voiceMediaPorts = "(((udp.DstPort >= 19294 and udp.DstPort <= 19344) and udp.DstPort != 19302) or (udp.DstPort >= 50000 and udp.DstPort <= 50100))"
 )
 
 // isVoiceMediaPort mirrors voiceMediaPorts.
 func isVoiceMediaPort(port uint16) bool {
+	// 19302 — публичный STUN Google (stun.l.google.com): им пользуются чужие
+	// WebRTC-приложения, его не трогаем.
+	if port == 19302 {
+		return false
+	}
 	return (port >= 19294 && port <= 19344) || (port >= 50000 && port <= 50100)
 }
 
