@@ -21,9 +21,9 @@ const (
 var toastIcon []byte
 
 var (
-	toastSetup sync.Once
+	toastSetup    sync.Once
 	toastIconPath string // задаётся до первого уведомления той же горутиной
-	toastQueue = make(chan string, 4)
+	toastQueue    = make(chan string, 4)
 )
 
 // notifyUpdate показывает уведомление Windows о новой версии; клик по нему
