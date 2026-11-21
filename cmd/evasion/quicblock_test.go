@@ -195,7 +195,7 @@ func TestQUICFlowsBlockAfterDCIDChange(t *testing.T) {
 		t.Fatalf("не удалось разбить Initial: ok=%v частей=%d", ok, len(parts))
 	}
 	ds := domainSetFor(t, "example.com")
-	reasm, flows, now := quic.NewReassembler(), newQUICFlows(), time.Now()
+	reasm, flows, now := quic.NewReassembler(), newQUICFlows(nil), time.Now()
 	out := func(srcPort uint16, payload []byte) capture.Packet {
 		return capture.Packet{Data: udp4From(srcPort, payload), Dir: core.DirectionOutbound}
 	}
@@ -237,7 +237,7 @@ func TestQUICFlowsBlockAfterDCIDChange(t *testing.T) {
 // снимает блокировку — порт мог достаться другому соединению.
 func TestQUICFlowsReleaseOnOtherDomain(t *testing.T) {
 	ds := domainSetFor(t, "example.com")
-	reasm, flows, now := quic.NewReassembler(), newQUICFlows(), time.Now()
+	reasm, flows, now := quic.NewReassembler(), newQUICFlows(nil), time.Now()
 	pkt := func(payload []byte) capture.Packet {
 		return capture.Packet{Data: udp4From(50000, payload), Dir: core.DirectionOutbound}
 	}
@@ -249,5 +249,23 @@ func TestQUICFlowsReleaseOnOtherDomain(t *testing.T) {
 	}
 	if _, block := flows.shouldBlock(pkt([]byte{0x40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}), ds, reasm, now); block {
 		t.Fatal("после чужого ClientHello поток должен быть разблокирован")
+	}
+}
+
+// TestQUICFlowsKnownFlowNoAllocs: вердикт по уже известному потоку — горячий
+// путь (каждая датаграмма установленной сессии) и памяти не выделяет.
+func TestQUICFlowsKnownFlowNoAllocs(t *testing.T) {
+	ds := domainSetFor(t, "example.com")
+	reasm, flows, now := quic.NewReassembler(), newQUICFlows(nil), time.Now()
+	if _, block := flows.shouldBlock(capture.Packet{Data: udp4From(50000, mustHex(t, clientInitialExampleCom)), Dir: core.DirectionOutbound}, ds, reasm, now); !block {
+		t.Fatal("Initial к радиусу должен блокироваться")
+	}
+	short := capture.Packet{Data: udp4From(50000, []byte{0x40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}), Dir: core.DirectionOutbound}
+	if n := testing.AllocsPerRun(100, func() {
+		if _, block := flows.shouldBlock(short, ds, reasm, now); !block {
+			t.Fatal("известный поток должен блокироваться")
+		}
+	}); n != 0 {
+		t.Fatalf("вердикт по известному потоку выделяет память: %v на вызов", n)
 	}
 }

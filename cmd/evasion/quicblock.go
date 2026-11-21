@@ -143,7 +143,7 @@ func runQUICBlock(ctx context.Context, conn quicConn, domainSet *config.DomainSe
 	var shaped74Loose, shaped74Strict int // форма Discord IP discovery на udp:443: мягко (len==74) и строго (IsIPDiscoveryRequest)
 	var strictEndpoints []string          // первые N dstIP:port строгих — глазами видно, идёт ли к серверу Discord
 	var lastReport time.Time
-	flows := newQUICFlows()
+	flows := newQUICFlows(logger)
 	for {
 		pkt, err := conn.Recv()
 		if err != nil {
@@ -376,8 +376,18 @@ const (
 // расшифровать не может и пропускает его — рукопожатие завершается, и QUIC к
 // радиусной цели идёт мимо блокировки.
 type quicFlows struct {
-	m         map[string]quicFlow
+	m         map[quicFlowID]quicFlow
 	lastSweep time.Time
+	logger    *slog.Logger
+	// overflowed — о переполнении уже сообщено (пишем один раз, не на пакет).
+	overflowed bool
+}
+
+// quicFlowID — адреса и порты обеих сторон UDP-потока. Массив фиксированной
+// длины, а не строка: ключ строится на каждой датаграмме без выделения памяти.
+type quicFlowID struct {
+	addrs [32]byte
+	ports [4]byte
 }
 
 type quicFlow struct {
@@ -385,7 +395,9 @@ type quicFlow struct {
 	seen time.Time
 }
 
-func newQUICFlows() *quicFlows { return &quicFlows{m: make(map[string]quicFlow)} }
+func newQUICFlows(logger *slog.Logger) *quicFlows {
+	return &quicFlows{m: make(map[quicFlowID]quicFlow), logger: logger}
+}
 
 // shouldBlock — quicShouldBlock с памятью по потоку: датаграмма, имя которой
 // не достать, получает вердикт своего потока. Собранное имя вне радиуса
@@ -412,6 +424,12 @@ func (f *quicFlows) shouldBlock(pkt capture.Packet, domainSet *config.DomainSet,
 		if keyed {
 			if _, known := f.m[key]; known || len(f.m) < quicFlowMax {
 				f.m[key] = quicFlow{sni: sni, seen: now}
+			} else if !f.overflowed && f.logger != nil {
+				// Деградация в прежнее поведение (вердикт только по собранному
+				// ClientHello), а не слепая блокировка — но не молча (4.4).
+				f.overflowed = true
+				f.logger.Warn("QUIC: таблица заблокированных потоков переполнена — новые потоки блокируются только по собранному ClientHello",
+					"предел", quicFlowMax)
 			}
 		}
 		return sni, true
@@ -441,10 +459,11 @@ func (f *quicFlows) sweep(now time.Time) {
 }
 
 // quicFlowKey — ключ UDP-потока: адреса и порты обеих сторон.
-func quicFlowKey(buf []byte, d packet.Dissection) (string, bool) {
+func quicFlowKey(buf []byte, d packet.Dissection) (quicFlowID, bool) {
+	var key quicFlowID
 	u, ok := d.UDP(buf)
 	if !ok {
-		return "", false
+		return key, false
 	}
 	var src, dst []byte
 	if h, ok := d.IPv4(buf); ok {
@@ -452,14 +471,10 @@ func quicFlowKey(buf []byte, d packet.Dissection) (string, bool) {
 	} else if h, ok := d.IPv6(buf); ok {
 		src, dst = h.Src(), h.Dst()
 	} else {
-		return "", false
+		return key, false
 	}
-	key := make([]byte, 0, len(src)+len(dst)+udpHeaderPorts)
-	key = append(key, src...)
-	key = append(key, dst...)
-	key = append(key, u[:udpHeaderPorts]...)
-	return string(key), true
+	copy(key.addrs[:], src)
+	copy(key.addrs[len(key.addrs)/2:], dst)
+	copy(key.ports[:], u[:len(key.ports)])
+	return key, true
 }
-
-// udpHeaderPorts — длина пары портов в начале заголовка UDP.
-const udpHeaderPorts = 4
