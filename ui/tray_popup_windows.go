@@ -504,8 +504,12 @@ func (p *trayPopup) paintButton(item *trayDrawItem) {
 			label = "Проверить ещё раз"
 		}
 		if p.state.Error != "" && !busy {
-			label = "Повторить проверку"
-			inkColor = c.warning
+			// Error also holds failed connection/Telegram actions, not just diagnostics.
+			// Keep the action honest and show the reason instead of a generic retry label.
+			label = "Проверить связь"
+			p.text(dc, label, p.px(40), p.px(2), w-p.px(52), p.px(17), 1, inkColor, false)
+			p.text(dc, detail, p.px(40), p.px(20), w-p.px(52), p.px(14), 2, c.warning, false)
+			return
 		}
 		p.text(dc, label, p.px(40), p.px(9), w-p.px(52), p.px(20), 1, inkColor, false)
 		return
