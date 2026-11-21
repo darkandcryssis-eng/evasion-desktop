@@ -190,12 +190,21 @@ func (r *router) success(id string, latency time.Duration) {
 }
 
 func (r *router) connect(ctx context.Context, dc int, media bool) (peer, route, time.Duration, error) {
+	return r.connectAvoid(ctx, dc, media, "")
+}
+
+// connectAvoid — connect для страхующей попытки: маршрут avoid ещё ждёт первого
+// ответа, поэтому прогретый пул пропускается (там чаще всего тот же маршрут),
+// а сам avoid исключается из гонки, если есть другие маршруты.
+func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid string) (peer, route, time.Duration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, route{}, 0, err
 	}
 	started := time.Now()
-	if p, c, ok := r.takeWarm(ctx, dc, media); ok {
-		return p, c, time.Since(started), nil
+	if avoid == "" {
+		if p, c, ok := r.takeWarm(ctx, dc, media); ok {
+			return p, c, time.Since(started), nil
+		}
 	}
 	var failures []string
 	candidates := routesFor(dc, media)
@@ -245,6 +254,17 @@ func (r *router) connect(ctx context.Context, dc int, media bool) (peer, route, 
 		}
 		return routeRank(a) > 0 && a.latency < b.latency
 	})
+	if avoid != "" {
+		others := available[:0:0]
+		for _, candidate := range available {
+			if candidate.id != avoid {
+				others = append(others, candidate)
+			}
+		}
+		if len(others) > 0 {
+			available = others
+		}
+	}
 	r.mu.Unlock()
 	type result struct {
 		p       peer

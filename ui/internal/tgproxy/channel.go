@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -76,43 +77,183 @@ func readFirstUpstream(ctx context.Context, upstream peer, timeout time.Duration
 	}
 }
 
+// hedgeDelayFor — через сколько без первого ответа Telegram запускать
+// страхующую попытку по другому маршруту. Раньше «чёрная дыра» держала клиента
+// весь replyTimeout (≥2.5 с) и только потом начинался следующий маршрут.
+func hedgeDelayFor(hint time.Duration) time.Duration {
+	if hint <= 0 {
+		return time.Second
+	}
+	return min(max(3*hint, 500*time.Millisecond), 1500*time.Millisecond)
+}
+
+var errOutrun = errors.New("обогнан страхующим маршрутом: нет первого ответа")
+
+type channelAttempt struct {
+	mu        sync.Mutex
+	candidate route
+	known     bool
+	done      bool
+	started   time.Time
+}
+
+func (a *channelAttempt) route() (route, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.candidate, a.known
+}
+
+// openChannel открывает канал к Telegram. Если выбранный маршрут не прислал
+// первый ответ за hedgeDelayFor, параллельно запускается вторая попытка по
+// другому маршруту; побеждает первый ответивший, проигравший закрывается. В
+// полёте не больше двух попыток, отказ одной сразу заменяется новой.
 func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte) (*relayChannel, error) {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan channelOutcome, 16)
+	routed := make(chan time.Duration, 16)
+	var attempts []*channelAttempt
+	inflight := 0
+	launch := func(avoid string) {
+		a := &channelAttempt{started: time.Now()}
+		attempts = append(attempts, a)
+		inflight++
+		go func() {
+			channel, connectErr, err := s.openAttempt(attemptCtx, h, firstFrame, avoid, a, routed)
+			results <- channelOutcome{attempt: a, channel: channel, err: err, connect: connectErr}
+		}()
+	}
+	pendingRoute := func() string {
+		for _, a := range attempts {
+			if a.done {
+				continue
+			}
+			if c, ok := a.route(); ok {
+				return c.id
+			}
+		}
+		return ""
+	}
+	launch("")
+	hedge := time.NewTimer(hedgeDelayFor(0))
+	defer hedge.Stop()
+	hedged := false
+	var lastErr error
 	for {
-		upstream, candidate, latency, err := s.router.connect(ctx, h.dc, h.media)
-		if err != nil {
-			return nil, err
-		}
-		label := telegramRouteLabel(candidate, h.dc)
-		init, tgEnc, tgDec, err := relayHandshake(h)
-		if err == nil {
-			err = upstream.WritePacket(bytes.NewReader(init), int64(len(init)))
-		}
-		if err == nil {
-			encoded := append([]byte(nil), firstFrame...)
-			tgEnc.XORKeyStream(encoded, encoded)
-			err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded)))
-		}
-		var firstReply []byte
-		if err == nil {
-			firstReply, err = readFirstUpstream(ctx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
-		}
-		if err != nil {
-			_ = upstream.Close()
+		select {
+		case <-ctx.Done():
+			go drainAttempts(results, inflight)
+			return nil, ctx.Err()
+		case hint := <-routed:
+			if !hedged && inflight == 1 {
+				hedge.Reset(hedgeDelayFor(hint))
+			}
+		case <-hedge.C:
+			if !hedged && inflight == 1 {
+				hedged = true
+				launch(pendingRoute())
+			}
+		case o := <-results:
+			inflight--
+			o.attempt.done = true
+			if o.err == nil {
+				cancel()
+				winner := o.channel.route.id
+				for _, a := range attempts {
+					if a.done {
+						continue
+					}
+					if c, ok := a.route(); ok && c.id != winner && a.started.Before(o.attempt.started) {
+						s.router.failure(c.id, protocolProbeError{errOutrun})
+					}
+				}
+				go drainAttempts(results, inflight)
+				s.up.Add(uint64(len(firstFrame)))
+				s.router.success(winner, o.channel.latency)
+				s.router.warm(h.dc, h.media, o.channel.route)
+				s.log("INFO", "Есть обмен с Telegram", o.channel.label)
+				return o.channel, nil
+			}
+			lastErr = o.err
 			if ctx.Err() != nil {
+				go drainAttempts(results, inflight)
 				return nil, ctx.Err()
 			}
-			if !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-				s.router.failure(candidate.id, err)
-			} else {
-				s.router.failure(candidate.id, protocolProbeError{err})
+			if o.connect {
+				if inflight == 0 {
+					return nil, lastErr
+				}
+				continue
 			}
-			s.log("INFO", "Маршрут Telegram не ответил, выбираю другой", label+": "+err.Error())
-			continue
+			launch(pendingRoute())
 		}
-		s.up.Add(uint64(len(firstFrame)))
-		s.router.success(candidate.id, latency)
-		s.router.warm(h.dc, h.media, candidate)
-		s.log("INFO", "Есть обмен с Telegram", label)
-		return &relayChannel{upstream: upstream, route: candidate, latency: latency, encrypt: tgEnc, decrypt: tgDec, firstReply: firstReply, label: label}, nil
 	}
+}
+
+type channelOutcome struct {
+	attempt *channelAttempt
+	channel *relayChannel
+	err     error
+	connect bool
+}
+
+// drainAttempts дожидается попыток, оставшихся в полёте после решения, и
+// закрывает каналы, успевшие открыться впустую.
+func drainAttempts(results <-chan channelOutcome, inflight int) {
+	for range inflight {
+		if o := <-results; o.channel != nil {
+			_ = o.channel.upstream.Close()
+		}
+	}
+}
+
+// openAttempt — одна попытка: маршрут, рукопожатие, первый кадр, первый ответ.
+// connectErr сообщает, что не нашлось маршрута вовсе (повторять бессмысленно).
+func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte, avoid string, a *channelAttempt, routed chan<- time.Duration) (*relayChannel, bool, error) {
+	upstream, candidate, latency, err := s.router.connectAvoid(ctx, h.dc, h.media, avoid)
+	if err != nil {
+		return nil, true, err
+	}
+	a.mu.Lock()
+	a.candidate, a.known = candidate, true
+	a.mu.Unlock()
+	select {
+	case routed <- s.router.latencyHint(candidate.id):
+	default:
+	}
+	// Отмена попытки (победил другой маршрут) закрывает сокет сразу: иначе
+	// проигравший WritePacket, не знающий о контексте, держал бы его до таймаута.
+	stopClose := context.AfterFunc(ctx, func() { _ = upstream.Close() })
+	label := telegramRouteLabel(candidate, h.dc)
+	init, tgEnc, tgDec, err := relayHandshake(h)
+	if err == nil {
+		err = upstream.WritePacket(bytes.NewReader(init), int64(len(init)))
+	}
+	if err == nil {
+		encoded := append([]byte(nil), firstFrame...)
+		tgEnc.XORKeyStream(encoded, encoded)
+		err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded)))
+	}
+	var firstReply []byte
+	if err == nil {
+		firstReply, err = readFirstUpstream(ctx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
+	}
+	if err == nil && !stopClose() {
+		err = ctx.Err()
+	}
+	if err != nil {
+		stopClose()
+		_ = upstream.Close()
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+		if !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+			s.router.failure(candidate.id, err)
+		} else {
+			s.router.failure(candidate.id, protocolProbeError{err})
+		}
+		s.log("INFO", "Маршрут Telegram не ответил, выбираю другой", label+": "+err.Error())
+		return nil, false, err
+	}
+	return &relayChannel{upstream: upstream, route: candidate, latency: latency, encrypt: tgEnc, decrypt: tgDec, firstReply: firstReply, label: label}, false, nil
 }

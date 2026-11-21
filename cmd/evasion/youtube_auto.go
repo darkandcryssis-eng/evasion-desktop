@@ -55,6 +55,11 @@ const (
 	youtubeActivityInterval = 5 * time.Second
 	youtubeActiveInterval   = 10 * time.Second
 	youtubeWarmMaxAge       = 7 * 24 * time.Hour
+	// youtubeScanWorkers — сколько профилей проверяется одновременно при
+	// восстановлении. Пробы разведены по локальным портам (leases), поэтому
+	// параллельность не смешивает профили; 3 вместо 2 сокращает худший перебор
+	// 12 профилей на треть, не создавая шторма соединений к YouTube.
+	youtubeScanWorkers = 3
 )
 
 type youtubeMux struct {
@@ -354,7 +359,7 @@ func (a *youtubeRecovery) candidates(ctx context.Context, old string) <-chan str
 	close(jobs)
 	results := make(chan string)
 	var wg sync.WaitGroup
-	for range 2 {
+	for range youtubeScanWorkers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
