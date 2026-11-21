@@ -49,6 +49,11 @@ func (b *rtcBlocklist) Rebuild(tracker *rtctrack.Tracker, minObserved, maxSucces
 		if stat.SuccessRate() >= maxSuccessPermille {
 			continue
 		}
+		// Статистика переживает перезапуск: без срока давности сервер, однажды
+		// давший сбои, остался бы без десинка навсегда.
+		if time.Since(stat.LastAt) > blocklistMaxAge {
+			continue
+		}
 		nm[pair.SNI] = struct{}{}
 	}
 	b.current.Store(&nm)
@@ -74,6 +79,9 @@ const (
 	// SNI считается плохим. 500‰ (50%): больше половины попыток
 	// провалились → лучше пропускать сырьём, не ждать очередной провал.
 	blocklistMaxSuccess = 500
+	// blocklistMaxAge — сколько держится блок после последнего события по SNI;
+	// затем сервер получает честную попытку десинка заново.
+	blocklistMaxAge = 10 * time.Minute
 )
 
 // startBlocklistRefresher запускает фоновую горутину периодической пересборки

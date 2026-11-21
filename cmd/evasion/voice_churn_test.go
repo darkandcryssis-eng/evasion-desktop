@@ -110,3 +110,40 @@ func TestAnyBlocklistUnion(t *testing.T) {
 		t.Fatal("union не должен блокировать то, что не блокирует ни один источник")
 	}
 }
+
+// TestChurnParallelStreamsNotBlocked — голос, своя демонстрация экрана и два
+// просматриваемых стрима идут на один сервер отдельными соединениями; это не
+// цикл переподключений.
+func TestChurnParallelStreamsNotBlocked(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := newTestChurn(&now)
+	for i := 0; i < 4; i++ {
+		c.Observe(voiceSNI)
+		now = now.Add(5 * time.Second)
+	}
+	if c.Contains(voiceSNI) {
+		t.Fatal("параллельные соединения голоса и демонстрации не должны давать обход")
+	}
+}
+
+// TestChurnBlockNotExtendedByRetries — попытки во время обхода срок не
+// продлевают, а после него счёт идёт с нуля.
+func TestChurnBlockNotExtendedByRetries(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := newTestChurn(&now)
+	for i := 0; i < voiceChurnThreshold; i++ {
+		c.Observe(voiceSNI)
+	}
+	for i := 0; i < 20; i++ {
+		now = now.Add(voiceChurnTTL / 20)
+		c.Observe(voiceSNI)
+	}
+	now = now.Add(time.Second)
+	if c.Contains(voiceSNI) {
+		t.Fatal("повторные попытки не должны продлевать обход")
+	}
+	c.Observe(voiceSNI)
+	if c.Contains(voiceSNI) {
+		t.Fatal("после обхода первая попытка должна идти с десинком")
+	}
+}

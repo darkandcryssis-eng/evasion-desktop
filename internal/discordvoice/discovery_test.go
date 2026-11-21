@@ -77,3 +77,27 @@ func TestRejectsArbitraryUDPOfSameLength(t *testing.T) {
 		t.Fatal("произвольные 74 байта не должны считаться запросом Discord")
 	}
 }
+
+func TestIsSTUNBindingRequest(t *testing.T) {
+	stun := func(kind uint16, attrs int) []byte {
+		b := make([]byte, 20+attrs)
+		binary.BigEndian.PutUint16(b[0:], kind)
+		binary.BigEndian.PutUint16(b[2:], uint16(attrs))
+		binary.BigEndian.PutUint32(b[4:], 0x2112A442)
+		return b
+	}
+	if !IsSTUNBindingRequest(stun(0x0001, 0)) || !IsSTUNBindingRequest(stun(0x0001, 80)) {
+		t.Fatal("запрос STUN Binding не распознан")
+	}
+	noCookie := stun(0x0001, 80)
+	noCookie[4] = 0
+	badLen := stun(0x0001, 80)[:96]
+	for name, p := range map[string][]byte{
+		"ответ": stun(0x0101, 80), "без cookie": noCookie, "длина": badLen,
+		"короткий": stun(0x0001, 0)[:19], "discovery": buildDiscovery(discoveryTypeReq),
+	} {
+		if IsSTUNBindingRequest(p) {
+			t.Fatalf("%s: принят за запрос STUN Binding", name)
+		}
+	}
+}

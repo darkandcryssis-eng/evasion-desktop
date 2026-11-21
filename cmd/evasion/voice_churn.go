@@ -48,16 +48,16 @@ type voiceChurn struct {
 	blockedUntil map[string]time.Time   // SNI → до какого времени обходим
 }
 
-// Пороги. Консервативны: здоровое голосовое подключение — ОДИН ClientHello,
-// держащий соединение весь звонок. Три переподключения к одному и тому же
-// серверу за минуту — это уже цикл (в поле: `4801 Cannot resume` к тому же
-// `c-arnNN-*` раз в ~15-20 сек). Channel-switch сюда не попадает: там каждый
-// заход идёт на СВОЙ сервер (разные SNI), счётчик по одному SNI не растёт.
+// Пороги. Одно имя сервера — это не одно соединение: демонстрация экрана и
+// каждый просматриваемый стрим открывают СВОЙ control-сокет, часто к тому же
+// серверу, что и голос. Голос + своя демонстрация + пара чужих стримов дают
+// четыре ClientHello к одному имени за минуту без единого сбоя, поэтому порог
+// выше этого. Цикл (`4801 Cannot resume` раз в ~15-20 сек) набирает шесть за
+// две минуты.
 const (
-	voiceChurnThreshold = 3
-	voiceChurnWindow    = 60 * time.Second
-	// TTL длиннее окна: пока держим сервер обходимым, Discord успевает уйти на
-	// другой; по истечении — честная попытка заново, не вечный бан.
+	voiceChurnThreshold = 6
+	voiceChurnWindow    = 120 * time.Second
+	// По истечении сервер получает честную попытку заново, не вечный бан.
 	voiceChurnTTL = 90 * time.Second
 )
 
@@ -96,6 +96,17 @@ func (c *voiceChurn) Observe(sni string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Пока сервер обходится, попытки к нему не считаются и срок не продлевают:
+	// иначе повторные попытки пользователя держали бы обход вечно. Когда срок
+	// вышел, счёт начинается с нуля.
+	if until, ok := c.blockedUntil[sni]; ok {
+		if until.After(now) {
+			return
+		}
+		delete(c.blockedUntil, sni)
+		delete(c.seen, sni)
+	}
+
 	// Добавляем текущее наблюдение и отбрасываем вышедшие за окно.
 	times := append(c.seen[sni], now)
 	cutoff := now.Add(-c.window)
@@ -114,16 +125,14 @@ func (c *voiceChurn) Observe(sni string) {
 	if len(kept) < c.threshold {
 		return
 	}
-	// Цикл переподключений. Помечаем сервер обходимым. Лог печатаем только на
-	// ПЕРЕХОДЕ в обходимое состояние (не на каждом ClientHello), чтобы не шуметь.
-	if until, ok := c.blockedUntil[sni]; !ok || !until.After(now) {
-		c.log.Info("голос: сервер дёргается, обхожу автоматически",
-			"sni", sni,
-			"переподключений", len(kept),
-			"за_сек", int(c.window.Seconds()),
-			"обход_сек", int(c.ttl.Seconds()))
-	}
+	// Цикл переподключений: помечаем сервер обходимым.
+	c.log.Info("голос: сервер дёргается, обхожу автоматически",
+		"sni", sni,
+		"переподключений", len(kept),
+		"за_сек", int(c.window.Seconds()),
+		"обход_сек", int(c.ttl.Seconds()))
 	c.blockedUntil[sni] = now.Add(c.ttl)
+	delete(c.seen, sni)
 }
 
 // Contains — hot path intercept.Blocklist. true → движок пропускает SNI сырьём
