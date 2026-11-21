@@ -58,3 +58,31 @@ func IsIPDiscovery(payload []byte) bool {
 	t := binary.BigEndian.Uint16(payload[discoveryTypeOff:])
 	return t == discoveryTypeReq || t == discoveryTypeResp
 }
+
+// Заголовок STUN (RFC 5389): тип, длина атрибутов, magic cookie, 12 байт
+// идентификатора транзакции.
+const (
+	stunHeaderLen      = 20
+	stunBindingRequest = 0x0001
+	stunMagicCookie    = 0x2112A442
+)
+
+// IsSTUNBindingRequest сообщает, что нагрузка UDP — запрос STUN Binding.
+//
+// Им открывается медиа-соединение WebRTC: демонстрация экрана и клиенты
+// Discord, которые идут через WebRTC, начинают поток не с IP discovery, а с
+// него. Проверка строгая: тип, magic cookie и поле длины, равное остатку
+// пакета и кратное четырём.
+func IsSTUNBindingRequest(payload []byte) bool {
+	if len(payload) < stunHeaderLen {
+		return false
+	}
+	if binary.BigEndian.Uint16(payload[0:]) != stunBindingRequest {
+		return false
+	}
+	if binary.BigEndian.Uint32(payload[4:]) != stunMagicCookie {
+		return false
+	}
+	n := int(binary.BigEndian.Uint16(payload[2:]))
+	return n%4 == 0 && n == len(payload)-stunHeaderLen
+}

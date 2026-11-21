@@ -135,3 +135,19 @@ func TestBlocklistRebuildTimingSanity(t *testing.T) {
 		t.Fatalf("Rebuild на 100 парах заняла %v, слишком долго", elapsed)
 	}
 }
+
+// TestBlocklistDropsStaleEntries — блок не вечен: без новых событий SNI
+// возвращается под десинк.
+func TestBlocklistDropsStaleEntries(t *testing.T) {
+	now := time.Now()
+	tr := rtctrack.NewTracker(func() time.Time { return now.Add(-blocklistMaxAge - time.Minute) })
+	p := rtctrack.Pair{SNI: "c-arn08-da88e905.discord.media"}
+	for i := 0; i < 4; i++ {
+		tr.Observe(p)
+		tr.Reset(p)
+	}
+	b := &rtcBlocklist{}
+	if n := b.Rebuild(tr, 3, 500); n != 0 || b.Contains(p.SNI) {
+		t.Fatalf("устаревшая запись не должна блокировать SNI, n=%d", n)
+	}
+}

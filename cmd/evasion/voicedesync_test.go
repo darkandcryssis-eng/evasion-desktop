@@ -388,3 +388,44 @@ func TestVoiceDecoysUseBothFoolings(t *testing.T) {
 		}
 	}
 }
+
+// udpSTUNPacket — исходящий STUN Binding request на медиа-порт Discord: так
+// открывается поток демонстрации экрана.
+func udpSTUNPacket(t *testing.T, dstPort uint16) capture.Packet {
+	t.Helper()
+	pkt := udpDiscoveryPacket(t)
+	// Длина атрибутов STUN кратна четырём: нагрузка 72 байта, а не 74.
+	pkt.Data = pkt.Data[:len(pkt.Data)-2]
+	binary.BigEndian.PutUint16(pkt.Data[2:4], uint16(len(pkt.Data)))
+	binary.BigEndian.PutUint16(pkt.Data[24:26], 8+72)
+	binary.BigEndian.PutUint16(pkt.Data[22:24], dstPort)
+	binary.BigEndian.PutUint16(pkt.Data[30:], 72-20)
+	binary.BigEndian.PutUint32(pkt.Data[32:], 0x2112A442)
+	d, err := packet.Dissect(pkt.Data)
+	if err != nil || !d.RecomputeChecksums(pkt.Data) {
+		t.Fatalf("разбор: %v", err)
+	}
+	return pkt
+}
+
+func TestBuildVoiceDecoysOnSTUN(t *testing.T) {
+	pkt := udpSTUNPacket(t, 50010)
+	out, applied := buildVoiceDecoys(pkt, discordvoice.FoolTTL, 6, 3, voicePayloadNeutral)
+	if !applied || len(out) != 7 {
+		t.Fatalf("STUN на медиа-порт: applied=%v, пакетов %d, ожидалось 7", applied, len(out))
+	}
+	for i, decoy := range out[:6] {
+		if discordvoice.IsSTUNBindingRequest(decoy.Data[28:]) {
+			t.Fatalf("decoy %d несёт подпись STUN", i)
+		}
+	}
+	if !discordvoice.IsSTUNBindingRequest(out[6].Data[28:]) {
+		t.Fatal("настоящий STUN должен идти последним без изменений")
+	}
+}
+
+func TestBuildVoiceDecoysSkipsForeignSTUN(t *testing.T) {
+	if _, applied := buildVoiceDecoys(udpSTUNPacket(t, 3478), discordvoice.FoolTTL, 6, 3, voicePayloadNeutral); applied {
+		t.Fatal("STUN вне медиа-портов Discord трогать нельзя")
+	}
+}

@@ -95,10 +95,24 @@ func appendStrictEndpoint(dst []string, ep string) []string {
 	return append(dst, ep)
 }
 
-// voiceFilter captures only Discord IP discovery requests on any non-QUIC port.
-// RTP, ordinary UDP and DNS stay in the kernel rather than making a userspace
-// round trip. buildVoiceDecoys validates the discovery signature again.
-const voiceFilter = "outbound and udp and udp.DstPort != 443 and udp.PayloadLength == 74 and udp.Payload16[0] == 0x0001 and udp.Payload16[1] == 70 and not impostor"
+// voiceFilter captures Discord IP discovery requests on any non-QUIC port and
+// STUN Binding requests on the Discord media ports. RTP, ordinary UDP and DNS
+// stay in the kernel rather than making a userspace round trip.
+// buildVoiceDecoys validates both signatures again.
+const voiceFilter = "outbound and udp and udp.DstPort != 443 and (" + voiceDiscoveryMatch + " or " + voiceSTUNMatch + ") and not impostor"
+
+const (
+	voiceDiscoveryMatch = "(udp.PayloadLength == 74 and udp.Payload16[0] == 0x0001 and udp.Payload16[1] == 70)"
+	// STUN opens the WebRTC media path (screen share). Limited to the Discord
+	// media port ranges so that other applications' STUN is left alone.
+	voiceSTUNMatch  = "(udp.PayloadLength >= 20 and udp.Payload16[0] == 0x0001 and udp.Payload32[1] == 0x2112A442 and " + voiceMediaPorts + ")"
+	voiceMediaPorts = "((udp.DstPort >= 19294 and udp.DstPort <= 19344) or (udp.DstPort >= 50000 and udp.DstPort <= 50100))"
+)
+
+// isVoiceMediaPort mirrors voiceMediaPorts.
+func isVoiceMediaPort(port uint16) bool {
+	return (port >= 19294 && port <= 19344) || (port >= 50000 && port <= 50100)
+}
 
 const (
 	// voiceDecoyRepeats — сколько decoy слать перед настоящим пакетом. Шесть,
@@ -318,8 +332,14 @@ func buildVoiceDecoys(pkt capture.Packet, fool discordvoice.Fooling, ttl uint8, 
 		return nil, false
 	}
 	payloadBytes, ok := d.Payload(pkt.Data)
-	if !ok || !discordvoice.IsIPDiscoveryRequest(payloadBytes) {
+	if !ok {
 		return nil, false
+	}
+	if !discordvoice.IsIPDiscoveryRequest(payloadBytes) {
+		u, ok := d.UDP(pkt.Data)
+		if !ok || !isVoiceMediaPort(u.DstPort()) || !discordvoice.IsSTUNBindingRequest(payloadBytes) {
+			return nil, false
+		}
 	}
 
 	// Нагрузка decoy — НЕ копия настоящего IP discovery, а подменные байты той
