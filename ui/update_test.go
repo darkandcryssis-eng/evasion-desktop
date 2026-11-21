@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestVersionNewer(t *testing.T) {
@@ -134,5 +136,35 @@ func TestResumeStateRoundTrip(t *testing.T) {
 	}
 	if _, ok := parseResume([]string{"--autostart"}); ok {
 		t.Fatal("parseResume fired without the flag")
+	}
+}
+
+func TestUpdateLoopAnnouncesNewVersion(t *testing.T) {
+	old, oldFirst := appVersion, updateFirstCheck
+	appVersion, updateFirstCheck = "0.1.1", time.Millisecond
+	defer func() { appVersion, updateFirstCheck = old, oldFirst }()
+	checks := make(chan struct{}, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/releases/latest" {
+			http.Redirect(w, r, "/releases/tag/v0.1.2", http.StatusFound)
+			return
+		}
+		checks <- struct{}{}
+	}))
+	defer srv.Close()
+	u := newUpdater()
+	u.releases = srv.URL + "/releases"
+	var mu sync.Mutex
+	var got []string
+	u.announce = func(v string) { mu.Lock(); got = append(got, v); mu.Unlock() }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go u.loop(ctx)
+	<-checks
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0] != "0.1.2" {
+		t.Fatalf("announced %v, want [0.1.2]", got)
 	}
 }

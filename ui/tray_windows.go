@@ -186,7 +186,10 @@ func (a *App) showWindow() {
 		return
 	}
 	wr.WindowShow(a.ctx)
-	wr.WindowUnminimise(a.ctx)
+	// Unminimise развернутое окно уменьшает, поэтому только для свёрнутого.
+	if wr.WindowIsMinimised(a.ctx) {
+		wr.WindowUnminimise(a.ctx)
+	}
 	wr.EventsEmit(a.ctx, "evasion:window", "shown")
 }
 

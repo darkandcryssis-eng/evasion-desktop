@@ -24,13 +24,15 @@ import (
 // Локальная сборка остаётся "dev" и обновлений не ищет.
 var appVersion = "dev"
 
+var updateFirstCheck = 10 * time.Second
+
 // updateReleases — страница релизов; проверочная сборка может подменить её
 // через -X main.updateReleases=... и обновляться с тестового сервера.
 var updateReleases = "https://github.com/darkandcryssis-eng/evasion-desktop/releases"
 
 const (
 	updateAsset     = "Evasion.exe"
-	updateInterval  = 6 * time.Hour
+	updateInterval  = 2 * time.Minute
 	updatedFromFlag = "--updated-from="
 	resumeFlag      = "--resume="
 )
@@ -58,6 +60,7 @@ type updater struct {
 	client   *http.Client
 	exePath  func() (string, error)
 	launch   func(exe string, args ...string) error
+	announce func(latest string) // найдена новая версия: показать уведомление
 }
 
 func newUpdater() *updater {
@@ -177,15 +180,22 @@ func (u *updater) check(ctx context.Context) (UpdateState, error) {
 }
 
 func (u *updater) loop(ctx context.Context) {
-	timer := time.NewTimer(10 * time.Second)
+	timer := time.NewTimer(updateFirstCheck)
 	defer timer.Stop()
+	announced := ""
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
 		}
-		_, _ = u.check(ctx)
+		if st, err := u.check(ctx); err == nil && st.Available && st.Latest != announced {
+			// Об одной версии говорим один раз, а не каждые две минуты.
+			announced = st.Latest
+			if u.announce != nil {
+				u.announce(st.Latest)
+			}
+		}
 		timer.Reset(updateInterval)
 	}
 }
@@ -351,6 +361,7 @@ func finishUpdate(args []string) {
 }
 
 func (a *App) startUpdater(ctx context.Context) {
+	a.updates.announce = a.notifyUpdate
 	go a.updates.loop(ctx)
 }
 
