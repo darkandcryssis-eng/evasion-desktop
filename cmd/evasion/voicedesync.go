@@ -110,6 +110,9 @@ const (
 	// voiceDecoyTTL — TTL/hop limit живого decoy: доходит до DPI, умирает до
 	// сервера. Малое значение; точное — предмет живого подбора (2.5).
 	voiceDecoyTTL = 6
+	// voiceBadsumTTL — TTL decoy с битой суммой: ему нужно дойти до DPI на любом
+	// расстоянии, а сервер отбросит его по сумме.
+	voiceBadsumTTL = 64
 	// voiceReportEvery — не чаще этого срока пишется сводка десинка голоса.
 	voiceReportEvery = 30 * time.Second
 )
@@ -340,15 +343,30 @@ func buildVoiceDecoys(pkt capture.Packet, fool discordvoice.Fooling, ttl uint8, 
 	//     уводит классификацию.
 	fake := voiceFakePayload(len(payloadBytes), payload)
 
-	out := make([]capture.Packet, 0, repeats+1)
-	for range repeats {
-		decoy, err := discordvoice.BuildDecoy(pkt.Data, fool, ttl, fake)
-		if err != nil {
-			// Собрать decoy не вышло — честно отказываемся от приёма и шлём
-			// оригинал как есть (1.6), а не рвём голос.
-			return nil, false
+	// Оба приёма подряд, выбранный первым. Какой из них сработает, зависит от
+	// сети, а не от пользователя: decoy с коротким TTL не доходит до DPI, если
+	// тот дальше voiceDecoyTTL переходов, а decoy с битой суммой отбрасывают
+	// некоторые домашние роутеры и NAT. Лишний decoy безвреден — до сервера не
+	// доживает ни тот, ни другой.
+	type step struct {
+		fool discordvoice.Fooling
+		ttl  uint8
+	}
+	steps := []step{{discordvoice.FoolTTL, ttl}, {discordvoice.FoolBadChecksum, voiceBadsumTTL}}
+	if fool == discordvoice.FoolBadChecksum {
+		steps[0], steps[1] = steps[1], steps[0]
+	}
+	out := make([]capture.Packet, 0, 2*repeats+1)
+	for _, step := range steps {
+		for range repeats {
+			decoy, err := discordvoice.BuildDecoy(pkt.Data, step.fool, step.ttl, fake)
+			if err != nil {
+				// Собрать decoy не вышло — честно отказываемся от приёма и шлём
+				// оригинал как есть (1.6), а не рвём голос.
+				return nil, false
+			}
+			out = append(out, capture.Packet{Data: decoy, Dir: pkt.Dir, Reinject: pkt.Reinject})
 		}
-		out = append(out, capture.Packet{Data: decoy, Dir: pkt.Dir, Reinject: pkt.Reinject})
 	}
 	// Настоящий пакет — последним, после decoy'ев.
 	out = append(out, pkt)

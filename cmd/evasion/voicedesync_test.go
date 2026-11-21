@@ -49,15 +49,16 @@ func TestBuildVoiceDecoysOnDiscovery(t *testing.T) {
 		t.Fatal("на пакете Discord IP discovery приём должен примениться")
 	}
 	// Три decoy плюс оригинал последним.
-	if len(pkts) != 4 {
-		t.Fatalf("ожидалось 3 decoy + оригинал = 4 пакета, получено %d", len(pkts))
+	// Три decoy каждого приёма плюс оригинал последним.
+	if len(pkts) != 7 {
+		t.Fatalf("ожидалось 6 decoy + оригинал = 7 пакетов, получено %d", len(pkts))
 	}
 	// Последний — ровно исходный пакет.
-	if string(pkts[3].Data) != string(pkt.Data) {
+	if string(pkts[6].Data) != string(pkt.Data) {
 		t.Fatal("последним должен идти настоящий пакет без изменений")
 	}
 	// Decoy'и отличаются от оригинала (низкий TTL меняет байты/сумму).
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 6; i++ {
 		if string(pkts[i].Data) == string(pkt.Data) {
 			t.Fatalf("decoy %d не должен совпадать с оригиналом", i)
 		}
@@ -74,12 +75,12 @@ func TestVoiceDecoysCarryBenignPayload(t *testing.T) {
 	if !applied {
 		t.Fatal("на пакете Discord IP discovery приём должен примениться")
 	}
-	if len(pkts) != 7 {
-		t.Fatalf("ожидалось 6 decoy + оригинал = 7, получено %d", len(pkts))
+	if len(pkts) != 13 {
+		t.Fatalf("ожидалось 12 decoy + оригинал = 13, получено %d", len(pkts))
 	}
 	// Каждый decoy (все, кроме последнего) должен иметь нейтральную нагрузку,
 	// которую строгий детектор голосом НЕ признаёт.
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 12; i++ {
 		d, err := packet.Dissect(pkts[i].Data)
 		if err != nil {
 			t.Fatalf("decoy %d: разбор: %v", i, err)
@@ -94,14 +95,14 @@ func TestVoiceDecoysCarryBenignPayload(t *testing.T) {
 	}
 	// Последний — ровно настоящий IP discovery, без изменений: только он
 	// доходит до сервера.
-	if string(pkts[6].Data) != string(pkt.Data) {
+	if string(pkts[12].Data) != string(pkt.Data) {
 		t.Fatal("последним должен идти неизменный настоящий пакет")
 	}
-	last, err := packet.Dissect(pkts[6].Data)
+	last, err := packet.Dissect(pkts[12].Data)
 	if err != nil {
 		t.Fatalf("настоящий пакет: разбор: %v", err)
 	}
-	if pl, ok := last.Payload(pkts[6].Data); !ok || !discordvoice.IsIPDiscoveryRequest(pl) {
+	if pl, ok := last.Payload(pkts[12].Data); !ok || !discordvoice.IsIPDiscoveryRequest(pl) {
 		t.Fatal("настоящий пакет должен оставаться валидным IP discovery")
 	}
 }
@@ -167,11 +168,11 @@ func TestBuildVoiceDecoysWithQUICPayload(t *testing.T) {
 	if !applied {
 		t.Fatal("приём должен примениться")
 	}
-	if len(pkts) != 4 {
-		t.Fatalf("ожидалось 4 пакета, получено %d", len(pkts))
+	if len(pkts) != 7 {
+		t.Fatalf("ожидалось 7 пакетов, получено %d", len(pkts))
 	}
 	// Каждый decoy должен содержать QUIC-подобный заголовок.
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 6; i++ {
 		d, err := packet.Dissect(pkts[i].Data)
 		if err != nil {
 			t.Fatalf("decoy %d: разбор: %v", i, err)
@@ -352,6 +353,38 @@ func TestParseVoiceMode(t *testing.T) {
 		}
 		if m.enabled != want.enabled || m.fool != want.fool {
 			t.Fatalf("%q: получено %+v, ожидалось enabled=%v fool=%v", in, m, want.enabled, want.fool)
+		}
+	}
+}
+
+// Оба приёма идут вместе в любом режиме: короткий TTL не достаёт до далёкого
+// DPI, битую сумму режут некоторые роутеры — сеть пользователя заранее неизвестна.
+func TestVoiceDecoysUseBothFoolings(t *testing.T) {
+	pkt := udpDiscoveryPacket(t)
+	for _, fool := range []discordvoice.Fooling{discordvoice.FoolTTL, discordvoice.FoolBadChecksum} {
+		pkts, applied := buildVoiceDecoys(pkt, fool, voiceDecoyTTL, 2, voicePayloadNeutral)
+		if !applied || len(pkts) != 5 {
+			t.Fatalf("fool %d: applied=%v, пакетов %d", fool, applied, len(pkts))
+		}
+		short, far := 0, 0
+		for _, p := range pkts[:4] {
+			d, err := packet.Dissect(p.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h, _ := d.IPv4(p.Data)
+			valid := append([]byte(nil), p.Data...)
+			d.RecomputeChecksums(valid)
+			bad := string(valid) != string(p.Data)
+			switch {
+			case h.TTL() == voiceDecoyTTL && !bad:
+				short++
+			case h.TTL() == voiceBadsumTTL && bad:
+				far++
+			}
+		}
+		if short != 2 || far != 2 {
+			t.Fatalf("fool %d: коротких TTL %d, с битой суммой %d", fool, short, far)
 		}
 	}
 }
