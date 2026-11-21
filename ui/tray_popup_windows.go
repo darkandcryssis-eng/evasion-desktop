@@ -24,6 +24,7 @@ var (
 	trayGDI            = windows.NewLazySystemDLL("gdi32.dll")
 	trayKernel         = windows.NewLazySystemDLL("kernel32.dll")
 	trayShcore         = windows.NewLazySystemDLL("shcore.dll")
+	trayProcs          sync.Map
 	trayWindows        sync.Map
 	trayWindowCallback = syscall.NewCallback(trayWindowProc)
 )
@@ -52,12 +53,6 @@ type trayPaint struct {
 	Restore, Update int32
 	Reserved        [32]byte
 }
-type trayDrawItem struct {
-	Type, ID, Item, Action, State uint32
-	Window, DC                    uintptr
-	Rect                          trayRect
-	Data                          uintptr
-}
 type trayMonitorInfo struct {
 	Size          uint32
 	Monitor, Work trayRect
@@ -70,18 +65,38 @@ type trayPopup struct {
 	view          func() trayView
 	action        func(string)
 	state         trayView
+	press         trayPress
 	dpi           int32
-	width, height int32
+	width, height int32 // window size, shadow margin included
 	fonts         [3]uintptr
 	visible       bool
 	preview       bool
+	keyboard      bool // focus ring only after keyboard navigation
+	down          int  // control the pointer went down on, when the panel itself got the click
+
+	// The picture lives in a DIB section that is handed to the layered window.
+	dc, bitmap, oldBitmap uintptr
+	bits                  unsafe.Pointer
+	bitsW, bitsH          int32
 }
 
+// The wrappers take pointers converted to uintptr; uintptrescapes keeps those
+// objects on the heap and alive for the call, as (*LazyProc).Call does.
+//
+//go:uintptrescapes
 func trayCall(dll *windows.LazyDLL, name string, args ...uintptr) uintptr {
-	r, _, _ := dll.NewProc(name).Call(args...)
+	proc, ok := trayProcs.Load(name)
+	if !ok {
+		proc, _ = trayProcs.LoadOrStore(name, dll.NewProc(name))
+	}
+	r, _, _ := proc.(*windows.LazyProc).Call(args...)
 	return r
 }
+
+//go:uintptrescapes
 func trayU(name string, args ...uintptr) uintptr { return trayCall(trayUser, name, args...) }
+
+//go:uintptrescapes
 func trayG(name string, args ...uintptr) uintptr { return trayCall(trayGDI, name, args...) }
 func trayString(value string) *uint16            { p, _ := windows.UTF16PtrFromString(value); return p }
 func trayInt(value int32) uintptr                { return uintptr(int64(value)) }
@@ -102,16 +117,16 @@ func startTrayPopup(view func() trayView, action func(string), ready func(toggle
 		p.preview = len(preview) > 0 && preview[0]
 		className := trayString(fmt.Sprintf("Evasion.TrayPanel.%d", windows.GetCurrentProcessId()))
 		instance := trayCall(trayKernel, "GetModuleHandleW", 0)
-		wc := trayWindowClass{Style: 0x20000, Proc: trayWindowCallback, Instance: instance, Name: className, Cursor: trayU("LoadCursorW", 0, 32512)}
+		wc := trayWindowClass{Proc: trayWindowCallback, Instance: instance, Name: className, Cursor: trayU("LoadCursorW", 0, 32512)}
 		wc.Size = uint32(unsafe.Sizeof(wc))
 		if trayU("RegisterClassExW", uintptr(unsafe.Pointer(&wc))) == 0 {
 			return
 		}
 		defer trayU("UnregisterClassW", uintptr(unsafe.Pointer(className)), instance)
-		// Tool window: no taskbar button, no Alt-Tab entry, no native title bar.
-		exStyle := uintptr(0x00010088)
+		// Layered tool window: per-pixel alpha, no taskbar button, no Alt-Tab entry.
+		exStyle := uintptr(0x00090088)
 		if p.preview {
-			exStyle = 0x00050008
+			exStyle = 0x000d0008
 		}
 		p.hwnd = trayU("CreateWindowExW", exStyle, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(trayString("Evasion — быстрый доступ"))), 0x82000000, 0, 0, trayPanelWidth, trayPanelHeight, 0, 0, instance, 0)
 		if p.hwnd == 0 {
@@ -141,6 +156,12 @@ func startTrayPopup(view func() trayView, action func(string), ready func(toggle
 			if msg.Message == 0x100 && msg.WParam == 27 {
 				p.hide()
 				continue
+			}
+			switch {
+			case msg.Message == 0x100:
+				p.keyboard = true
+			case msg.Message == 0x201:
+				p.keyboard = false
 			}
 			if trayU("IsDialogMessageW", p.hwnd, uintptr(unsafe.Pointer(&msg))) != 0 {
 				continue
@@ -192,22 +213,40 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) (resul
 	case 0x14:
 		return 1
 	case 0x113:
-		p.update()
+		if wparam == 2 {
+			p.track()
+		} else {
+			p.update()
+		}
 		return 0
 	case 0xf:
+		// The layered surface is pushed by render; just validate.
 		var ps trayPaint
-		dc := trayU("BeginPaint", hwnd, uintptr(unsafe.Pointer(&ps)))
-		p.paint(dc)
+		trayU("BeginPaint", hwnd, uintptr(unsafe.Pointer(&ps)))
 		trayU("EndPaint", hwnd, uintptr(unsafe.Pointer(&ps)))
 		return 0
 	case 0x2b:
-		var item trayDrawItem
-		var read uintptr
-		// Copy the native message payload without retaining a foreign pointer.
-		if windows.ReadProcessMemory(windows.CurrentProcess(), lparam, (*byte)(unsafe.Pointer(&item)), unsafe.Sizeof(item), &read) == nil && read == unsafe.Sizeof(item) && item.Type == 4 && p.buttons[int(item.ID)] != 0 {
-			p.paintButton(&item)
-		}
+		// Owner-drawn buttons stay for clicks, keyboard and screen readers;
+		// their picture is part of the panel surface.
 		return 1
+	case 0x201:
+		// Reached only if the click was not taken by a button window.
+		if id := p.hit(); id != 0 && trayU("IsWindowEnabled", p.buttons[id]) != 0 {
+			p.down = id
+			trayU("SetCapture", hwnd)
+			p.track()
+		}
+		return 0
+	case 0x202:
+		id := p.down
+		p.down = 0
+		trayU("ReleaseCapture")
+		if id != 0 && p.hit() == id {
+			trayU("SetFocus", p.buttons[id])
+			p.action(trayKinds[id])
+		}
+		p.track()
+		return 0
 	case 0x111:
 		id := int(wparam & 0xffff)
 		if id == 2 {
@@ -215,20 +254,21 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) (resul
 			return 0
 		}
 		if wparam>>16 == 0 {
-			kind := map[int]string{trayDPIButton: "dpi", trayTelegramButton: "telegram", trayDiagnoseButton: "diagnose", trayOpenButton: "open", trayExitButton: "quit"}[id]
+			kind := trayKinds[id]
 			if kind != "" {
 				p.action(kind)
 			}
 		}
 		return 0
 	case 0x2e0:
-		p.dpi = int32(wparam & 0xffff)
-		p.makeFonts()
-		p.layout()
+		// Scaling changed under an open panel: the next open measures again.
+		p.hide()
 		return 0
 	}
 	return trayU("DefWindowProcW", hwnd, uintptr(message), wparam, lparam)
 }
+
+var trayKinds = map[int]string{trayDPIButton: "dpi", trayTelegramButton: "telegram", trayDiagnoseButton: "diagnose", trayOpenButton: "open", trayExitButton: "quit"}
 
 func (p *trayPopup) show() {
 	var cursor trayPoint
@@ -252,49 +292,93 @@ func (p *trayPopup) show() {
 		p.dpi = int32(dpi)
 		p.makeFonts()
 	}
+	// The panel sits by the tray; the window is larger by the shadow margin.
 	bounds := placeTrayPanel(cursor.X, cursor.Y, p.px(trayPanelWidth), p.px(trayPanelHeight), p.px(10), info.Work)
-	p.width, p.height = bounds.Right-bounds.Left, bounds.Bottom-bounds.Top
-	trayU("SetWindowPos", p.hwnd, ^uintptr(0), trayInt(bounds.Left), trayInt(bounds.Top), trayInt(p.width), trayInt(p.height), 0x10)
+	m := p.px(trayShadow)
+	p.width, p.height = bounds.Right-bounds.Left+2*m, bounds.Bottom-bounds.Top+2*m
+	trayU("SetWindowPos", p.hwnd, ^uintptr(0), trayInt(bounds.Left-m), trayInt(bounds.Top-m), trayInt(p.width), trayInt(p.height), 0x10)
 	p.layout()
-	p.update()
+	p.keyboard, p.down, p.press = false, 0, trayPress{}
 	p.visible = true
+	p.sync(p.view())
 	trayU("ShowWindow", p.hwnd, 5)
 	trayU("SetForegroundWindow", p.hwnd)
 	trayU("SetFocus", p.buttons[trayDPIButton])
 	trayU("SetTimer", p.hwnd, 1, 1000, 0)
+	trayU("SetTimer", p.hwnd, 2, 30, 0)
 }
 
 func (p *trayPopup) hide() {
 	if p.visible {
 		p.visible = false
 		trayU("KillTimer", p.hwnd, 1)
+		trayU("KillTimer", p.hwnd, 2)
 		trayU("ShowWindow", p.hwnd, 0)
 	}
 }
 
-// box converts a rectangle in panel units to device pixels.
+// box converts a rectangle in panel units to window pixels.
 func (p *trayPopup) box(b trayBox) trayRect {
-	return trayRect{p.px(int32(b.X)), p.px(int32(b.Y)), p.px(int32(b.X + b.W)), p.px(int32(b.Y + b.H))}
+	m := p.px(trayShadow)
+	return trayRect{m + p.px(int32(b.X)), m + p.px(int32(b.Y)), m + p.px(int32(b.X+b.W)), m + p.px(int32(b.Y+b.H))}
 }
 
 func (p *trayPopup) layout() {
 	for id, box := range trayBoxes {
 		r := p.box(box)
-		trayU("MoveWindow", p.buttons[id], trayInt(r.Left), trayInt(r.Top), trayInt(r.Right-r.Left), trayInt(r.Bottom-r.Top), 1)
-		trayU("SendMessageW", p.buttons[id], 0x30, p.fonts[1], 0)
+		trayU("MoveWindow", p.buttons[id], trayInt(r.Left), trayInt(r.Top), trayInt(r.Right-r.Left), trayInt(r.Bottom-r.Top), 0)
 	}
-	radius := p.px(trayPanelRadius)
-	region := trayG("CreateRoundRectRgn", 0, 0, trayInt(p.width+1), trayInt(p.height+1), trayInt(radius*2), trayInt(radius*2))
-	if region != 0 && trayU("SetWindowRgn", p.hwnd, region, 1) == 0 {
-		trayG("DeleteObject", region)
+}
+
+// hit names the control under the pointer.
+func (p *trayPopup) hit() int {
+	var at trayPoint
+	if trayU("GetCursorPos", uintptr(unsafe.Pointer(&at))) == 0 || trayU("ScreenToClient", p.hwnd, uintptr(unsafe.Pointer(&at))) == 0 {
+		return 0
+	}
+	for id, box := range trayBoxes {
+		if r := p.box(box); at.X >= r.Left && at.X < r.Right && at.Y >= r.Top && at.Y < r.Bottom {
+			return id
+		}
+	}
+	return 0
+}
+
+// track follows the pointer and keyboard focus and repaints when they move:
+// the buttons are not drawn by Windows, so the panel shows their feedback.
+func (p *trayPopup) track() {
+	if !p.visible {
+		return
+	}
+	var next trayPress
+	if id := p.hit(); id != 0 && trayU("IsWindowEnabled", p.buttons[id]) != 0 {
+		next.hover = id
+		if p.down == id || trayU("SendMessageW", p.buttons[id], 0xf2, 0, 0)&4 != 0 {
+			next.pressed = id
+		}
+	}
+	if p.keyboard {
+		focus := trayU("GetFocus")
+		for id, h := range p.buttons {
+			if h == focus {
+				next.focus = id
+			}
+		}
+	}
+	if next != p.press {
+		p.press = next
+		p.render()
 	}
 }
 
 func (p *trayPopup) update() {
-	next := p.view()
-	if next == p.state {
-		return
+	if next := p.view(); next != p.state {
+		p.sync(next)
 	}
+}
+
+// sync applies a view: control names and availability, then the picture.
+func (p *trayPopup) sync(next trayView) {
 	p.state = next
 	dpiLabel := "Обход DPI. " + p.state.DPI + ". Включить"
 	if p.state.DPIOn {
@@ -317,10 +401,11 @@ func (p *trayPopup) update() {
 		if id == trayDPIButton && p.state.DPIBusy || id == trayTelegramButton && p.state.TelegramBusy || id == trayDiagnoseButton && p.state.Diagnosing {
 			enabled = 0
 		}
-		trayU("EnableWindow", p.buttons[id], enabled)
-		trayU("InvalidateRect", p.buttons[id], 0, 0)
+		if (trayU("IsWindowEnabled", p.buttons[id]) != 0) != (enabled == 1) {
+			trayU("EnableWindow", p.buttons[id], enabled)
+		}
 	}
-	trayU("InvalidateRect", p.hwnd, 0, 0)
+	p.render()
 }
 
 func (p *trayPopup) makeFonts() {
@@ -344,6 +429,7 @@ func (p *trayPopup) releaseResources() {
 			trayG("DeleteObject", font)
 		}
 	}
+	p.dropSurface()
 }
 
 type trayBitmapInfo struct {
@@ -355,65 +441,75 @@ type trayBitmapInfo struct {
 	ClrUsed, ClrImportant  uint32
 }
 
-// trayBlit copies a rendered canvas (top-down BGRX) onto a device context.
-func trayBlit(dc uintptr, c *trayCanvas) {
-	info := trayBitmapInfo{Width: int32(c.w), Height: -int32(c.h), Planes: 1, BitCount: 32}
-	info.Size = uint32(unsafe.Sizeof(info))
-	trayG("SetDIBitsToDevice", dc, 0, 0, uintptr(c.w), uintptr(c.h), 0, 0, 0, uintptr(c.h), uintptr(unsafe.Pointer(&c.pix[0])), uintptr(unsafe.Pointer(&info)), 0)
-	runtime.KeepAlive(c)
+func (p *trayPopup) dropSurface() {
+	if p.dc != 0 {
+		trayG("SelectObject", p.dc, p.oldBitmap)
+		trayG("DeleteObject", p.bitmap)
+		trayG("DeleteDC", p.dc)
+	}
+	p.dc, p.bitmap, p.oldBitmap, p.bits, p.bitsW, p.bitsH = 0, 0, 0, nil, 0, 0
 }
 
-// labels lays system text over the picture; originX/originY is the device
-// position of the surface being painted inside the panel.
-func (p *trayPopup) labels(dc uintptr, id int, disabled bool, originX, originY int32) {
+// surface returns the pixels (top-down BGRA) of a DIB section the size of the window.
+func (p *trayPopup) surface() []byte {
+	if p.bits == nil || p.bitsW != p.width || p.bitsH != p.height {
+		p.dropSurface()
+		info := trayBitmapInfo{Width: p.width, Height: -p.height, Planes: 1, BitCount: 32}
+		info.Size = uint32(unsafe.Sizeof(info))
+		p.dc = trayG("CreateCompatibleDC", 0)
+		p.bitmap = trayG("CreateDIBSection", p.dc, uintptr(unsafe.Pointer(&info)), 0, uintptr(unsafe.Pointer(&p.bits)), 0, 0)
+		if p.dc == 0 || p.bitmap == 0 || p.bits == nil {
+			if p.bitmap != 0 {
+				trayG("DeleteObject", p.bitmap)
+			}
+			if p.dc != 0 {
+				trayG("DeleteDC", p.dc)
+			}
+			p.dc, p.bitmap, p.bits = 0, 0, nil
+			return nil
+		}
+		p.oldBitmap = trayG("SelectObject", p.dc, p.bitmap)
+		p.bitsW, p.bitsH = p.width, p.height
+	}
+	return unsafe.Slice((*byte)(p.bits), int(p.bitsW)*int(p.bitsH)*4)
+}
+
+// labels lays system text over the picture.
+func (p *trayPopup) labels(id int, disabled bool) {
 	for _, l := range trayLabels(p.state, id, disabled) {
-		r := p.box(trayBox{l.X, l.Y, l.W, l.H})
-		rect := trayRect{r.Left - originX, r.Top - originY, r.Right - originX, r.Bottom - originY}
+		rect := p.box(trayBox{l.X, l.Y, l.W, l.H})
 		flags := uintptr(0x20 | 0x8000 | 0x800 | 4)
 		if l.Center {
 			flags |= 1
 		}
-		old := trayG("SelectObject", dc, p.fonts[l.Font])
-		trayG("SetBkMode", dc, 1)
-		trayG("SetTextColor", dc, uintptr(trayColor(l.Tone.hex())))
-		trayU("DrawTextW", dc, uintptr(unsafe.Pointer(trayString(l.Text))), ^uintptr(0), uintptr(unsafe.Pointer(&rect)), flags)
-		trayG("SelectObject", dc, old)
+		old := trayG("SelectObject", p.dc, p.fonts[l.Font])
+		trayG("SetBkMode", p.dc, 1)
+		trayG("SetTextColor", p.dc, uintptr(trayColor(l.Tone.hex())))
+		trayU("DrawTextW", p.dc, uintptr(unsafe.Pointer(trayString(l.Text))), ^uintptr(0), uintptr(unsafe.Pointer(&rect)), flags)
+		trayG("SelectObject", p.dc, old)
 	}
 }
 
-func (p *trayPopup) paint(target uintptr) {
-	// Двойная буферизация: без мерцания при обновлении раз в секунду.
-	dc := trayG("CreateCompatibleDC", target)
-	bitmap := trayG("CreateCompatibleBitmap", target, trayInt(p.width), trayInt(p.height))
-	oldBitmap := trayG("SelectObject", dc, bitmap)
-	defer func() {
-		trayG("BitBlt", target, 0, 0, trayInt(p.width), trayInt(p.height), dc, 0, 0, 0x00cc0020)
-		trayG("SelectObject", dc, oldBitmap)
-		trayG("DeleteObject", bitmap)
-		trayG("DeleteDC", dc)
-	}()
-	canvas := newTrayCanvas(int(p.width), int(p.height), 0, 0, float64(p.dpi)/96)
-	paintTray(canvas, p.state, trayPress{})
-	trayBlit(dc, canvas)
-	p.labels(dc, 0, false, 0, 0)
-}
-
-func (p *trayPopup) paintButton(item *trayDrawItem) {
-	w, h := item.Rect.Right-item.Rect.Left, item.Rect.Bottom-item.Rect.Top
-	dc := trayG("CreateCompatibleDC", item.DC)
-	bitmap := trayG("CreateCompatibleBitmap", item.DC, trayInt(w), trayInt(h))
-	oldBitmap := trayG("SelectObject", dc, bitmap)
-	defer func() {
-		trayG("BitBlt", item.DC, 0, 0, trayInt(w), trayInt(h), dc, 0, 0, 0x00cc0020)
-		trayG("SelectObject", dc, oldBitmap)
-		trayG("DeleteObject", bitmap)
-		trayG("DeleteDC", dc)
-	}()
-	id := int(item.ID)
-	origin := p.box(trayBoxes[id])
-	// The button shows its own part of the panel picture, so edges line up exactly.
-	canvas := newTrayCanvas(int(w), int(h), int(origin.Left), int(origin.Top), float64(p.dpi)/96)
-	paintTray(canvas, p.state, trayPress{id: id, focused: item.State&0x10 != 0, pressed: item.State&1 != 0})
-	trayBlit(dc, canvas)
-	p.labels(dc, id, item.State&4 != 0, origin.Left, origin.Top)
+// render paints the panel, its text and its shadow and hands the result to
+// the layered window, so edges are anti-aliased against whatever is behind.
+func (p *trayPopup) render() {
+	pix := p.surface()
+	if pix == nil {
+		return
+	}
+	clear(pix)
+	m := int(p.px(trayShadow))
+	canvas := &trayCanvas{pix: pix, w: int(p.bitsW), h: int(p.bitsH), originX: -m, origY: -m, scale: float64(p.dpi) / 96}
+	paintTray(canvas, p.state, p.press)
+	p.labels(0, false)
+	for id, h := range p.buttons {
+		p.labels(id, trayU("IsWindowEnabled", h) == 0)
+	}
+	trayG("GdiFlush")
+	canvas.seal()
+	size := trayPoint{p.bitsW, p.bitsH}
+	var origin trayPoint
+	// AC_SRC_OVER with per-pixel alpha, fully opaque overall.
+	blend := [4]byte{0, 0, 255, 1}
+	trayU("UpdateLayeredWindow", p.hwnd, 0, 0, uintptr(unsafe.Pointer(&size)), p.dc, uintptr(unsafe.Pointer(&origin)), 0, uintptr(unsafe.Pointer(&blend)), 2)
 }

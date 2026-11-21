@@ -42,27 +42,64 @@ func TestTrayPanelShowsState(t *testing.T) {
 	}
 }
 
-// A button canvas must show exactly its part of the panel at any scale,
-// otherwise seams appear between the panel and its child windows.
-func TestTrayButtonMatchesPanel(t *testing.T) {
+// The layered surface: clear outside the round corners, opaque inside,
+// partly covered on the curve, and a shadow below the panel at any scale.
+func TestTraySurfaceEdges(t *testing.T) {
 	for _, dpi := range []int{96, 120, 144, 192} {
 		scale := float64(dpi) / 96
-		px := func(v float64) int { return (int(v)*dpi + 48) / 96 }
-		v := trayView{Dark: true, DPIOn: true, TelegramBusy: true}
-		panel := newTrayCanvas(px(trayPanelWidth), px(trayPanelHeight), 0, 0, scale)
-		paintTray(panel, v, trayPress{})
-		for id, b := range trayBoxes {
-			x0, y0 := px(b.X), px(b.Y)
-			w, h := px(b.X+b.W)-x0, px(b.Y+b.H)-y0
-			button := newTrayCanvas(w, h, x0, y0, scale)
-			paintTray(button, v, trayPress{})
-			for y := 0; y < h; y++ {
-				for x := 0; x < w; x++ {
-					i, j := (y*w+x)*4, ((y+y0)*panel.w+x+x0)*4
-					if button.pix[i] != panel.pix[j] || button.pix[i+1] != panel.pix[j+1] || button.pix[i+2] != panel.pix[j+2] {
-						t.Fatalf("dpi %d button %d differs from the panel at %d,%d", dpi, id, x, y)
-					}
+		m := (trayShadow*dpi + 48) / 96
+		w, h := (trayPanelWidth*dpi+48)/96+2*m, (trayPanelHeight*dpi+48)/96+2*m
+		c := newTrayCanvas(w, h, -m, -m, scale)
+		paintTray(c, trayView{}, trayPress{})
+		c.seal()
+		alpha := func(x, y float64) byte {
+			return c.pix[((int(y*scale)+m)*c.w+int(x*scale)+m)*4+3]
+		}
+		if a := alpha(-trayShadow+.5, -trayShadow+.5); a != 0 {
+			t.Fatalf("dpi %d: window corner alpha = %d, want 0", dpi, a)
+		}
+		if a := alpha(1.5, 1.5); a > 40 {
+			t.Fatalf("dpi %d: outside the round corner alpha = %d", dpi, a)
+		}
+		if a := alpha(trayPanelWidth/2, trayPanelHeight/2); a != 255 {
+			t.Fatalf("dpi %d: panel alpha = %d, want 255", dpi, a)
+		}
+		if a := alpha(trayPanelWidth/2, trayPanelHeight+3); a < 30 || a > 140 {
+			t.Fatalf("dpi %d: shadow alpha = %d", dpi, a)
+		}
+		soft := 0
+		for i := 3; i < len(c.pix); i += 4 {
+			if c.pix[i] > 100 && c.pix[i] < 250 {
+				soft++
+			}
+			if c.pix[i-1] > c.pix[i] || c.pix[i-2] > c.pix[i] || c.pix[i-3] > c.pix[i] {
+				t.Fatalf("dpi %d: colour above alpha at byte %d", dpi, i)
+			}
+		}
+		if soft < 8 {
+			t.Fatalf("dpi %d: no anti-aliased edge pixels", dpi)
+		}
+	}
+}
+
+// Every control answers the pointer, a press and keyboard focus with a visible change.
+func TestTrayControlsShowFeedback(t *testing.T) {
+	for _, dark := range []bool{true, false} {
+		v := trayView{Dark: dark}
+		paint := func(press trayPress) *trayCanvas {
+			c := newTrayCanvas(trayPanelWidth, trayPanelHeight, 0, 0, 1)
+			paintTray(c, v, press)
+			return c
+		}
+		idle := string(paint(trayPress{}).pix)
+		for id := range trayBoxes {
+			for name, press := range map[string]trayPress{"hover": {hover: id}, "press": {hover: id, pressed: id}, "focus": {focus: id}} {
+				if string(paint(press).pix) == idle {
+					t.Fatalf("dark=%v control %d: %s looks idle", dark, id, name)
 				}
+			}
+			if string(paint(trayPress{hover: id}).pix) == string(paint(trayPress{hover: id, pressed: id}).pix) {
+				t.Fatalf("dark=%v control %d: press looks like hover", dark, id)
 			}
 		}
 	}
@@ -98,12 +135,18 @@ func TestTrayPreviewPNG(t *testing.T) {
 		"dark-fail": {Dark: true, DPI: "Не удалось подключиться", Telegram: "Прокси выключен", Error: "WinDivert: драйвер не ответил"},
 	}
 	const scale = 2
+	const m = trayShadow * scale
 	for name, v := range views {
-		c := newTrayCanvas(trayPanelWidth*scale, trayPanelHeight*scale, 0, 0, scale)
-		paintTray(c, v, trayPress{})
-		img := image.NewNRGBA(image.Rect(0, 0, c.w, c.h))
+		c := newTrayCanvas(trayPanelWidth*scale+2*m, trayPanelHeight*scale+2*m, -m, -m, scale)
+		press := trayPress{}
+		if name == "dark-on" {
+			press = trayPress{hover: trayExitButton, focus: trayTelegramButton}
+		}
+		paintTray(c, v, press)
+		c.seal()
+		img := image.NewRGBA(image.Rect(0, 0, c.w, c.h))
 		for i := 0; i < len(c.pix); i += 4 {
-			img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = c.pix[i+2], c.pix[i+1], c.pix[i], 255
+			img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = c.pix[i+2], c.pix[i+1], c.pix[i], c.pix[i+3]
 		}
 		f, err := os.Create(dir + "/tray-" + name + ".png")
 		if err != nil {

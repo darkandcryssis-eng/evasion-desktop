@@ -17,6 +17,8 @@ const (
 const (
 	trayPanelWidth, trayPanelHeight = 296, 312
 	trayPanelRadius                 = 20
+	// Clear space around the panel for its shadow, in panel units.
+	trayShadow = 16
 )
 
 type trayBox struct{ X, Y, W, H float64 }
@@ -160,13 +162,31 @@ func (c *trayCanvas) polyline(points [][2]float64, width float64, t trayTone, al
 	}
 }
 
-// trayPress tells the painter which control is focused or held down.
-type trayPress struct {
-	id               int
-	focused, pressed bool
+// trayPress names the control under the pointer, the one with keyboard focus
+// and the one held down; zero means none.
+type trayPress struct{ hover, focus, pressed int }
+
+// seal turns the finished picture into the premultiplied BGRA a layered window
+// takes: the panel keeps anti-aliased round corners and casts a soft shadow.
+func (c *trayCanvas) seal() {
+	panel := trayBox{0, 0, trayPanelWidth, trayPanelHeight}
+	for py := 0; py < c.h; py++ {
+		y := (float64(py+c.origY) + .5) / c.scale
+		for px := 0; px < c.w; px++ {
+			x := (float64(px+c.originX) + .5) / c.scale
+			i := (py*c.w + px) * 4
+			a := c.cover(roundBoxDistance(x, y, panel, trayPanelRadius))
+			d := max(0, roundBoxDistance(x, y-4, panel, trayPanelRadius))
+			alpha := a + (1-a)*.36*math.Exp(-d*d/(2*4.5*4.5))
+			c.pix[i] = byte(float64(c.pix[i])*a + .5)
+			c.pix[i+1] = byte(float64(c.pix[i+1])*a + .5)
+			c.pix[i+2] = byte(float64(c.pix[i+2])*a + .5)
+			c.pix[i+3] = byte(alpha*255 + .5)
+		}
+	}
 }
 
-// paintTray draws the whole panel; a button canvas simply sees its own part of it.
+// paintTray draws the whole panel, controls included.
 func paintTray(c *trayCanvas, v trayView, press trayPress) {
 	th := trayThemeFor(v.Dark)
 	violet := trayHex(0x5a46ff)
@@ -177,7 +197,7 @@ func paintTray(c *trayCanvas, v trayView, press trayPress) {
 		if th.dark {
 			c.glow(30, 34, 0, 62, violet, .3)
 		} else {
-			c.each(0, 0, 200, 140, func(i int, x, y float64) {
+			c.each(0, 0, trayPanelWidth, trayPanelHeight, func(i int, x, y float64) {
 				d := math.Hypot(x-30, y-34)
 				c.blend(i, violet, .2*math.Exp(-d*d/(2*62*62)))
 			})
@@ -224,9 +244,8 @@ func paintTray(c *trayCanvas, v trayView, press trayPress) {
 		if id == trayTelegramButton {
 			on, busy = v.TelegramOn, v.TelegramBusy
 		}
-		held := press.id == id
 		fill := th.tile
-		if held && press.focused {
+		if press.hover == id || press.pressed == id {
 			fill = th.raised
 		}
 		c.fillBox(b, 18, fill, 1)
@@ -236,7 +255,7 @@ func paintTray(c *trayCanvas, v trayView, press trayPress) {
 		} else {
 			c.strokeBox(b, 18, 1, th.line, 1)
 		}
-		if held && (press.focused || press.pressed) {
+		if press.focus == id || press.pressed == id {
 			c.strokeBox(b, 18, 1.5, th.accent, 1)
 		}
 		track := trayBox{b.X + b.W - 14 - 44, b.Y + (b.H-26)/2, 44, 26}
@@ -255,18 +274,18 @@ func paintTray(c *trayCanvas, v trayView, press trayPress) {
 	}
 
 	b := trayBoxes[trayDiagnoseButton]
-	held := press.id == trayDiagnoseButton
 	fill := th.tile
-	if held && press.focused {
-		fill = th.raised
+	well := th.raised
+	if press.hover == trayDiagnoseButton || press.pressed == trayDiagnoseButton {
+		fill, well = th.raised, th.raised.mix(th.accent, .22)
 	}
 	c.fillBox(b, 18, fill, 1)
 	c.strokeBox(b, 18, 1, th.line, 1)
-	if held && (press.focused || press.pressed) {
+	if press.focus == trayDiagnoseButton || press.pressed == trayDiagnoseButton {
 		c.strokeBox(b, 18, 1.5, th.accent, 1)
 	}
 	ix, iy := b.X+25, b.Y+b.H/2
-	c.disc(ix, iy, 15, th.raised, 1)
+	c.disc(ix, iy, 15, well, 1)
 	pulse := th.muted
 	if v.Diagnosing {
 		pulse = th.accent
@@ -274,21 +293,26 @@ func paintTray(c *trayCanvas, v trayView, press trayPress) {
 	c.polyline([][2]float64{{ix - 8, iy}, {ix - 4.5, iy}, {ix - 2, iy - 6}, {ix + 2, iy + 6}, {ix + 4.5, iy}, {ix + 8, iy}}, 1.5, pulse, 1)
 
 	b = trayBoxes[trayOpenButton]
-	held = press.id == trayOpenButton
 	fill = th.solid
-	if held && press.pressed {
-		fill = th.solid.mix(th.background, .22)
+	switch trayOpenButton {
+	case press.pressed:
+		fill = th.solid.mix(th.accent, .34)
+	case press.hover:
+		fill = th.solid.mix(th.accent, .16)
 	}
 	c.fillBox(b, 20, fill, 1)
-	if held && press.focused {
+	if press.focus == trayOpenButton {
 		c.strokeBox(trayBox{b.X + 3, b.Y + 3, b.W - 6, b.H - 6}, 17, 1.5, th.accent, 1)
 	}
 
 	b = trayBoxes[trayExitButton]
-	held = press.id == trayExitButton
-	c.fillBox(b, 20, th.tile, 1)
+	fill = th.tile
+	if press.hover == trayExitButton || press.pressed == trayExitButton {
+		fill = th.raised
+	}
+	c.fillBox(b, 20, fill, 1)
 	c.strokeBox(b, 20, 1, th.line, 1)
-	if held && (press.focused || press.pressed) {
+	if press.focus == trayExitButton || press.pressed == trayExitButton {
 		c.strokeBox(b, 20, 1.5, th.accent, 1)
 	}
 }
