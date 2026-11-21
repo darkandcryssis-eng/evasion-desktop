@@ -84,7 +84,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="identity"><span className="identity__mark" aria-hidden="true">e<span>↗</span></span><span>evasion<span className="identity__tag">СТАНЬТЕ БЛИЖЕ</span></span></div>
         <span className="nav-label">ПРОСТРАНСТВО</span>
-        <nav className="navigation" aria-label="Разделы приложения">{pages.map((p, index) => <button key={p.id} type="button" className={`nav-item${page === p.id ? " nav-item--active" : ""}`} aria-current={page === p.id ? "page" : undefined} onClick={() => setPage(p.id)}><Icon name={p.icon} size={17} /><span>{p.title}</span><small>{String(index + 1).padStart(2, "0")}</small></button>)}</nav>
+        <nav className="navigation" aria-label="Разделы приложения">{pages.map((p, index) => <button key={p.id} type="button" className={`nav-item${page === p.id ? " nav-item--active" : ""}`} aria-label={p.title} title={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => setPage(p.id)}><Icon name={p.icon} size={17} /><span>{p.title}</span><small>{String(index + 1).padStart(2, "0")}</small></button>)}</nav>
         <div className="sidebar__bottom"><div className="local-note"><Icon name="shield" size={17} /><span>На вашей стороне.<small>Работает локально</small></span></div><div className="sidebar__version"><span>EVASION / DESKTOP</span><span>↗</span></div></div>
       </aside>
       <div className="workspace__body">
