@@ -3,7 +3,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"runtime"
 	"sync"
@@ -74,7 +73,7 @@ type trayMonitorInfo struct {
 
 type trayPalette struct {
 	background, surface, border, ink, muted, accent, track, knob, warning uint32
-	top, bottom, accentInk, hover                                         uint32
+	accentInk, hover                                                      uint32
 }
 type trayPopup struct {
 	hwnd          uintptr
@@ -88,7 +87,6 @@ type trayPopup struct {
 	icon          uintptr
 	visible       bool
 	preview       bool
-	tops          map[int]int32
 }
 
 func trayCall(dll *windows.LazyDLL, name string, args ...uintptr) uintptr {
@@ -103,33 +101,12 @@ func trayColor(hex uint32) uint32                { return (hex>>16)&255 | hex&0x
 
 func (p *trayPopup) px(value int32) int32 { return (value*p.dpi + 48) / 96 }
 func (p *trayPopup) palette() trayPalette {
-	if p.state.Natural {
-		if p.state.Dark {
-			// Ночной лес: мох на тёмной хвое.
-			return trayPalette{background: 0x0a1108, surface: 0x141f0e, border: 0x2a3d1e, ink: 0xf2f0e2, muted: 0xa9b795, accent: 0xa9d489, track: 0x2c4018, knob: 0xf6fbec, warning: 0xffc58a,
-				top: 0x16240e, bottom: 0x070b05, accentInk: 0x16240e, hover: 0x1c2a12}
-		}
-		// Солнечные кроны: свежая зелень на молочном свете.
-		return trayPalette{background: 0xf4faf0, surface: 0xffffff, border: 0xdcebcd, ink: 0x1d2a17, muted: 0x68795a, accent: 0x2f7a3e, track: 0xd9e8cc, knob: 0xffffff, warning: 0x9c4f00,
-			top: 0xe4f2d6, bottom: 0xf3f6ea, accentInk: 0xf6fcf2, hover: 0xf2f9ea}
-	}
 	if p.state.Dark {
-		// Ночная сакура.
-		return trayPalette{background: 0x160b12, surface: 0x26151f, border: 0x3e2533, ink: 0xfbeff4, muted: 0xc2a3b2, accent: 0xff9fc4, track: 0x4a3040, knob: 0xfff6fa, warning: 0xffc58a,
-			top: 0x2a1222, bottom: 0x0f070c, accentInk: 0x3a0d22, hover: 0x30202b}
+		return trayPalette{background: 0x18181a, surface: 0x202023, border: 0x333338, ink: 0xeeeeef, muted: 0xb2b2ba, accent: 0xeeeeef, track: 0x45454d, knob: 0x18181a, warning: 0xedc59b,
+			accentInk: 0x18181a, hover: 0x29292d}
 	}
-	// Дневная сакура.
-	return trayPalette{background: 0xfdf3f5, surface: 0xffffff, border: 0xf0d6e0, ink: 0x3a1b27, muted: 0x8c6876, accent: 0xc0306a, track: 0xead4dd, knob: 0xffffff, warning: 0x9c4f00,
-		top: 0xfde4ec, bottom: 0xf6f3ea, accentInk: 0xfff8fb, hover: 0xfff6f9}
-}
-
-// bgAt — цвет фона панели на высоте y (для подложки кнопок).
-func (p *trayPopup) bgAt(y int32) uint32 {
-	c := p.palette()
-	if p.height <= 0 {
-		return c.background
-	}
-	return mixColor(c.top, c.bottom, float64(y)/float64(p.height))
+	return trayPalette{background: 0xf7f7f5, surface: 0xffffff, border: 0xe5e5e7, ink: 0x252528, muted: 0x62626a, accent: 0x252528, track: 0xd1d1d5, knob: 0xf7f7f5, warning: 0x87511a,
+		accentInk: 0xf7f7f5, hover: 0xf0f0f1}
 }
 
 // Each popup owns a separate UI thread; the Wails window keeps its size and state.
@@ -141,7 +118,7 @@ func startTrayPopup(view func() trayView, action func(string), ready func(toggle
 		if done != nil {
 			defer done()
 		}
-		p := &trayPopup{view: view, action: action, dpi: 96, width: 352, height: 348, buttons: map[int]uintptr{}}
+		p := &trayPopup{view: view, action: action, dpi: 96, width: 272, height: 252, buttons: map[int]uintptr{}}
 		p.preview = len(preview) > 0 && preview[0]
 		className := trayString(fmt.Sprintf("Evasion.TrayPanel.%d", windows.GetCurrentProcessId()))
 		instance := trayCall(trayKernel, "GetModuleHandleW", 0)
@@ -156,7 +133,7 @@ func startTrayPopup(view func() trayView, action func(string), ready func(toggle
 		if p.preview {
 			exStyle = 0x00050008
 		}
-		p.hwnd = trayU("CreateWindowExW", exStyle, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(trayString("Evasion — быстрый доступ"))), 0x82000000, 0, 0, 352, 348, 0, 0, instance, 0)
+		p.hwnd = trayU("CreateWindowExW", exStyle, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(trayString("Evasion — быстрый доступ"))), 0x82000000, 0, 0, 272, 252, 0, 0, instance, 0)
 		if p.hwnd == 0 {
 			return
 		}
@@ -299,7 +276,7 @@ func (p *trayPopup) show() {
 		p.makeFonts()
 		p.makeIcon()
 	}
-	bounds := placeTrayPanel(cursor.X, cursor.Y, p.px(352), p.px(348), p.px(10), info.Work)
+	bounds := placeTrayPanel(cursor.X, cursor.Y, p.px(272), p.px(252), p.px(8), info.Work)
 	p.width, p.height = bounds.Right-bounds.Left, bounds.Bottom-bounds.Top
 	trayU("SetWindowPos", p.hwnd, ^uintptr(0), trayInt(bounds.Left), trayInt(bounds.Top), trayInt(p.width), trayInt(p.height), 0x10)
 	p.layout()
@@ -323,19 +300,15 @@ func (p *trayPopup) layout() {
 	for _, item := range []struct {
 		id         int
 		x, y, w, h int32
-	}{{trayDPIButton, 16, 78, 320, 62}, {trayTelegramButton, 16, 148, 320, 62}, {trayDiagnoseButton, 16, 218, 320, 62}, {trayOpenButton, 16, 292, 214, 38}, {trayExitButton, 238, 292, 98, 38}} {
+	}{{trayDPIButton, 12, 54, 248, 48}, {trayTelegramButton, 12, 108, 248, 48}, {trayDiagnoseButton, 12, 162, 248, 36}, {trayOpenButton, 12, 208, 170, 32}, {trayExitButton, 190, 208, 70, 32}} {
 		w := p.px(item.w)
 		if item.id <= trayDiagnoseButton {
-			w = p.width - 2*p.px(16)
+			w = p.width - 2*p.px(12)
 		}
-		if p.tops == nil {
-			p.tops = map[int]int32{}
-		}
-		p.tops[item.id] = p.px(item.y)
 		trayU("MoveWindow", p.buttons[item.id], trayInt(p.px(item.x)), trayInt(p.px(item.y)), trayInt(w), trayInt(p.px(item.h)), 1)
 		trayU("SendMessageW", p.buttons[item.id], 0x30, p.fonts[1], 0)
 	}
-	radius := p.px(22)
+	radius := p.px(14)
 	region := trayG("CreateRoundRectRgn", 0, 0, trayInt(p.width+1), trayInt(p.height+1), trayInt(radius*2), trayInt(radius*2))
 	if region != 0 && trayU("SetWindowRgn", p.hwnd, region, 1) == 0 {
 		trayG("DeleteObject", region)
@@ -357,6 +330,9 @@ func (p *trayPopup) update() {
 		tgLabel = "Telegram. " + p.state.Telegram + ". Выключить"
 	}
 	labels := map[int]string{trayDPIButton: dpiLabel, trayTelegramButton: tgLabel, trayDiagnoseButton: "Проверить связь. " + p.state.Diagnostic, trayOpenButton: "Открыть Evasion", trayExitButton: "Выход из Evasion"}
+	if p.state.Error != "" {
+		labels[trayDiagnoseButton] += ". Ошибка: " + p.state.Error
+	}
 	if p.state.ResultsReady {
 		labels[trayOpenButton] = "Открыть результаты диагностики"
 	}
@@ -382,7 +358,7 @@ func (p *trayPopup) makeFonts() {
 		size, weight int32
 		italic       uintptr
 		face         string
-	}{{22, 500, 1, "Georgia"}, {13, 600, 0, "Segoe UI"}, {11, 400, 0, "Segoe UI"}} {
+	}{{16, 600, 0, "Segoe UI"}, {12, 600, 0, "Segoe UI"}, {11, 400, 0, "Segoe UI"}} {
 		p.fonts[i] = trayG("CreateFontW", trayInt(-p.px(item.size)), 0, 0, 0, trayInt(item.weight), item.italic, 0, 0, 1, 0, 0, 5, 0, uintptr(unsafe.Pointer(trayString(item.face))))
 	}
 }
@@ -392,40 +368,7 @@ func (p *trayPopup) makeIcon() {
 		trayU("DestroyIcon", p.icon)
 		p.icon = 0
 	}
-	iconData := trayIconBytes()
-	if len(iconData) < 6 {
-		return
-	}
-	count := int(binary.LittleEndian.Uint16(iconData[4:6]))
-	best := -1
-	distance := int(^uint(0) >> 1)
-	for i := 0; i < count; i++ {
-		at := 6 + i*16
-		if at+16 > len(iconData) {
-			break
-		}
-		size := int(iconData[at])
-		if size == 0 {
-			size = 256
-		}
-		delta := size - int(p.px(32))
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta < distance {
-			distance = delta
-			best = at
-		}
-	}
-	if best < 0 {
-		return
-	}
-	offset := int(binary.LittleEndian.Uint32(iconData[best+8:]))
-	length := int(binary.LittleEndian.Uint32(iconData[best+4:]))
-	if offset+length > len(iconData) {
-		return
-	}
-	p.icon = trayU("CreateIconFromResourceEx", uintptr(unsafe.Pointer(&iconData[offset])), uintptr(length), 1, 0x30000, trayInt(p.px(32)), trayInt(p.px(32)), 0)
+	p.icon = iconFromICO(trayIconBytes(), p.px(28))
 }
 
 func (p *trayPopup) releaseResources() {
@@ -476,23 +419,12 @@ func (p *trayPopup) paint(target uintptr) {
 		trayG("DeleteObject", bitmap)
 		trayG("DeleteDC", dc)
 	}()
-	trayGradient(dc, trayRect{0, 0, p.width, p.height}, c.top, c.bottom)
-	drawTrayImage(dc, trayHeader(p.state.Dark, p.state.Natural), 0, 0, p.width, p.px(74))
-	trayOutline(dc, trayRect{0, 0, p.width, p.height}, p.px(22), c.border)
+	trayFill(dc, trayRect{0, 0, p.width, p.height}, c.background)
+	trayOutline(dc, trayRect{0, 0, p.width, p.height}, p.px(14), c.border)
 	if p.icon != 0 {
-		trayU("DrawIconEx", dc, trayInt(p.px(18)), trayInt(p.px(20)), p.icon, trayInt(p.px(34)), trayInt(p.px(34)), 0, 0, 3)
+		trayU("DrawIconEx", dc, trayInt(p.px(14)), trayInt(p.px(13)), p.icon, trayInt(p.px(28)), trayInt(p.px(28)), 0, 0, 3)
 	}
-	p.text(dc, "evasion", p.px(62), p.px(14), p.px(200), p.px(30), 0, c.ink, false)
-	status, dot := "Обход выключен", c.muted
-	switch {
-	case p.state.DPIBusy:
-		status, dot = p.state.DPI, c.accent
-	case p.state.DPIOn:
-		status, dot = "Обход работает", c.accent
-	}
-	dx, dy := p.px(64), p.px(48)
-	trayRound(dc, trayRect{dx, dy, dx + p.px(7), dy + p.px(7)}, p.px(4), dot, dot)
-	p.text(dc, status, p.px(76), p.px(43), p.px(240), p.px(17), 2, c.muted, false)
+	p.text(dc, "evasion", p.px(51), p.px(15), p.px(180), p.px(24), 0, c.ink, false)
 }
 
 func (p *trayPopup) paintButton(item *trayDrawItem) {
@@ -508,9 +440,7 @@ func (p *trayPopup) paintButton(item *trayDrawItem) {
 	}()
 	c := p.palette()
 	id := int(item.ID)
-	top := p.tops[id]
-	// Подложка повторяет градиент панели, чтобы углы карточек не выделялись.
-	trayGradient(dc, trayRect{0, 0, w, h}, p.bgAt(top), p.bgAt(top+h))
+	trayFill(dc, trayRect{0, 0, w, h}, c.background)
 	focused := item.State&0x10 != 0
 	pressed := item.State&1 != 0
 	disabled := item.State&4 != 0
@@ -519,15 +449,15 @@ func (p *trayPopup) paintButton(item *trayDrawItem) {
 	case trayOpenButton:
 		fill := c.accent
 		if pressed {
-			fill = mixColor(c.accent, c.bottom, .25)
+			fill = mixColor(c.accent, c.background, .25)
 		}
-		trayRound(dc, trayRect{0, 0, w, h}, h/2, fill, fill)
+		trayRound(dc, trayRect{0, 0, w, h}, p.px(8), fill, fill)
 		if focused {
-			trayOutline(dc, trayRect{p.px(2), p.px(2), w - p.px(2), h - p.px(2)}, h/2-p.px(2), c.accentInk)
+			trayOutline(dc, trayRect{p.px(2), p.px(2), w - p.px(2), h - p.px(2)}, p.px(6), c.accentInk)
 		}
 		label := "Открыть Evasion"
 		if p.state.ResultsReady {
-			label = "Результаты диагностики"
+			label = "Результаты проверки"
 		}
 		p.text(dc, label, 0, 0, w, h, 1, c.accentInk, true)
 		return
@@ -536,7 +466,7 @@ func (p *trayPopup) paintButton(item *trayDrawItem) {
 		if pressed || focused {
 			border = c.accent
 		}
-		trayRound(dc, trayRect{0, 0, w, h}, h/2, fill, border)
+		trayRound(dc, trayRect{0, 0, w, h}, p.px(8), fill, border)
 		p.text(dc, "Выход", 0, 0, w, h, 1, c.muted, true)
 		return
 	}
@@ -548,9 +478,9 @@ func (p *trayPopup) paintButton(item *trayDrawItem) {
 	if pressed {
 		border = c.accent
 	}
-	trayRound(dc, trayRect{0, 0, w, h}, p.px(16), fill, border)
+	trayRound(dc, trayRect{0, 0, w, h}, p.px(9), fill, border)
 
-	label, detail := "Обход DPI", p.state.DPI
+	label, detail := "Обход", p.state.DPI
 	on, busy := p.state.DPIOn, p.state.DPIBusy
 	if id == trayTelegramButton {
 		label, detail = "Telegram", p.state.Telegram
@@ -567,36 +497,28 @@ func (p *trayPopup) paintButton(item *trayDrawItem) {
 	if p.state.Error != "" && id == trayDiagnoseButton {
 		detail = p.state.Error
 	}
-	// Иконка в круглой подложке; у включённого — акцентная.
-	cx, cy := p.px(31), h/2
-	badge, glyph := mixColor(c.surface, c.border, .7), c.muted
-	if on {
-		badge, glyph = mixColor(c.surface, c.accent, .22), c.accent
-	}
-	r := p.px(17)
-	trayRound(dc, trayRect{cx - r, cy - r, cx + r, cy + r}, r, badge, badge)
-	p.symbol(dc, id, cx, cy, glyph)
-
 	inkColor := c.ink
 	if disabled {
 		inkColor = c.muted
 	}
-	p.text(dc, label, p.px(58), p.px(11), w-p.px(124), p.px(20), 1, inkColor, false)
-	detailWidth := w - p.px(124)
 	if id == trayDiagnoseButton {
-		detailWidth = w - p.px(70)
-	}
-	color := c.muted
-	if id == trayDiagnoseButton && p.state.Error != "" {
-		color = c.warning
-	}
-	p.text(dc, detail, p.px(58), p.px(32), detailWidth, p.px(17), 2, color, false)
-	if id == trayDiagnoseButton {
-		if !busy {
-			p.text(dc, "↗", w-p.px(42), 0, p.px(26), h, 1, c.accent, true)
+		p.symbol(dc, id, p.px(21), h/2, c.muted)
+		if p.state.ResultsReady && !busy {
+			label = "Проверить ещё раз"
 		}
+		if p.state.Error != "" && !busy {
+			// Error also holds failed connection/Telegram actions, not just diagnostics.
+			// Keep the action honest and show the reason instead of a generic retry label.
+			label = "Проверить связь"
+			p.text(dc, label, p.px(40), p.px(2), w-p.px(52), p.px(17), 1, inkColor, false)
+			p.text(dc, detail, p.px(40), p.px(20), w-p.px(52), p.px(14), 2, c.warning, false)
+			return
+		}
+		p.text(dc, label, p.px(40), p.px(9), w-p.px(52), p.px(20), 1, inkColor, false)
 		return
 	}
+	p.text(dc, label, p.px(12), p.px(6), w-p.px(72), p.px(18), 1, inkColor, false)
+	p.text(dc, detail, p.px(12), p.px(26), w-p.px(72), p.px(16), 2, c.muted, false)
 	track := c.track
 	if on {
 		track = c.accent
@@ -604,13 +526,17 @@ func (p *trayPopup) paintButton(item *trayDrawItem) {
 	if busy {
 		track = mixColor(c.track, c.accent, .45)
 	}
-	x, y := w-p.px(60), (h-p.px(26))/2
-	trayRound(dc, trayRect{x, y, x + p.px(44), y + p.px(26)}, p.px(13), track, track)
+	x, y := w-p.px(48), (h-p.px(22))/2
+	trayRound(dc, trayRect{x, y, x + p.px(36), y + p.px(22)}, p.px(11), track, track)
 	knobX := x + p.px(3)
 	if on {
-		knobX = x + p.px(21)
+		knobX = x + p.px(17)
 	}
-	trayRound(dc, trayRect{knobX, y + p.px(3), knobX + p.px(20), y + p.px(23)}, p.px(10), c.knob, c.knob)
+	knob := c.muted
+	if on {
+		knob = c.knob
+	}
+	trayRound(dc, trayRect{knobX, y + p.px(3), knobX + p.px(16), y + p.px(19)}, p.px(8), knob, knob)
 }
 
 func (p *trayPopup) symbol(dc uintptr, id int, x, y int32, color uint32) {

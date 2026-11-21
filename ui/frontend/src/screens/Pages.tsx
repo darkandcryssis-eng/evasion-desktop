@@ -30,7 +30,7 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
   const removed = state?.ruGuard ?? [];
   return (
     <div className="page-body">
-      <PageHead kicker="02 / КАРТА МАРШРУТОВ" title="Без лишних путей_" note="Обход применяется только к перечисленным доменам. Всё остальное идёт напрямую, как без Evasion."
+      <PageHead kicker="Прямое подключение" title="Сервисы" note="Обход работает только для этих сервисов. Остальной интернет — как обычно."
         action={<Segmented label="Раздел" value={tab} options={[{ id: "targets", label: "Цели" }, { id: "portfolio", label: "Стратегии" }]} onChange={setTab} />} />
       <Glass className="guard">
         <span className="guard__mark"><Icon name="shield" size={20} /></span>
@@ -115,7 +115,7 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
 
   return (
     <div className="page-body">
-      <PageHead kicker="04 / ИГРОВОЙ КАНАЛ" title="Ваша игра. Ваш ход_" note="Работает только для выбранных игр и только пока они запущены. Остальные игры и программы не затрагиваются."
+      <PageHead kicker="Отдельные правила" title="Игры" note="Добавьте игру, чтобы включать обход только для неё, пока она запущена."
         action={<Badge tone={active ? "success" : armed ? "accent" : "neutral"} pulse={on}>{status}</Badge>} />
       <Glass className="launch" aria-busy={busy}>
         <div className={`launch__pulse${on ? " launch__pulse--on" : ""}`} aria-hidden="true"><i /><i /><i /><Icon name="game" size={22} /></div>
@@ -220,7 +220,7 @@ export function TelegramScreen({ state, onRefresh }: { state?: TelegramState; on
   const list = routes.value ?? [];
   return (
     <div className="page-body">
-      <PageHead kicker="03 / ЛИЧНЫЙ КАНАЛ" title="Telegram. Напрямую_" note="Локальный MTProto-прокси с автоматическим выбором маршрута. Сообщения остаются зашифрованы Telegram."
+      <PageHead kicker="Сообщения и звонки" title="Telegram" note="Включите встроенный прокси и подтвердите его в Telegram. Сообщения остаются зашифрованными."
         action={<Button kind={state?.running ? "soft" : "solid"} icon="power" disabled={busy || !state} onClick={() => void toggle()}>{busy ? "Подождите…" : state?.running ? "Выключить" : "Включить Telegram"}</Button>} />
       {notice && <Note icon="info">{notice}</Note>}
       {!state?.running && state?.error && <Note tone="warn" icon="alert">{state.error}</Note>}
@@ -278,7 +278,7 @@ export function DiagnosticsScreen() {
   const run = async (kind: "services" | "doctor" | "export", fn: () => Promise<void>) => { setBusy(kind); setNotice(""); try { await fn(); } catch (e) { setNotice(String(e)); } finally { setBusy(""); } };
   return (
     <div className="page-body">
-      <PageHead kicker="05 / ДИАГНОСТИКА" title="Читаем сигнал_" note="Где прервалась связь и что поможет её вернуть"
+      <PageHead kicker="Если что-то не работает" title="Проверка связи" note="Проверим подключение и подскажем, что можно исправить."
         action={<Button kind="solid" icon="pulse" disabled={busy !== ""} onClick={() => void run("services", async () => { setServices(await api.runServiceDiagnostics()); await load(); })}>{busy === "services" ? "Проверяем…" : "Проверить связь"}</Button>} />
       <div className="grid2" aria-busy={busy === "services"}>
         {serviceNames.map(([id, name]) => {
@@ -339,11 +339,11 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
   const tone: Tone = phase === "healthy" || phase === "recovered" ? "success" : phase === "unavailable" || phase === "network_down" || phase === "degraded" ? "warning" : "neutral";
   return (
     <div className="page-body">
-      <PageHead kicker="06 / ПЕРСОНАЛИЗАЦИЯ" title="Ваши правила_" note="Оформление, поведение приложения и автоматическое восстановление связи." />
+      <PageHead kicker="Под себя" title="Настройки" note="Оформление, запуск и автоматическое восстановление связи." />
       <Glass className="card">
         <header className="card-head"><span className="kicker">Оформление</span></header>
-        <Row title="Бумага / графит" note="Кнопка [◐] в верхней строке меняет светлую и тёмную темы. Выбор сохраняется." />
-        <Row title="Движение символов" note="Вращение ASCII-скульптуры, отклик на курсор и переходы. Системное уменьшение движения всегда в приоритете."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
+        <Row title="Светлая и тёмная тема" note="Переключаются кнопкой вверху окна. Выбранная тема сохраняется и применяется к трею." />
+        <Row title="Мягкие анимации" note="Маленький ASCII-кот и плавные переходы. Системная настройка уменьшения движения имеет приоритет."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
         <Row title="Стартовый экран" note="Действует со следующего запуска"><Toggle label="Стартовый экран" checked={startup} onChange={onStartup} /></Row>
       </Glass>
       <Glass className="card">

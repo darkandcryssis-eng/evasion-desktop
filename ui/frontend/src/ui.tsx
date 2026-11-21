@@ -1,17 +1,18 @@
-// Accessible controls for the monochrome ASCII instrument.
+// Accessible, familiar controls shared by the desktop screens.
 import { Component, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { House, Layers, Gamepad2, Send, Activity, Settings, Power, RefreshCw, ChevronDown, Copy, ExternalLink, Folder, Trash2, Plus, Shield, TriangleAlert, Download, Search, Eye, X, ArrowDownLeft, ArrowUpRight, PanelBottom, Info, Play, Zap, Route } from "lucide-react";
 
-/* Character-built symbols, hidden from assistive technology in favor of labels. */
 const glyphs = {
-  home: "~/", layers: "::", game: "><", send: "/>", pulse: "~",
-  settings: "|=", power: "(!)", refresh: "@", chevron: "v", copy: "[]",
-  external: "↗", folder: "/_", trash: "[-]", plus: "+", shield: "<>",
-  alert: "!", download: "↓", search: "/?", eye: "(.)", x: "×",
-  down: "↙", up: "↗", tray: "[↓]", info: "i", play: ">", bolt: "//", route: "->",
+  home: House, layers: Layers, game: Gamepad2, send: Send, pulse: Activity,
+  settings: Settings, power: Power, refresh: RefreshCw, chevron: ChevronDown, copy: Copy,
+  external: ExternalLink, folder: Folder, trash: Trash2, plus: Plus, shield: Shield,
+  alert: TriangleAlert, download: Download, search: Search, eye: Eye, x: X,
+  down: ArrowDownLeft, up: ArrowUpRight, tray: PanelBottom, info: Info, play: Play, bolt: Zap, route: Route,
 };
 export type IconName = keyof typeof glyphs;
-export function Icon({ name, size = 18, className = "" }: { name: IconName; size?: number; stroke?: number; className?: string }) {
-  return <span className={`ascii-icon ${className}`} style={{ width: size + 5, height: size, fontSize: Math.min(size, 16) }} aria-hidden="true">{glyphs[name]}</span>;
+export function Icon({ name, size = 18, stroke = 1.7, className = "" }: { name: IconName; size?: number; stroke?: number; className?: string }) {
+  const Glyph = glyphs[name];
+  return <Glyph size={size} strokeWidth={stroke} className={className} aria-hidden="true" focusable="false" />;
 }
 
 /* ───────────── SVG-фильтры: жидкое стекло и «гу» ───────────── */

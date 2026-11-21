@@ -544,7 +544,7 @@ func TestYouTubeCandidateConcurrencyIsBoundedAndCancelled(t *testing.T) {
 	defer cancel()
 	results := a.candidates(ctx, "current")
 	names := map[string]bool{}
-	for range 4 {
+	for range youtubeScanWorkers * 2 {
 		select {
 		case name := <-started:
 			names[name] = true
@@ -556,7 +556,7 @@ func TestYouTubeCandidateConcurrencyIsBoundedAndCancelled(t *testing.T) {
 	for range results {
 		t.Fatal("cancelled candidate accepted")
 	}
-	if len(names) != 2 || peak.Load() != 4 || inFlight.Load() != 0 {
+	if len(names) != youtubeScanWorkers || peak.Load() != int32(youtubeScanWorkers*2) || inFlight.Load() != 0 {
 		t.Fatal("unbounded or leaked candidate probes", names, peak.Load(), inFlight.Load())
 	}
 }

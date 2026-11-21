@@ -21,37 +21,12 @@ import (
 //go:embed assets/tray.ico
 var trayIcon []byte
 
-//go:embed assets/tray-natural.ico
-var trayIconNatural []byte
-
-// Промежуточные кадры для мягкого переливания розового в зелёный и обратно.
-//
-//go:embed assets/tray-morph-1.ico
-var trayMorph1 []byte
-
-//go:embed assets/tray-morph-2.ico
-var trayMorph2 []byte
-
-//go:embed assets/tray-morph-3.ico
-var trayMorph3 []byte
-
-// Полные иконки окна (панель задач, Alt+Tab) под оба пейзажа.
+// One cat identity for the executable, taskbar, Alt+Tab and tray.
 //
 //go:embed build/windows/icon.ico
-var windowIconSakura []byte
-
-//go:embed build/windows/icon-natural.ico
-var windowIconNatural []byte
-
-// trayIconActive — набор байт иконки, который сейчас рисует трей-панель.
-var trayIconActive atomic.Pointer[[]byte]
-var traySkin atomic.Value
-var trayAnimation atomic.Uint64
+var windowIcon []byte
 
 func trayIconBytes() []byte {
-	if p := trayIconActive.Load(); p != nil {
-		return *p
-	}
 	return trayIcon
 }
 
@@ -88,48 +63,14 @@ func (a *App) trayReady() {
 	mQuit.Click(a.ExitApplication)
 }
 
-// setTraySkinIcon меняет иконку трея, трей-панели и окна под пейзаж оформления.
-// В трее смена проходит через три смешанных кадра, остальные поверхности
-// обновляются сразу, чтобы не отставать от интерфейса.
-func (a *App) setTraySkinIcon(skin string) {
-	if skin != "natural" {
-		skin = "sakura"
-	}
-	natural := skin == "natural"
-	previous := traySkin.Load()
-	traySkin.Store(skin)
-	if natural {
-		trayIconActive.Store(&trayIconNatural)
-	} else {
-		trayIconActive.Store(&trayIcon)
-	}
-	setWindowSkinIcon(natural)
+// Keep the API compatible with older preferences; landscape skins are retired.
+func (a *App) setTraySkinIcon(_ string) {
+	setWindowSkinIcon(false)
 	if !a.trayAvailable.Load() {
 		return
 	}
 
-	generation := trayAnimation.Add(1)
-	final := trayIconBytes()
-	if previous == nil || previous.(string) == skin {
-		systray.SetIcon(final)
-		return
-	}
-	go func() {
-		frames := [][]byte{trayMorph1, trayMorph2, trayMorph3}
-		if previous.(string) == "natural" {
-			frames[0], frames[2] = frames[2], frames[0]
-		}
-		for _, frame := range frames {
-			if trayAnimation.Load() != generation || !a.trayAvailable.Load() {
-				return
-			}
-			systray.SetIcon(frame)
-			time.Sleep(85 * time.Millisecond)
-		}
-		if trayAnimation.Load() == generation && a.trayAvailable.Load() {
-			systray.SetIcon(final)
-		}
-	}()
+	systray.SetIcon(trayIcon)
 }
 
 var lastWindowIcons [2]uintptr
@@ -138,37 +79,11 @@ var windowIconSync atomic.Uint64
 
 // iconFromICO выбирает из .ico-файла кадр поближе к size и создаёт HICON.
 func iconFromICO(data []byte, size int32) uintptr {
-	if len(data) < 6 {
+	image := iconImage(data, int(size))
+	if len(image) == 0 {
 		return 0
 	}
-	count := int(data[4]) | int(data[5])<<8
-	best, distance := -1, int(^uint(0)>>1)
-	for i := 0; i < count; i++ {
-		at := 6 + i*16
-		if at+16 > len(data) {
-			break
-		}
-		s := int(data[at])
-		if s == 0 {
-			s = 256
-		}
-		d := s - int(size)
-		if d < 0 {
-			d = -d
-		}
-		if d < distance {
-			distance, best = d, at
-		}
-	}
-	if best < 0 {
-		return 0
-	}
-	length := int(uint32(data[best+4]) | uint32(data[best+5])<<8 | uint32(data[best+6])<<16 | uint32(data[best+7])<<24)
-	offset := int(uint32(data[best+8]) | uint32(data[best+9])<<8 | uint32(data[best+10])<<16 | uint32(data[best+11])<<24)
-	if offset+length > len(data) || length <= 0 {
-		return 0
-	}
-	return trayU("CreateIconFromResourceEx", uintptr(unsafe.Pointer(&data[offset])), uintptr(length), 1, 0x30000, trayInt(size), trayInt(size), 0)
+	return trayU("CreateIconFromResourceEx", uintptr(unsafe.Pointer(&image[0])), uintptr(len(image)), 1, 0x30000, trayInt(size), trayInt(size), 0)
 }
 
 // mainWindow находит верхнеуровневое окно приложения (не трей-панель).
@@ -221,13 +136,10 @@ func setWindowSkinIcon(natural bool) {
 	time.AfterFunc(650*time.Millisecond, apply)
 }
 
-func applyWindowSkinIcon(natural bool) {
+func applyWindowSkinIcon(_ bool) {
 	windowIconMu.Lock()
 	defer windowIconMu.Unlock()
-	data := windowIconSakura
-	if natural {
-		data = windowIconNatural
-	}
+	data := windowIcon
 	hwnd := mainWindow()
 	if hwnd == 0 {
 		return
@@ -275,7 +187,6 @@ func (a *App) showWindow() {
 
 func (a *App) trayQuit() {
 	a.trayAvailable.Store(false)
-	trayAnimation.Add(1)
 	if a.tray != nil {
 		a.tray.close()
 	}

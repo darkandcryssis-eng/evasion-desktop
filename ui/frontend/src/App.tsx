@@ -7,9 +7,10 @@ import { Boundary, Button, Dialog, Icon, type IconName } from "./ui";
 import { HomeScreen, telegramMode } from "./screens/Home";
 import { DiagnosticsScreen, GamesScreen, ServicesScreen, SettingsScreen, TelegramScreen } from "./screens/Pages";
 import type { Page, Theme } from "./types";
+import { AsciiCat } from "./fx/AsciiCat";
 
 const pages: { id: Page; title: string; icon: IconName }[] = [
-  { id: "home", title: "Обзор", icon: "home" }, { id: "services", title: "Сервисы", icon: "layers" },
+  { id: "home", title: "Главная", icon: "home" }, { id: "services", title: "Сервисы", icon: "layers" },
   { id: "telegram", title: "Telegram", icon: "send" }, { id: "games", title: "Игры", icon: "game" },
   { id: "diagnostics", title: "Диагностика", icon: "pulse" }, { id: "settings", title: "Настройки", icon: "settings" },
 ];
@@ -32,7 +33,7 @@ export default function App() {
   }, [theme, motion]);
   useEffect(() => {
     // Keep the native tray in sync; landscape selection is intentionally retired.
-    const sync = () => { void api.setTrayPreferences(theme, loadOptions(), "natural").catch(() => {}); };
+    const sync = () => { void api.setTrayPreferences(theme, loadOptions(), "minimal").catch(() => {}); };
     sync(); window.addEventListener("evasion:options-changed", sync);
     return () => window.removeEventListener("evasion:options-changed", sync);
   }, [theme]);
@@ -45,8 +46,8 @@ export default function App() {
     savePreference("evasion-ui-startup", String(startup));
   }, [motion, startup, theme]);
   useEffect(() => {
-    WindowSetSize(1200, 820); WindowSetMinSize(760, 540); WindowCenter();
-    const timer = window.setTimeout(() => setBooting(false), 900);
+    WindowSetSize(900, 700); WindowSetMinSize(700, 540); WindowCenter();
+    const timer = window.setTimeout(() => setBooting(false), 500);
     return () => window.clearTimeout(timer);
   }, []);
   useLayoutEffect(() => { if (viewport.current) viewport.current.scrollTop = 0; }, [page]);
@@ -82,19 +83,18 @@ export default function App() {
   return (
     <main className="workspace" data-phase={phase}>
       <header className="workspace__header">
-        <div className="identity" aria-label="Evasion"><span aria-hidden="true">[e]</span> evasion<span className="identity__cursor" aria-hidden="true">_</span></div>
-        <span className="header-edition">НЕЗАВИСИМОЕ СОЕДИНЕНИЕ / ASCII EDITION</span>
+        <div className="identity" aria-label="Evasion"><span aria-hidden="true">/\_/\</span> evasion</div>
         <div className="header-tools"><span className="engine-indicator" data-phase={phase}><i />{engine.state ? phaseLabel[phase] : "Получаем состояние"}</span>
-          <button type="button" className="theme-switch" aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><span aria-hidden="true">[{theme === "black" ? "◐" : "◑"}]</span></button>
+          <button type="button" className="theme-switch" title={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><span aria-hidden="true">{theme === "black" ? "☼" : "◐"}</span></button>
           <div className="window-actions"><button type="button" aria-label="Свернуть" onClick={WindowMinimise}>_</button><button type="button" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}>□</button><button type="button" aria-label="Закрыть" onClick={() => setClosing(true)}>×</button></div>
         </div>
       </header>
-      <nav className="navigation" aria-label="Разделы приложения">{pages.map((p, index) => <button key={p.id} type="button" className={`nav-item${page === p.id ? " nav-item--active" : ""}`} aria-label={p.title} title={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => setPage(p.id)}><small aria-hidden="true">{String(index + 1).padStart(2, "0")}</small><span>{p.title}</span><b aria-hidden="true">{page === p.id ? "↵" : "/"}</b></button>)}</nav>
+      <nav className="navigation" aria-label="Разделы приложения">{pages.map((p) => <button key={p.id} type="button" className={`nav-item${page === p.id ? " nav-item--active" : ""}`} aria-label={p.title} title={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => setPage(p.id)}>{p.title}</button>)}</nav>
       <section className="workspace__viewport" ref={viewport}>
         <div className="workspace__page" key={page}><Boundary resetKey={page}>{renderPage()}</Boundary></div>
-        <footer className="workspace__footer"><span>EVASION <span aria-hidden="true">//</span> ВАШЕ УСТРОЙСТВО. ВАШ МАРШРУТ.</span><span className="footer-code" aria-hidden="true">..:··:: / + / ::··:..</span><span>НИЧЕГО ЛИШНЕГО. <span aria-hidden="true">[↗]</span></span></footer>
+        <footer className="workspace__footer">Evasion · работает на вашем устройстве</footer>
       </section>
-      {booting && <div className="boot" aria-live="polite"><span className="boot__symbol" aria-hidden="true">[ e↗ ]</span><span>ПРОСТРАНСТВО ОТКРЫВАЕТСЯ<span className="boot__cursor">_</span></span></div>}
+      {booting && <div className="boot" aria-live="polite"><AsciiCat /><span>Запускаем Evasion…</span></div>}
       <Dialog open={closing} onClose={() => setClosing(false)} icon="power" title="Остаться на связи?" text="Сверните Evasion в трей, чтобы соединение продолжало работать."><button type="button" className="choice" onClick={() => { setClosing(false); void api.minimiseToTray(); }}><Icon name="tray" size={17} /><span><strong>Свернуть в трей</strong><small>Оставить обход работать в фоне</small></span></button><button type="button" className="choice choice--quit" onClick={() => void api.exitApplication()}><Icon name="power" size={17} /><span><strong>Завершить работу</strong><small>Остановить движок и выйти</small></span></button></Dialog>
       <Dialog open={pending !== null} onClose={() => setPending(null)} icon="send" title="Telegram — тоже?" text="Включить встроенный прокси вместе с обходом? При первом запуске подтвердите подключение в Telegram."><Button kind="ghost" onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, false); }}>Только обход</Button><Button kind="solid" data-autofocus onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, true); }}>Включить Telegram</Button></Dialog>
     </main>
