@@ -50,6 +50,7 @@ type App struct {
 	serviceResults  []ServiceDiagnostic
 	routeResults    []TelegramRoute
 	ruRemoved       []string
+	conflicts       conflictReport
 	gameArmed       atomic.Bool
 	updates         *updater
 }
@@ -214,6 +215,11 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 	// Снять любые конкурирующие evasion.exe перед запуском: два движка дерутся
 	// за WinDivert handle и не дают обновить runtime. Свой процесс ещё не поднят.
 	killStrayEngines()
+	// Чужой перехват (zapret, GoodbyeDPI, byedpi) на том же трафике ломает десинк.
+	conflicts := clearConflicts()
+	a.settingsMu.Lock()
+	a.conflicts = conflicts
+	a.settingsMu.Unlock()
 	if err := extractPayload(l); err != nil {
 		return err
 	}
@@ -399,6 +405,10 @@ func (a *App) GetDiagnostics() []DiagnosticItem {
 		items = append(items, driverDiagnosticItem(a.driverDiagnostic()))
 		add(rtcTrackItem(l))
 		add(lockItem(l, a.engine.snapshot().PID))
+		a.settingsMu.Lock()
+		conflicts := a.conflicts
+		a.settingsMu.Unlock()
+		add(conflictItem(conflicts))
 		add(hostsItem())
 	}
 	return items
