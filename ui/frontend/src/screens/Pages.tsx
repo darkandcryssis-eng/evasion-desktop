@@ -95,7 +95,7 @@ function CustomIPList({ running }: { running: boolean }) {
   };
   return (
     <Disclosure icon="route" title="Свои IP-адреса" note={saved?.count ? `Записей: ${saved.count}` : "Если сервис блокируют по адресу, а не по имени"}>
-      <p className="lead">По одному адресу или подсети на строку: <span className="mono">203.0.113.7</span> или <span className="mono">203.0.113.0/24</span>. Обход включается для защищённых соединений (HTTPS) к этим адресам, даже если сайта нет в списке сервисов.</p>
+      <p className="probe__sum" style={{ marginBottom: 10 }}>По одному адресу или подсети на строку: <span className="mono">203.0.113.7</span> или <span className="mono">203.0.113.0/24</span>. Обход включается для защищённых соединений (HTTPS) к этим адресам, даже если сайта нет в списке сервисов.</p>
       <textarea className="field field--area mono" aria-label="Свои IP-адреса и подсети" spellCheck={false} rows={6} value={text} disabled={!saved || busy}
         placeholder={"# комментарий\n203.0.113.7\n203.0.113.0/24\n2001:db8::/48"} onChange={(e) => { setText(e.target.value); setNotice(null); }} />
       {notice && <Note tone={notice.warn ? "warn" : undefined} icon={notice.warn ? "alert" : "info"}>{notice.text}</Note>}
