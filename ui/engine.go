@@ -436,6 +436,16 @@ func (m *engineManager) consumeLogLine(text string) {
 	}
 }
 
+// note добавляет в журнал строку самой оболочки; ошибкой она не считается.
+func (m *engineManager) note(msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logs = append(m.logs, LogLine{At: time.Now().Format(time.RFC3339), Level: "INFO", Msg: msg})
+	if len(m.logs) > logRingSize {
+		m.logs = m.logs[len(m.logs)-logRingSize:]
+	}
+}
+
 func attrSuffix(a string) string {
 	if a == "" {
 		return ""

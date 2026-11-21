@@ -61,6 +61,21 @@ func beforeEngineStart() {
 	_ = runHidden("netsh", "advfirewall", "firewall", "delete", "rule", "name=movok-discord-bad-rtc")
 }
 
+func processRunning(image string) bool {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
+		if strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), image) {
+			return true
+		}
+	}
+	return false
+}
+
 // Only retire an orphan of this installation's embedded engine.
 func killStrayEngines() {
 	l, err := resolveLayout()
@@ -129,7 +144,10 @@ func restartDiscord(proxyAddress string) (discordStartResult, error) {
 	}
 
 	_ = runHidden("taskkill", "/F", "/IM", "Discord.exe", "/T")
-	time.Sleep(time.Second)
+	// Новый экземпляр уступит старому, пока тот жив: ждём выхода, но не дольше секунды.
+	for deadline := time.Now().Add(time.Second); processRunning("Discord.exe") && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	cmd := exec.Command(filepath.Join(dir, "Discord.exe"), args...)
 	cmd.Dir = dir

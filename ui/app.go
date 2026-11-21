@@ -214,16 +214,19 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 	}
 	// Снять любые конкурирующие evasion.exe перед запуском: два движка дерутся
 	// за WinDivert handle и не дают обновить runtime. Свой процесс ещё не поднят.
+	began := time.Now()
 	killStrayEngines()
 	// Чужой перехват (zapret, GoodbyeDPI, byedpi) на том же трафике ломает десинк.
 	conflicts := clearConflicts()
+	cleaned := time.Now()
 	a.settingsMu.Lock()
 	a.conflicts = conflicts
 	a.settingsMu.Unlock()
 	if err := extractPayload(l); err != nil {
 		return err
 	}
-	beforeEngineStart()
+	unpacked := time.Now()
+	go beforeEngineStart()
 	l = a.adaptiveLayout(l, opts)
 	var removed []string
 	l, removed = guardLayout(l)
@@ -233,18 +236,36 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 	if err := a.engine.start(l, opts); err != nil {
 		return err
 	}
+	launched := time.Now()
 	a.rememberLaunchOptions(opts)
-	if opts.RestartDiscord && !suppressDiscordRestart {
-		go func() {
-			if !a.engine.waitReady() {
-				a.engine.setDiscord("Discord не перезапущен: движок не поднялся")
-				return
-			}
-			a.engine.setDiscord("Перезапускаю Discord…")
-			a.engine.setDiscord(discordResult(restartDiscord(a.engine.discordProxyAddress())))
-		}()
-	}
+	restart := opts.RestartDiscord && !suppressDiscordRestart
+	go func() {
+		ready := a.engine.waitReady()
+		a.engine.note(startTimings(cleaned.Sub(began), unpacked.Sub(cleaned), launched.Sub(unpacked), time.Since(launched), ready))
+		if !restart {
+			return
+		}
+		if !ready {
+			a.engine.setDiscord("Discord не перезапущен: движок не поднялся")
+			return
+		}
+		a.engine.setDiscord("Перезапускаю Discord…")
+		at := time.Now()
+		a.engine.setDiscord(discordResult(restartDiscord(a.engine.discordProxyAddress())))
+		a.engine.note(fmt.Sprintf("Запуск: Discord перезапущен за %d мс", time.Since(at).Milliseconds()))
+	}()
 	return nil
+}
+
+// startTimings — сколько заняла каждая стадия включения обхода. Строка попадает
+// в журнал, чтобы по жалобе на долгий запуск было видно, где ушло время.
+func startTimings(cleanup, unpack, launch, engine time.Duration, ready bool) string {
+	state := "движок готов через"
+	if !ready {
+		state = "движок не поднялся за"
+	}
+	return fmt.Sprintf("Запуск: очистка %d мс, распаковка %d мс, подготовка %d мс, %s %d мс",
+		cleanup.Milliseconds(), unpack.Milliseconds(), launch.Milliseconds(), state, engine.Milliseconds())
 }
 
 func (a *App) StopEngine() error {
