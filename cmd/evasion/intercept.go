@@ -81,14 +81,28 @@ const (
 	// (WS не получал OP_HELLO). На этих портах чужого трафика почти нет, а
 	// десинк всё равно применяется только к радиусу — остальное проходит
 	// прозрачно.
-	interceptFilter = "outbound and tcp and (tcp.DstPort == 443 or tcp.DstPort == 2053 or tcp.DstPort == 2083 or tcp.DstPort == 2087 or tcp.DstPort == 2096 or tcp.DstPort == 8443) and not impostor"
+	//
+	// Чистые ACK (без нагрузки и без SYN/FIN/RST) в userspace не поднимаются:
+	// движку решать по ним нечего (flow.Table пропускает пустые сегменты), а на
+	// скачивании (видео YouTube, CDN Discord) это основной поток исходящих
+	// пакетов — каждый шёл через Recv/Dissect/Send однопоточного цикла и
+	// добавлял задержку к ACK-клокингу TCP. SYN нужен, чтобы забыть
+	// переиспользованный кортеж, FIN/RST — чтобы закрыть запись потока.
+	interceptFilter = "outbound and tcp and " + interceptPorts + " and " + interceptSegments + " and not impostor"
 	// interceptFilterRedirect — фильтр при включённой переклейке RTC-портов
 	// (--rtc-redirect). К исходящим добавлены ВХОДЯЩИЕ с живого порта 8443:
 	// декоратор rtcredirect восстанавливает им исходный порт назначения, чтобы
 	// сокет приложения принял ответ. Исходящие на душимые порты он же уводит на
 	// 8443 ДО движка, поэтому движок видит их как обычный 8443 и десинкует как
 	// и всегда.
-	interceptFilterRedirect = "((outbound and tcp and (tcp.DstPort == 443 or tcp.DstPort == 2053 or tcp.DstPort == 2083 or tcp.DstPort == 2087 or tcp.DstPort == 2096 or tcp.DstPort == 8443)) or (inbound and tcp and tcp.SrcPort == 8443)) and not impostor"
+	// Чистые ACK здесь НЕ отсекаются: rtcredirect переписывает порт назначения
+	// каждому исходящему сегменту потока, и ACK мимо него ушёл бы на старый порт.
+	interceptFilterRedirect = "((outbound and tcp and " + interceptPorts + ") or (inbound and tcp and tcp.SrcPort == 8443)) and not impostor"
+	// interceptPorts — HTTPS-порты радиуса (443 и «дружественные» Cloudflare).
+	interceptPorts = "(tcp.DstPort == 443 or tcp.DstPort == 2053 or tcp.DstPort == 2083 or tcp.DstPort == 2087 or tcp.DstPort == 2096 or tcp.DstPort == 8443)"
+	// interceptSegments — сегменты, по которым движок что-то решает: с данными
+	// или с флагами жизненного цикла потока.
+	interceptSegments = "(tcp.PayloadLength > 0 or tcp.Syn or tcp.Fin or tcp.Rst)"
 	// rtcRedirectTarget — живой порт, на который уводятся душимые RTC-порты.
 	// 8443 выбран, потому что на нём голос discord.media стабилен, а входящего
 	// чужого трафика на нём почти нет (в отличие от 443) — фильтр входящих узкий.
