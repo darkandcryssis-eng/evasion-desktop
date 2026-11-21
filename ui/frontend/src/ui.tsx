@@ -1,46 +1,17 @@
-// Базовые элементы интерфейса «Mist»: иконки, стекло, переключатели, диалоги.
-// Без внешних библиотек — только React.
+// Accessible controls for the monochrome ASCII instrument.
 import { Component, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
-/* ───────────── Иконки (24×24, обводка) ───────────── */
-const paths: Record<string, string> = {
-  home: "M4 11.5 12 4l8 7.5M6.5 10v9.5h11V10M10 19.5v-5h4v5",
-  layers: "m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5",
-  game: "M7 8h10a5 5 0 0 1 4.9 6l-.6 3a2.6 2.6 0 0 1-4.6 1L15 16H9l-1.7 2a2.6 2.6 0 0 1-4.6-1l-.6-3A5 5 0 0 1 7 8Zm0 3v3m-1.5-1.5h3M15.5 11.5h.01M18 13.5h.01",
-  send: "M21 3 10.5 13.5M21 3l-6.5 18-4-7.5L3 9.5 21 3Z",
-  pulse: "M3 12h4l2.5-7 5 14 2.5-7h4",
-  settings: "M4 7h9m5 0h2M4 17h3m5 0h8M15.5 4.500v5M9.5 14.500v5",
-  power: "M12 3v9m5.7-6.200a8 8 0 1 1-11.4 0",
-  refresh: "M20 5v5h-5M4 19v-5h5m10.5-2A7.5 7.5 0 0 0 6.3 6.800L4 9m16 6-2.3 2.200A7.5 7.5 0 0 1 4.5 12",
-  chevron: "m6 9 6 6 6-6",
-  copy: "M9 9h10v11H9zM5 15V4h10",
-  external: "M14 4h6v6m0-6L11 13M18 14v6H4V6h6",
-  folder: "M3 7h6l2 2.500h10V19H3z",
-  trash: "M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13",
-  plus: "M12 5v14M5 12h14",
-  shield: "M12 3 4.5 6v5.500c0 4.5 3 8 7.5 9.5 4.5-1.5 7.5-5 7.5-9.500V6L12 3Zm-3 9 2.2 2.200L15.2 10",
-  alert: "M12 4 2.5 20h19L12 4Zm0 6v5m0 2.800v.01",
-  download: "M12 4v11m-4.5-4.500L12 15l4.5-4.500M5 19.500h14",
-  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm9 3-4-4",
-  eye: "M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Zm9.5 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
-  x: "M6 6l12 12M18 6 6 18",
-  down: "M5 19 19 5M5 9v10h10",
-  up: "M5 19 19 5M9 5h10v10",
-  tray: "M4 13v6h16v-6M12 4v10m-4-4 4 4 4-4",
-  info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-10v6m0-9.200v.01",
-  play: "M8 5.500v13l10-6.5-10-6.500Z",
-  bolt: "M13 3 5 13.500h6L10 21l8.5-11H12.500L13 3Z",
-  route: "M6 19a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Zm12-9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM8.5 16.500H14a3.5 3.5 0 0 0 0-7h-4a3.5 3.5 0 0 1 0-7",
+/* Character-built symbols, hidden from assistive technology in favor of labels. */
+const glyphs = {
+  home: "~/", layers: "::", game: "><", send: "/>", pulse: "~",
+  settings: "|=", power: "(!)", refresh: "@", chevron: "v", copy: "[]",
+  external: "↗", folder: "/_", trash: "[-]", plus: "+", shield: "<>",
+  alert: "!", download: "↓", search: "/?", eye: "(.)", x: "×",
+  down: "↙", up: "↗", tray: "[↓]", info: "i", play: ">", bolt: "//", route: "->",
 };
-
-export type IconName = keyof typeof paths;
-
-export function Icon({ name, size = 18, stroke = 1.6, className }: { name: IconName; size?: number; stroke?: number; className?: string }) {
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d={paths[name]} />
-    </svg>
-  );
+export type IconName = keyof typeof glyphs;
+export function Icon({ name, size = 18, className = "" }: { name: IconName; size?: number; stroke?: number; className?: string }) {
+  return <span className={`ascii-icon ${className}`} style={{ width: size + 5, height: size, fontSize: Math.min(size, 16) }} aria-hidden="true">{glyphs[name]}</span>;
 }
 
 /* ───────────── SVG-фильтры: жидкое стекло и «гу» ───────────── */

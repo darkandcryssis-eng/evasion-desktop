@@ -7,7 +7,7 @@ const ts = require("typescript");
 
 const source = readFileSync(path.join(__dirname, "../src/preferences.ts"), "utf8");
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
-const defaults = { voice: "ttl", quic: "off", observe: false, restartDiscord: true };
+const defaults = { voice: "ttl", quic: "off", observe: false, restartDiscord: true, boost: true };
 
 function load(value, denied = false) {
   const exports = {};
@@ -27,7 +27,7 @@ for (const value of [null, "null", "{broken", "[]", "42"]) {
 }
 
 test("connection choices survive reload, including false flags", () => {
-  const selected = { voice: "badsum-quic", quic: "desync", observe: true, restartDiscord: false };
+  const selected = { voice: "badsum-quic", quic: "desync", observe: true, restartDiscord: false, boost: false };
   assert.deepEqual({ ...load(JSON.stringify(selected)).loadOptions() }, selected);
 });
 

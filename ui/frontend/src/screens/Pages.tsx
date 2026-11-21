@@ -11,7 +11,7 @@ import { speedChart } from "../speedChart";
 import { telegramBadge } from "../telegramBadge";
 import { usePoll } from "../hooks";
 import { Badge, Button, Collapse, Disclosure, Feed, Glass, Icon, Note, PageHead, Row, Segmented, Ticker, Toggle, fileName, traffic, type Tone } from "../ui";
-import type { Page, Skin } from "../types";
+import type { Page } from "../types";
 
 /* ═════════════ Сервисы ═════════════ */
 const RU_ZONES = [".ru", ".рф", ".su", ".москва", "yandex", "vk", "mail.ru", "sber", "gosuslugi", "tbank", "ozon", "wildberries", "avito", "rutube", "kinopoisk"];
@@ -30,7 +30,7 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
   const removed = state?.ruGuard ?? [];
   return (
     <div className="page-body">
-      <PageHead kicker="Радиус обхода" title="Сервисы" note="Обход применяется только к перечисленным доменам. Всё остальное идёт напрямую, как без Evasion."
+      <PageHead kicker="02 / КАРТА МАРШРУТОВ" title="Без лишних путей_" note="Обход применяется только к перечисленным доменам. Всё остальное идёт напрямую, как без Evasion."
         action={<Segmented label="Раздел" value={tab} options={[{ id: "targets", label: "Цели" }, { id: "portfolio", label: "Стратегии" }]} onChange={setTab} />} />
       <Glass className="guard">
         <span className="guard__mark"><Icon name="shield" size={20} /></span>
@@ -115,7 +115,7 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
 
   return (
     <div className="page-body">
-      <PageHead kicker="Game filter" title="Игровой обход" note="Работает только для выбранных игр и только пока они запущены. Остальные игры и программы не затрагиваются."
+      <PageHead kicker="04 / ИГРОВОЙ КАНАЛ" title="Ваша игра. Ваш ход_" note="Работает только для выбранных игр и только пока они запущены. Остальные игры и программы не затрагиваются."
         action={<Badge tone={active ? "success" : armed ? "accent" : "neutral"} pulse={on}>{status}</Badge>} />
       <Glass className="launch" aria-busy={busy}>
         <div className={`launch__pulse${on ? " launch__pulse--on" : ""}`} aria-hidden="true"><i /><i /><i /><Icon name="game" size={22} /></div>
@@ -220,7 +220,7 @@ export function TelegramScreen({ state, onRefresh }: { state?: TelegramState; on
   const list = routes.value ?? [];
   return (
     <div className="page-body">
-      <PageHead kicker="Встроенный прокси" title="Telegram" note="Локальный MTProto-прокси с автоматическим выбором маршрута. Сообщения остаются зашифрованы Telegram."
+      <PageHead kicker="03 / ЛИЧНЫЙ КАНАЛ" title="Telegram. Напрямую_" note="Локальный MTProto-прокси с автоматическим выбором маршрута. Сообщения остаются зашифрованы Telegram."
         action={<Button kind={state?.running ? "soft" : "solid"} icon="power" disabled={busy || !state} onClick={() => void toggle()}>{busy ? "Подождите…" : state?.running ? "Выключить" : "Включить Telegram"}</Button>} />
       {notice && <Note icon="info">{notice}</Note>}
       {!state?.running && state?.error && <Note tone="warn" icon="alert">{state.error}</Note>}
@@ -278,7 +278,7 @@ export function DiagnosticsScreen() {
   const run = async (kind: "services" | "doctor" | "export", fn: () => Promise<void>) => { setBusy(kind); setNotice(""); try { await fn(); } catch (e) { setNotice(String(e)); } finally { setBusy(""); } };
   return (
     <div className="page-body">
-      <PageHead kicker="Проверки" title="Диагностика" note="Где прервалась связь и что поможет её вернуть"
+      <PageHead kicker="05 / ДИАГНОСТИКА" title="Читаем сигнал_" note="Где прервалась связь и что поможет её вернуть"
         action={<Button kind="solid" icon="pulse" disabled={busy !== ""} onClick={() => void run("services", async () => { setServices(await api.runServiceDiagnostics()); await load(); })}>{busy === "services" ? "Проверяем…" : "Проверить связь"}</Button>} />
       <div className="grid2" aria-busy={busy === "services"}>
         {serviceNames.map(([id, name]) => {
@@ -327,7 +327,7 @@ const ytPhases: Record<string, string> = { waiting: "Проверка запус
 const ytTargets: Record<string, string> = { site: "YouTube", image: "Изображения", media_transport: "Видеосеть" };
 const ytStages: Record<string, string> = { dns: "не найден адрес", tcp: "нет соединения", tls: "не отвечает HTTPS", http: "нет ответа" };
 
-export function SettingsScreen({ motion, startup, skin, onMotion, onStartup, onSkin, baseDir }: { motion: boolean; startup: boolean; skin: Skin; onMotion: (v: boolean) => void; onStartup: (v: boolean) => void; onSkin: (v: Skin) => void; baseDir?: string }) {
+export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }: { motion: boolean; startup: boolean; onMotion: (v: boolean) => void; onStartup: (v: boolean) => void; baseDir?: string }) {
   const tuning = usePoll<NetworkTuningView>(() => api.getNetworkTuning(loadOptions()), 1500);
   const [auto, setAuto] = useState(false);
   const [busy, setBusy] = useState(true);
@@ -339,11 +339,11 @@ export function SettingsScreen({ motion, startup, skin, onMotion, onStartup, onS
   const tone: Tone = phase === "healthy" || phase === "recovered" ? "success" : phase === "unavailable" || phase === "network_down" || phase === "degraded" ? "warning" : "neutral";
   return (
     <div className="page-body">
-      <PageHead kicker="Под себя" title="Настройки" note="Сделайте Evasion удобным" />
+      <PageHead kicker="06 / ПЕРСОНАЛИЗАЦИЯ" title="Ваши правила_" note="Оформление, поведение приложения и автоматическое восстановление связи." />
       <Glass className="card">
         <header className="card-head"><span className="kicker">Оформление</span></header>
-        <Row title="Пейзаж" note="Сакура — нежные лепестки; Природа — лесной ручей ночью и кроны деревьев днём. У обоих живой параллакс и своя палитра."><Segmented label="Пейзаж" value={skin} options={[{ id: "sakura", label: "Сакура" }, { id: "natural", label: "Природа" }]} onChange={onSkin} /></Row>
-        <Row title="Живой фон и мягкие анимации" note="Туман, параллакс, переливы стекла. Выключите на слабой видеокарте или во время игры."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
+        <Row title="Бумага / графит" note="Кнопка [◐] в верхней строке меняет светлую и тёмную темы. Выбор сохраняется." />
+        <Row title="Движение символов" note="Вращение ASCII-скульптуры, отклик на курсор и переходы. Системное уменьшение движения всегда в приоритете."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
         <Row title="Стартовый экран" note="Действует со следующего запуска"><Toggle label="Стартовый экран" checked={startup} onChange={onStartup} /></Row>
       </Glass>
       <Glass className="card">
