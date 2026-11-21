@@ -28,7 +28,7 @@ type trayView struct {
 }
 
 func newTrayControl() *trayControl {
-	return &trayControl{options: StartOptions{Voice: "ttl", Quic: "off", RestartDiscord: true, Boost: true}}
+	return &trayControl{dark: true, options: StartOptions{Voice: "ttl", Quic: "off", RestartDiscord: true, Boost: true}}
 }
 
 func (a *App) SetTrayPreferences(theme string, options StartOptions, skin string) error {

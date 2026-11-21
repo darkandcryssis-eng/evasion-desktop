@@ -4,8 +4,8 @@ import type { EngineController } from "../useEngine";
 import { useConnectionOptions, readPreference, savePreference } from "../preferences";
 import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
-import { AsciiBloom } from "../fx/AsciiBloom";
-import { Badge, Button, Disclosure, Feed, Glass, Icon, Note, Row, Segmented, Ticker, Toggle, type IconName, type Tone } from "../ui";
+import { AsciiCat } from "../fx/AsciiCat";
+import { Badge, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type IconName, type Tone } from "../ui";
 import type { Page } from "../types";
 
 const voiceOptions = [
@@ -31,19 +31,11 @@ export function telegramMode(): TelegramMode {
   return v === "yes" || v === "no" ? v : "ask";
 }
 
-const statusLabel: Record<EnginePhase, string> = { stopped: "Готов к запуску", starting: "Включаем", running: "Обход включён", stopping: "Завершаем", failed: "Не удалось включить" };
-const statusTone: Record<EnginePhase, Tone> = { stopped: "neutral", starting: "accent", running: "success", stopping: "accent", failed: "warning" };
-const headline: Record<EnginePhase, [string, string]> = {
-  stopped: ["Связь вне", "ограничений_"],
-  starting: ["Настраиваем", "соединение…"],
-  running: ["Вы на связи.", "Оставайтесь_"],
-  stopping: ["Сворачиваем", "обход…"],
-  failed: ["Что-то пошло", "не так."],
-};
+const headline: Record<EnginePhase, string> = { stopped: "Всё готово к подключению", starting: "Подключаемся…", running: "Вы подключены", stopping: "Отключаемся…", failed: "Не удалось подключиться" };
 const hint: Record<EnginePhase, string> = {
-  stopped: "Ваш интернет. Ваши разговоры. Ваш выбор.",
-  starting: "Поднимаем движок и перехват",
-  running: "Окно можно свернуть — Evasion продолжит работу в трее",
+  stopped: "Включите обход для Discord и YouTube. Остальное настроим за вас.",
+  starting: "Это займёт несколько секунд.",
+  running: "Можно свернуть окно — обход продолжит работать.",
   stopping: "Возвращаем сеть в исходное состояние",
   failed: "Посмотрите сообщение ниже или откройте диагностику",
 };
@@ -85,23 +77,16 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 
   return (
     <div className="dashboard">
-      <header className="dashboard-heading"><span>01 / СОЕДИНЕНИЕ</span><span>МЕНЬШЕ ГРАНИЦ. БОЛЬШЕ СВЯЗИ.</span></header>
       <section className="connection-panel" aria-label="Управление подключением" data-phase={phase}>
-        <span className="frame-corner frame-corner--tl" aria-hidden="true">+</span><span className="frame-corner frame-corner--tr" aria-hidden="true">+</span>
-        <div className="connection-panel__copy">
-          <span className="eyebrow">ВНЕ ПРИВЫЧНЫХ РАМОК</span>
-          <h1 key={phase}>{headline[phase][0]}<br /><span>{headline[phase][1]}</span></h1>
-          <p>{hint[phase]}</p>
+        <AsciiCat active={motion && running} />
+        <h1 aria-live="polite">{state ? headline[phase] : "Получаем состояние…"}</h1>
+        <p>{hint[phase]}</p>
+        <div className="connection-command">
+          <button type="button" className="connect-button" disabled={busy || transit || (!active && !ready)} onClick={press}><Icon name="power" size={17} />{transit ? phase === "starting" ? "Подключаем…" : "Отключаем…" : running ? "Выключить обход" : phase === "failed" ? "Попробовать снова" : "Включить обход"}</button>
+          {running && <button type="button" className="reconnect-button" title="Переподключить" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={18} /></button>}
         </div>
-        <AsciiBloom motion={motion} active={running} />
-        <span className="hero-index" aria-hidden="true">СИМВОЛЫ СТАНОВЯТСЯ ДВИЖЕНИЕМ / ∞</span>
-        <span className="frame-corner frame-corner--bl" aria-hidden="true">+</span><span className="frame-corner frame-corner--br" aria-hidden="true">+</span>
+        <span className="connection-caption">{running ? `Обход работает · ${elapsed}` : "Ctrl + Enter — быстрое подключение"}</span>
       </section>
-      <div className="connection-command">
-        <button type="button" className="connect-button" disabled={busy || transit || (!active && !ready)} onClick={press}><span className="command-prompt" aria-hidden="true">&gt;_</span><span>{transit ? phase === "starting" ? "Подключаем…" : "Отключаем…" : running ? "Отключиться" : phase === "failed" ? "Повторить" : "Подключиться"}</span><span className="connect-button__arrow" aria-hidden="true">↵</span></button>
-        <div className="connection-command__state"><Badge tone={state ? statusTone[phase] : "neutral"} pulse={transit || running}>{state ? statusLabel[phase] : "Получаем состояние…"}</Badge><small>{running ? `НА СВЯЗИ / ${elapsed}` : "ПРЯМОЕ СОЕДИНЕНИЕ / БЕЗ VLESS"}</small></div>
-        {running ? <button type="button" className="reconnect-button" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={18} /></button> : <kbd>CTRL + ENTER</kbd>}
-      </div>
       <div className="connection-notices">
         {state && !state.elevated && <Note tone="warn" icon="alert">Для подключения запустите Evasion от имени администратора.</Note>}
         {state && !state.payload.engine && <Note tone="warn" icon="alert">Движок не встроен в эту сборку. Пересоберите приложение.</Note>}
@@ -109,22 +94,17 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
         {error && <Note tone="warn" icon="alert">{error}</Note>}
       </div>
       <section className="service-section" aria-label="Состояние сервисов">
-        <header className="section-heading"><span className="kicker">02 / КАНАЛЫ СВЯЗИ</span><button type="button" className="link" onClick={() => onNavigate("services")}>Все сервисы <span aria-hidden="true">↗</span></button></header>
+        <header className="section-heading"><span className="kicker">Ваши приложения</span><button type="button" className="link" onClick={() => onNavigate("services")}>Все сервисы →</button></header>
         <div className="service-grid">
           <ServiceRow icon="bolt" name="Discord" note="Голос / чат / медиа" tone={running ? "accent" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
           <ServiceRow icon="play" name="YouTube" note="Видео / прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
           <ServiceRow icon="send" name="Telegram" note="Сообщения / MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
         </div>
       </section>
-      <section className="session-strip" aria-label="Текущая сессия">
-        <div><span className="kicker">ВРЕМЯ НА СВЯЗИ</span><strong>{elapsed}</strong></div>
-        <div><span className="kicker">ОБРАБОТАНО СОЕДИНЕНИЙ</span><strong><Ticker value={(hello?.complete ?? 0) + (hello?.assembled ?? 0)} /><small> / TCP</small></strong></div>
-        <div><span className="kicker">АВТОВОССТАНОВЛЕНИЕ</span><strong><Ticker value={state?.engine.restarts ?? 0} /><small> перезапусков</small></strong></div>
-        <button type="button" className="session-strip__action" onClick={() => onNavigate("diagnostics")}><Icon name="pulse" size={18} /><span>Проверить связь</span><span aria-hidden="true">↗</span></button>
-      </section>
+      <button type="button" className="check-connection" onClick={() => onNavigate("diagnostics")}>Что-то не работает? <span>Проверить связь →</span></button>
       <section className="dashboard-details" aria-label="Параметры и журнал">
         {!active && (
-          <Disclosure icon="settings" title="Параметры подключения" note={`Голос: ${voiceOptions.find((o) => o.id === options.voice)?.label ?? options.voice} · QUIC: ${quicOptions.find((o) => o.id === options.quic)?.label ?? options.quic}${options.boost ? " · Сильный обход" : ""}`}>
+          <Disclosure icon="settings" title="Дополнительные параметры" note="Для большинства сетей менять ничего не нужно">
             <Row title="Голос Discord" note="Как прятать голосовой трафик. TTL подходит большинству сетей.">
               <select className="field" aria-label="Голос Discord" value={options.voice} onChange={(e) => update({ voice: e.target.value })}>{voiceOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select>
             </Row>
@@ -142,7 +122,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
           </Disclosure>
         )}
 
-        <Disclosure icon="pulse" title="Активность" note={logs.length ? `Событий в журнале: ${logs.length}` : "Здесь появятся события подключения"} defaultOpen={active}>
+        <Disclosure icon="pulse" title="Журнал подключения" note={logs.length ? `Событий: ${logs.length}` : "События и техническая информация"}>
           {running && hello && (
             <div className="hello">
               <div><strong><Ticker value={hello.complete} /></strong><span>целых</span></div>
@@ -167,7 +147,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 function ServiceRow({ icon, name, note, tone, label, live, onClick }: { icon: IconName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
     <button type="button" className={`service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
-      <span className="service__icon" aria-hidden="true">{name === "Discord" ? "01" : name === "YouTube" ? "02" : "03"}</span><span className="service__arrow" aria-hidden="true">[↗]</span>
+      <span className="service__icon" aria-hidden="true"><Icon name={icon} size={18} /></span><span className="service__arrow" aria-hidden="true">›</span>
       <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
       <Badge tone={tone}>{label}</Badge>
     </button>

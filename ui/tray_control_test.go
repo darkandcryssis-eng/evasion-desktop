@@ -17,7 +17,7 @@ func TestTrayPanelFitsMonitorWorkArea(t *testing.T) {
 		{"small-display", 100, 200, trayRect{0, 0, 320, 400}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			r := placeTrayPanel(tt.x, tt.y, 352, 348, 10, tt.work)
+			r := placeTrayPanel(tt.x, tt.y, 272, 252, 8, tt.work)
 			if r.Left < tt.work.Left || r.Top < tt.work.Top || r.Right > tt.work.Right || r.Bottom > tt.work.Bottom || r.Right <= r.Left || r.Bottom <= r.Top {
 				t.Fatalf("invalid bounds %+v", r)
 			}
