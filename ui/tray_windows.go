@@ -21,7 +21,7 @@ import (
 //go:embed assets/tray.ico
 var trayIcon []byte
 
-// One cat identity for the executable, taskbar, Alt+Tab and tray.
+// One ring identity for the executable, taskbar, Alt+Tab and tray.
 //
 //go:embed build/windows/icon.ico
 var windowIcon []byte
