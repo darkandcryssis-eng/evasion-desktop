@@ -188,11 +188,11 @@ func TestAcquireReplacesOwnStaleRecord(t *testing.T) {
 // defaultAlive на текущем pid возвращает true, на заведомо несуществующем — false.
 // Проверяет OS-ветку, не мок.
 func TestDefaultAliveSelf(t *testing.T) {
-	if !defaultAlive(os.Getpid()) {
+	if !defaultAlive(Entry{PID: os.Getpid()}) {
 		t.Fatal("defaultAlive(self) = false, ожидали true")
 	}
 	// PID 1<<30 заведомо не существует в типичной системе.
-	if defaultAlive(1 << 30) {
+	if defaultAlive(Entry{PID: 1 << 30}) {
 		t.Fatal("defaultAlive(1<<30) = true, ожидали false")
 	}
 }

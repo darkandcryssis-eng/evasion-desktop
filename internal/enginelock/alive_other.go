@@ -11,7 +11,8 @@ import "syscall"
 // В реальной работе движок на не-Windows не живёт (ему нужен WinDivert), но
 // Acquire/Release тестируются на всех платформах CI — поэтому ядро пакета
 // обязано собираться и работать здесь.
-func defaultAlive(pid int) bool {
+func defaultAlive(e Entry) bool {
+	pid := e.PID
 	if pid <= 0 {
 		return false
 	}
