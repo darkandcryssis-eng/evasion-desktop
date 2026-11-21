@@ -640,8 +640,19 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 		conn.SetSegmentTailAligned(true)
 	}
 
-	if err := e.exec.Execute(ctx, sel.Strategy, conn); err != nil {
-		if conn.Sent() {
+	err = e.exec.Execute(ctx, sel.Strategy, conn)
+	if err != nil && !conn.Sent() && errors.Is(err, desync.ErrCutUnavailable) &&
+		strategy.RequiredCapabilities(sel.Strategy).Has(core.CapTCPOverlap) {
+		// ClientHello не длиннее cover'а (клиент без постквантового обмена:
+		// старый браузер, сторонний клиент) — перекрытие невозможно. Сырьём
+		// такой hello ушёл бы с открытым SNI, поэтому режем его внутри имени.
+		if conn, err = packetexec.NewConnAt(sink, input, tmpl, baseSeq); err == nil {
+			conn.SetSegmentLimit(segmentLimit)
+			err = e.exec.Execute(ctx, shortHelloFallback, conn)
+		}
+	}
+	if err != nil {
+		if conn != nil && conn.Sent() {
 			// Часть пакетов уже ушла: поток необратимо начат, пропускать
 			// оригинал нельзя — он лёг бы поверх уже отправленного. Это
 			// по-настоящему тревожный случай (полуотправленный поток), поэтому
@@ -683,6 +694,16 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 // пропуск нагрузки. Нужна для досылки удержанных сегментов сырьём через того же
 // исполнителя (единый путь сборки пакета, верные суммы).
 var rawPassthrough = &strategy.Strategy{}
+
+// shortHelloFallback — замена tcp_overlap для ClientHello, который не длиннее
+// cover'а: разрез внутри имени, части в обратном порядке.
+var shortHelloFallback = func() *strategy.Strategy {
+	s, err := strategy.Unmarshal([]byte(`{"rules":[{"direction":"outbound","trigger":{"match":"client_hello"},"action":{"kind":"fragment","params":{"proto":"tcp","at":"inside_sni","order":"reverse"},"left":{"kind":"send"},"right":{"kind":"send"}}}]}`), strategy.DefaultLimits())
+	if err != nil {
+		panic(err)
+	}
+	return s
+}()
 
 const (
 	// safeSegment — нагрузка, которая проходит и там, где MSS пути меньше 1460.
