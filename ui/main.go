@@ -7,6 +7,7 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -17,6 +18,7 @@ import (
 var assets embed.FS
 
 func main() {
+	finishUpdate(os.Args[1:])
 	app := NewApp()
 	err := wails.Run(&options.App{
 		Title:            "Evasion",

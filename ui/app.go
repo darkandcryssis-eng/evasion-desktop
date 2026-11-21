@@ -51,10 +51,11 @@ type App struct {
 	routeResults    []TelegramRoute
 	ruRemoved       []string
 	gameArmed       atomic.Bool
+	updates         *updater
 }
 
 func NewApp() *App {
-	return &App{engine: newEngineManager(), games: newEngineManager(), tray: newTrayControl()}
+	return &App{engine: newEngineManager(), games: newEngineManager(), tray: newTrayControl(), updates: newUpdater()}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -76,11 +77,18 @@ func (a *App) startup(ctx context.Context) {
 	go a.superviseEngine(ctx)
 	go a.watchGames(ctx)
 	go a.restoreTelegramProxy()
+	a.startUpdater(ctx)
+	if r, ok := parseResume(os.Args[1:]); ok {
+		var autoCtx context.Context
+		autoCtx, a.cancelAutoStart = context.WithCancel(ctx)
+		go a.resumeAfterUpdate(autoCtx, r)
+		return
+	}
 	for _, arg := range os.Args[1:] {
 		if arg == "--autostart" {
 			var autoCtx context.Context
 			autoCtx, a.cancelAutoStart = context.WithCancel(ctx)
-			go a.connectAtLogin(autoCtx)
+			go a.connectAtLogin(autoCtx, nil)
 			break
 		}
 	}

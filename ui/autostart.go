@@ -182,13 +182,18 @@ func taskEnabledXML(b []byte) (bool, error) {
 	return task.Settings.Enabled == nil || *task.Settings.Enabled, nil
 }
 
-func (a *App) connectAtLogin(ctx context.Context) {
+// resume — параметры обхода, работавшего до обновления: подключаемся с ними
+// и без галочки автозапуска.
+func (a *App) connectAtLogin(ctx context.Context, resume *StartOptions) {
 	a.settingsMu.Lock()
 	s, err := readLaunchSettings(launchSettingsPath())
 	a.settingsMu.Unlock()
 	if err != nil {
 		a.engine.consumeLogLine("Автозапуск: " + err.Error())
 		return
+	}
+	if resume != nil {
+		s.AutoStart, s.Options = true, *resume
 	}
 	if !s.AutoStart {
 		return

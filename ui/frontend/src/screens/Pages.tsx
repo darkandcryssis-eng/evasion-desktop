@@ -1,4 +1,5 @@
 // Остальные разделы: сервисы, игры, Telegram, диагностика, настройки.
+import { UpdateCard } from "../Update";
 import { useEffect, useId, useMemo, useState } from "react";
 import { ClipboardSetText } from "../../wailsjs/runtime/runtime";
 import {
@@ -346,6 +347,7 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
         <Row title="Мягкие анимации" note="Анимация кнопки включения, переходы и живой фон. Системная настройка уменьшения движения имеет приоритет."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
         <Row title="Стартовый экран" note="Действует со следующего запуска"><Toggle label="Стартовый экран" checked={startup} onChange={onStartup} /></Row>
       </Glass>
+      <UpdateCard />
       <Glass className="card">
         <header className="card-head"><span className="kicker">YouTube · автовосстановление</span><Badge tone={tone} pulse={phase === "checking" || phase === "recovering"}>Автоматически</Badge></header>
         <p className="lead">{ytPhases[phase] ?? "Проверка недоступна"}</p>

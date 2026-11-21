@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { EventsOn, WindowCenter, WindowMinimise, WindowSetMinSize, WindowSetSize, WindowToggleMaximise } from "../wailsjs/runtime/runtime";
 import { api, phaseLabel, type StartOptions } from "./api";
 import { useEngine } from "./useEngine";
+import { UpdateBanner } from "./Update";
 import { loadOptions, readPreference, savePreference } from "./preferences";
 import { Boundary, Button, Dialog, Icon, type IconName } from "./ui";
 import { HomeScreen, telegramMode } from "./screens/Home";
@@ -94,6 +95,7 @@ export default function App() {
           </div>
         </div>
       </header>
+      <UpdateBanner />
       <section className="stage" ref={viewport}>
         <div className="stage__page" key={page}><Boundary resetKey={page}>{renderPage()}</Boundary></div>
       </section>

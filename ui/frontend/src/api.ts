@@ -9,6 +9,9 @@ import {
 	GetServiceDiagnostics, RunServiceDiagnostics, GetTelegramRoutes, CheckTelegramRoutes, ExportDiagnosticReport,
   GetDiagnostics,
   GetAutoStart,
+  GetUpdate,
+  CheckUpdate,
+  InstallUpdate,
   GetTelegramState,
   StartTelegramProxy,
   StopTelegramProxy,
@@ -69,6 +72,18 @@ export type EngineState = {
 };
 
 export type PayloadInfo = { engine: boolean; config: boolean; windivert: boolean };
+
+export type UpdateState = {
+  current: string;
+  latest: string;
+  available: boolean;
+  url: string;
+  checking: boolean;
+  downloading: boolean;
+  progress: number;
+  error: string;
+  checkedAt: string;
+};
 
 export type AppState = {
   telegram?: TelegramState;
@@ -182,6 +197,9 @@ export const api = {
   openTelegramProxy: (): Promise<void> => OpenTelegramProxy(),
   setTelegramOptions: (port: number, community: boolean): Promise<void> => SetTelegramOptions(port, community),
   getAutoStart: (): Promise<boolean> => GetAutoStart(),
+  getUpdate: (): Promise<UpdateState> => GetUpdate() as Promise<UpdateState>,
+  checkUpdate: (): Promise<UpdateState> => CheckUpdate() as Promise<UpdateState>,
+  installUpdate: (): Promise<void> => InstallUpdate(),
   setAutoStart: (enabled: boolean, options: StartOptions): Promise<void> => SetAutoStart(enabled, options as never),
   getState: (): Promise<AppState> => (GetState() as Promise<AppState>).then(normState),
   getTargets: (): Promise<TargetGroup[]> => (GetTargets() as Promise<TargetGroup[]>).then((list) => arr(list).map((g) => ({ ...g, domains: arr(g.domains) }))),
