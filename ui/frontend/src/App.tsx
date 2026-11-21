@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { EventsOn, WindowCenter, WindowMinimise, WindowSetMinSize, WindowSetSize, WindowToggleMaximise } from "../wailsjs/runtime/runtime";
 import { api, phaseLabel, type StartOptions } from "./api";
 import { useEngine } from "./useEngine";
-import { UpdateBanner } from "./Update";
+import { UpdateBanner, useUpdateAvailable } from "./Update";
 import { loadOptions, readPreference, savePreference } from "./preferences";
 import { Boundary, Button, Dialog, Icon, type IconName } from "./ui";
 import { HomeScreen, telegramMode } from "./screens/Home";
@@ -110,6 +110,7 @@ export default function App() {
 function Navigation({ page, onChange }: { page: Page; onChange: (p: Page) => void }) {
   const root = useRef<HTMLElement>(null);
   const [box, setBox] = useState<{ left: number; width: number } | null>(null);
+  const update = useUpdateAvailable();
   useLayoutEffect(() => {
     const el = root.current;
     if (!el) return;
@@ -128,6 +129,7 @@ function Navigation({ page, onChange }: { page: Page; onChange: (p: Page) => voi
       {pages.map((p) => (
         <button key={p.id} type="button" className="nav__item" aria-label={p.title} title={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => onChange(p.id)}>
           <Icon name={p.icon} size={15} /><span className="nav__label">{p.title}</span>
+          {p.id === "settings" && update && <span className="nav__alert" title="Доступно обновление" aria-label="Доступно обновление">!</span>}
         </button>
       ))}
     </nav>

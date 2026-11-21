@@ -11,6 +11,11 @@ function useUpdate() {
   return { state: poll.value, error: error || poll.value?.error || "", install: () => run(api.installUpdate), check: () => run(api.checkUpdate) };
 }
 
+// Для значка «!» в навигации: есть ли неустановленное обновление.
+export function useUpdateAvailable() {
+  return usePoll<UpdateState>(() => api.getUpdate(), 5000).value?.available ?? false;
+}
+
 function InstallButton({ state, onInstall }: { state: UpdateState; onInstall: () => void }) {
   return <Button kind="solid" icon="download" disabled={state.downloading} onClick={onInstall}>{state.downloading ? `Скачиваем… ${state.progress}%` : "Обновить"}</Button>;
 }
@@ -40,7 +45,7 @@ export function UpdateCard() {
   const note = error || (dev ? "Локальная сборка: обновления не проверяются."
     : state.available ? `Доступна версия ${state.latest}`
     : state.checkedAt ? `Установлена последняя версия · проверено в ${new Date(state.checkedAt).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" })}`
-    : "Проверяется автоматически после запуска и каждые 6 часов.");
+    : "Проверяется автоматически после запуска и каждые две минуты.");
   return (
     <Glass className="card">
       <header className="card-head"><span className="kicker">Обновления</span></header>
