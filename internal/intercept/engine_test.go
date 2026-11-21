@@ -1004,3 +1004,51 @@ func TestAssembledTCPOverlapDesyncsWholeHello(t *testing.T) {
 		t.Errorf("контрольные суммы собранных пакетов неверны")
 	}
 }
+
+// Короткий ClientHello (клиент без постквантового обмена) не длиннее cover'а
+// tcp_overlap. Сырьём он ушёл бы с открытым SNI; вместо этого имя режется.
+func TestShortHelloUnderOverlapIsSplitNotRaw(t *testing.T) {
+	const name = "gateway.discord.example"
+	hello, _ := buildFullHello(t, name, 100)
+	if len(hello) >= 681 {
+		t.Fatalf("контроль: hello %d байт, нужен короче cover'а", len(hello))
+	}
+	const seq = uint32(9000)
+	src := capture.NewSyntheticSource(packetV4Seq(t, hello, core.DirectionOutbound, 50000, seq))
+	sink := &capture.SyntheticSink{}
+	e, err := New(Options{
+		Source:   src,
+		Sink:     sink,
+		Flows:    flow.NewTable(16, time.Minute, TLSHelloDetector),
+		Provider: fakeProvider{matchSNI: name, sel: proxy.Selection{Strategy: overlapStrategy(), ID: core.StrategyID("overlap")}},
+		Exec:     packetexec.New(),
+		Parse:    TLSHelloParser,
+
+		ShortHelloFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	sent := sink.Sent()
+	if len(sent) != 2 {
+		t.Fatalf("ожидалось 2 части hello, получено %d", len(sent))
+	}
+	stream := make([]byte, len(hello))
+	covered := 0
+	for _, p := range sent {
+		d, _ := packet.Dissect(p.Data)
+		pay, _ := d.Payload(p.Data)
+		th, _ := d.TCP(p.Data)
+		if bytes.Contains(pay, []byte(name)) {
+			t.Fatal("имя ушло целиком в одном пакете")
+		}
+		copy(stream[th.Seq()-seq:], pay)
+		covered += len(pay)
+	}
+	if covered != len(hello) || !bytes.Equal(stream, hello) {
+		t.Fatal("части не складываются в исходный hello")
+	}
+}
