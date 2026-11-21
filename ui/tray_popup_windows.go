@@ -330,6 +330,9 @@ func (p *trayPopup) update() {
 		tgLabel = "Telegram. " + p.state.Telegram + ". Выключить"
 	}
 	labels := map[int]string{trayDPIButton: dpiLabel, trayTelegramButton: tgLabel, trayDiagnoseButton: "Проверить связь. " + p.state.Diagnostic, trayOpenButton: "Открыть Evasion", trayExitButton: "Выход из Evasion"}
+	if p.state.Error != "" {
+		labels[trayDiagnoseButton] += ". Ошибка: " + p.state.Error
+	}
 	if p.state.ResultsReady {
 		labels[trayOpenButton] = "Открыть результаты диагностики"
 	}
