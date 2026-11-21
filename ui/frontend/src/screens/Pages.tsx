@@ -11,7 +11,7 @@ import { speedChart } from "../speedChart";
 import { telegramBadge } from "../telegramBadge";
 import { usePoll } from "../hooks";
 import { Badge, Button, Collapse, Disclosure, Feed, Glass, Icon, Note, PageHead, Row, Segmented, Ticker, Toggle, fileName, traffic, type Tone } from "../ui";
-import type { Page, Skin } from "../types";
+import type { Page } from "../types";
 
 /* ═════════════ Сервисы ═════════════ */
 const RU_ZONES = [".ru", ".рф", ".su", ".москва", "yandex", "vk", "mail.ru", "sber", "gosuslugi", "tbank", "ozon", "wildberries", "avito", "rutube", "kinopoisk"];
@@ -327,7 +327,7 @@ const ytPhases: Record<string, string> = { waiting: "Проверка запус
 const ytTargets: Record<string, string> = { site: "YouTube", image: "Изображения", media_transport: "Видеосеть" };
 const ytStages: Record<string, string> = { dns: "не найден адрес", tcp: "нет соединения", tls: "не отвечает HTTPS", http: "нет ответа" };
 
-export function SettingsScreen({ motion, startup, skin, onMotion, onStartup, onSkin, baseDir }: { motion: boolean; startup: boolean; skin: Skin; onMotion: (v: boolean) => void; onStartup: (v: boolean) => void; onSkin: (v: Skin) => void; baseDir?: string }) {
+export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }: { motion: boolean; startup: boolean; onMotion: (v: boolean) => void; onStartup: (v: boolean) => void; baseDir?: string }) {
   const tuning = usePoll<NetworkTuningView>(() => api.getNetworkTuning(loadOptions()), 1500);
   const [auto, setAuto] = useState(false);
   const [busy, setBusy] = useState(true);
@@ -342,8 +342,8 @@ export function SettingsScreen({ motion, startup, skin, onMotion, onStartup, onS
       <PageHead kicker="Под себя" title="Настройки" note="Сделайте Evasion удобным" />
       <Glass className="card">
         <header className="card-head"><span className="kicker">Оформление</span></header>
-        <Row title="Пейзаж" note="Сакура — нежные лепестки; Природа — лесной ручей ночью и кроны деревьев днём. У обоих живой параллакс и своя палитра."><Segmented label="Пейзаж" value={skin} options={[{ id: "sakura", label: "Сакура" }, { id: "natural", label: "Природа" }]} onChange={onSkin} /></Row>
-        <Row title="Живой фон и мягкие анимации" note="Туман, параллакс, переливы стекла. Выключите на слабой видеокарте или во время игры."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
+        <Row title="Светлая или тёмная" note="Переключайте тему кнопкой солнца в правом верхнем углу. Никаких пейзажей — только символы и движение." />
+        <Row title="Живая ASCII-графика" note="Плавное движение цифрового цветка и анимации интерфейса. Учитывается системная настройка уменьшения движения."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
         <Row title="Стартовый экран" note="Действует со следующего запуска"><Toggle label="Стартовый экран" checked={startup} onChange={onStartup} /></Row>
       </Glass>
       <Glass className="card">

@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { api, type EnginePhase, type GameFilterView, type NetworkTuningView, type StartOptions } from "../api";
+import { api, type EnginePhase, type NetworkTuningView, type StartOptions } from "../api";
 import type { EngineController } from "../useEngine";
 import { useConnectionOptions, readPreference, savePreference } from "../preferences";
-import { gameStatus } from "../gameStatus";
 import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
-import { Orb } from "../fx/Orb";
+import { AsciiBloom } from "../fx/AsciiBloom";
 import { Badge, Button, Disclosure, Feed, Glass, Icon, Note, Row, Segmented, Ticker, Toggle, type IconName, type Tone } from "../ui";
 import type { Page } from "../types";
 
@@ -35,14 +34,14 @@ export function telegramMode(): TelegramMode {
 const statusLabel: Record<EnginePhase, string> = { stopped: "Готов к запуску", starting: "Включаем", running: "Обход включён", stopping: "Завершаем", failed: "Не удалось включить" };
 const statusTone: Record<EnginePhase, Tone> = { stopped: "neutral", starting: "accent", running: "success", stopping: "accent", failed: "warning" };
 const headline: Record<EnginePhase, [string, string]> = {
-  stopped: ["Ваш интернет.", "Свободнее."],
+  stopped: ["Интернет.", "Без границ."],
   starting: ["Настраиваем", "соединение…"],
-  running: ["Всё работает.", "Спокойно."],
+  running: ["Вы на связи.", "Без границ."],
   stopping: ["Сворачиваем", "обход…"],
   failed: ["Что-то пошло", "не так."],
 };
 const hint: Record<EnginePhase, string> = {
-  stopped: "Нажмите на кольцо или Ctrl + Enter",
+  stopped: "Прямое соединение. Без лишних посредников.",
   starting: "Поднимаем движок и перехват",
   running: "Окно можно свернуть — Evasion продолжит работу в трее",
   stopping: "Возвращаем сеть в исходное состояние",
@@ -55,9 +54,9 @@ const ytPhase: Record<string, [string, Tone]> = {
   recovering: ["Подбираем способ", "accent"], recovered: ["Способ заменён", "success"], network_down: ["Нет интернета", "warning"], unavailable: ["Пока недоступен", "warning"],
 };
 
-type Props = { engine: EngineController; onConnect: (o: StartOptions) => void; onNavigate: (p: Page) => void };
+type Props = { motion: boolean; engine: EngineController; onConnect: (o: StartOptions) => void; onNavigate: (p: Page) => void };
 
-export function HomeScreen({ engine, onConnect, onNavigate }: Props) {
+export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   const { state, busy, error, stop, reconnect, restartDiscord } = engine;
   const [options, update] = useConnectionOptions();
   const [tgMode, setTgMode] = useState<TelegramMode>(telegramMode);
@@ -65,10 +64,9 @@ export function HomeScreen({ engine, onConnect, onNavigate }: Props) {
   const running = phase === "running";
   const active = running || phase === "starting" || phase === "stopping";
   const transit = phase === "starting" || phase === "stopping";
-  const ready = !!state && state.payload.engine;
+  const ready = !!state && state.elevated && state.payload.engine && state.payload.windivert && (state.payload.config || state.userConfig);
   const elapsed = useElapsed(state?.engine.startedAt, running);
   const tuning = usePoll<NetworkTuningView>(() => api.getNetworkTuning(options), 3000).value;
-  const games = usePoll<GameFilterView>(() => api.getGameFilter(), 3000).value;
 
   const logs = [...(state?.engine.logs ?? []), ...(state?.telegram?.logs ?? [])].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).slice(-400);
   const hello = state?.engine.hello;
@@ -77,8 +75,6 @@ export function HomeScreen({ engine, onConnect, onNavigate }: Props) {
   const yt = tuning?.health;
   const ytState: [string, Tone] = !active ? ["Ждёт включения обхода", "neutral"] : ytPhase[yt?.fresh ? yt.phase : "waiting"] ?? ["Проверяется", "neutral"];
   const [ytLabel, ytTone] = ytState;
-  const groups = state?.engine.strategies.length ?? 0;
-  const gameOn = !!games?.engineRunning && games.activeMode !== "off";
 
   const press = () => {
     if (active) { void stop(); return; }
@@ -86,48 +82,44 @@ export function HomeScreen({ engine, onConnect, onNavigate }: Props) {
   };
 
   return (
-    <div className="home">
-      <section className="hero" aria-label="Управление подключением">
-        <Badge tone={state ? statusTone[phase] : "neutral"} pulse={transit || running}>{state ? statusLabel[phase] : "Получаем состояние…"}</Badge>
-        <h1 className="hero__title" key={phase}>{headline[phase][0]}<br /><em>{headline[phase][1]}</em></h1>
-        <div className="hero__orb">
-          <Orb phase={phase} busy={busy} disabled={busy || transit || (!active && !ready)} label={active ? "Выключить Evasion" : "Включить Evasion"} onPress={press} />
-        </div>
-        <div className={`goo${running ? " goo--open" : ""}`} data-busy={busy || transit || undefined}>
-          <div className="goo__paint" aria-hidden="true"><i /><i /><i /></div>
-          <div className="goo__content">
-            {!running && <button type="button" className="goo__main" disabled={busy || transit || (!active && !ready)} onClick={press}>{transit ? (phase === "starting" ? "Включаем…" : "Выключаем…") : phase === "failed" ? "Повторить" : "Включить"}</button>}
-            {running && <>
-              <span className="goo__time" title="Время работы"><i />{elapsed}</span>
-              <button type="button" className="goo__icon" aria-label="Переподключить" title="Переподключить" disabled={busy} onClick={() => void reconnect()}><Icon name="refresh" size={16} /></button>
-              <button type="button" className="goo__stop" disabled={busy} onClick={press}>Выключить</button>
-            </>}
+    <div className="dashboard">
+      <header className="dashboard-heading"><div><span className="kicker">ВАШЕ ЛИЧНОЕ ПРОСТРАНСТВО</span><h2>Хороший день быть на связи<span>.</span></h2></div><span className="edition">[ DIRECT CONNECTION ]</span></header>
+      <section className="connection-panel" aria-label="Управление подключением" data-phase={phase}>
+        <div className="connection-panel__copy">
+          <div className="eyebrow"><span className="signal-bars" aria-hidden="true"><i /><i /><i /><i /></span> СВОБОДА НАЧИНАЕТСЯ ЗДЕСЬ</div>
+          <h1 key={phase}>{headline[phase][0]}<br /><span>{headline[phase][1]}</span></h1>
+          <p>Ближе к людям. Ближе к тому, что любите.<br />Один клик — и вы снова на связи.</p>
+          <div className="connection-panel__controls">
+            <button type="button" className="connect-button" disabled={busy || transit || (!active && !ready)} onClick={press}><Icon name={active ? "power" : "up"} size={18} /><span>{transit ? phase === "starting" ? "Подключаем…" : "Отключаем…" : running ? "Отключиться" : phase === "failed" ? "Повторить" : "Подключиться"}</span><span className="connect-button__arrow" aria-hidden="true">↗</span></button>
+            {running ? <button type="button" className="reconnect-button" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={17} /></button> : <kbd>CTRL + ↵</kbd>}
           </div>
+          <div className="connection-panel__state"><Badge tone={state ? statusTone[phase] : "neutral"} pulse={transit || running}>{state ? statusLabel[phase] : "Получаем состояние…"}</Badge><span>{running ? elapsed : "ВАШ МАРШРУТ — ВАШИ ПРАВИЛА"}</span></div>
         </div>
-        <p className="hero__hint">{state ? hint[phase] : "Получаем состояние приложения"}</p>
-        <div className="hero__notices">
-          {state && !state.elevated && <Note tone="warn" icon="alert">Нужны права администратора. Запустите Evasion от имени администратора.</Note>}
-          {state && !state.payload.engine && <Note tone="warn" icon="alert">Движок не встроен в эту сборку. Пересоберите через ui\build-and-run.bat.</Note>}
-          {error && <Note tone="warn" icon="alert">{error}{error.toLowerCase().includes("windivert") && <> <button type="button" className="link" onClick={() => onNavigate("diagnostics")}>Диагностика драйвера</button></>}</Note>}
-          {state?.engine.guard && !error && <Note icon="shield">{state.engine.guard}</Note>}
+        <AsciiBloom motion={motion} active={running} />
+        <div className="connection-panel__foot"><span>Никаких туннелей. Только ваш интернет.</span><span>ASCII / ЖИВАЯ ПРИРОДА <span aria-hidden="true">✳</span></span></div>
+      </section>
+      <div className="connection-notices">
+        {state && !state.elevated && <Note tone="warn" icon="alert">Для подключения запустите Evasion от имени администратора.</Note>}
+        {state && !state.payload.engine && <Note tone="warn" icon="alert">Движок не встроен в эту сборку. Пересоберите приложение.</Note>}
+        {state && !state.payload.windivert && <Note tone="warn" icon="alert">Драйвер WinDivert недоступен. Откройте диагностику.</Note>}
+        {state && !state.payload.config && !state.userConfig && <Note tone="warn" icon="alert">Не найден конфиг подключения. Откройте диагностику.</Note>}
+        {error && <Note tone="warn" icon="alert">{error}</Note>}
+      </div>
+      <section className="service-section" aria-label="Состояние сервисов">
+        <header className="section-heading"><span className="kicker">ПРИВЫЧНЫЕ СЕРВИСЫ. БЕЗ ПРЕГРАД.</span><button type="button" className="link" onClick={() => onNavigate("services")}>Все сервисы <span aria-hidden="true">↗</span></button></header>
+        <div className="service-grid">
+          <ServiceRow icon="bolt" name="Discord" note="Разговоры, которые не обрываются" tone={running ? "accent" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
+          <ServiceRow icon="play" name="YouTube" note="Больше того, что вдохновляет" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
+          <ServiceRow icon="send" name="Telegram" note="Всё важное — на расстоянии сообщения" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
         </div>
       </section>
-
-      <section className="bento" aria-label="Состояние">
-        <Glass className="services">
-          <header className="card-head"><span className="kicker">Сервисы</span><button type="button" className="link" onClick={() => onNavigate("services")}>Все цели</button></header>
-          <ServiceRow icon="bolt" name="Discord" note={running ? (groups ? `Стратегий по группам: ${groups}` : "Общая стратегия") : "Голос, чат и картинки"} tone={running ? "success" : "neutral"} label={running ? "Под защитой" : "Ожидает"} live={running} onClick={() => onNavigate("services")} />
-          <ServiceRow icon="play" name="YouTube" note={yt?.fresh && yt.switches > 0 ? `Автозамен способа: ${yt.switches}` : "Автовосстановление в фоне"} tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
-          <ServiceRow icon="send" name="Telegram" note={tg?.running ? (tg.route || "Локальный прокси готов") : "Встроенный прокси"} tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
-          <ServiceRow icon="game" name="Игры" note={games?.armed ? "Включится вместе с игрой" : "Только выбранные игры"} tone={gameOn ? "success" : games?.armed ? "accent" : "neutral"} label={games?.armed && !gameOn ? "Ждёт игру" : gameStatus(games, false)} live={gameOn} onClick={() => onNavigate("games")} />
-        </Glass>
-
-        <div className="stats">
-          <Glass className="stat"><span className="kicker">Сессия</span><strong className="stat__num stat__num--mono">{elapsed}</strong><small>{state?.engine.pid ? `PID ${state.engine.pid}` : "движок остановлен"}</small></Glass>
-          <Glass className="stat"><span className="kicker">ClientHello</span><strong className="stat__num"><Ticker value={(hello?.complete ?? 0) + (hello?.assembled ?? 0)} /></strong><small>{hello && hello.skipped > 0 ? `пропущено ${hello.skipped}` : "обработано соединений"}</small></Glass>
-          <Glass className="stat"><span className="kicker">Сторож</span><strong className="stat__num"><Ticker value={state?.engine.restarts ?? 0} /></strong><small>автоподъёмов движка</small></Glass>
-        </div>
-
+      <section className="session-strip" aria-label="Текущая сессия">
+        <div><span className="kicker">ВРЕМЯ НА СВЯЗИ</span><strong>{elapsed}</strong></div>
+        <div><span className="kicker">ОБРАБОТАНО СОЕДИНЕНИЙ</span><strong><Ticker value={(hello?.complete ?? 0) + (hello?.assembled ?? 0)} /><small> / TCP</small></strong></div>
+        <div><span className="kicker">АВТОВОССТАНОВЛЕНИЕ</span><strong><Ticker value={state?.engine.restarts ?? 0} /><small> перезапусков</small></strong></div>
+        <button type="button" className="session-strip__action" onClick={() => onNavigate("diagnostics")}><Icon name="pulse" size={18} /><span>Проверить связь</span><span aria-hidden="true">↗</span></button>
+      </section>
+      <section className="dashboard-details" aria-label="Параметры и журнал">
         {!active && (
           <Disclosure icon="settings" title="Параметры подключения" note={`Голос: ${voiceOptions.find((o) => o.id === options.voice)?.label ?? options.voice} · QUIC: ${quicOptions.find((o) => o.id === options.quic)?.label ?? options.quic}${options.boost ? " · Сильный обход" : ""}`}>
             <Row title="Голос Discord" note="Как прятать голосовой трафик. TTL подходит большинству сетей.">
@@ -172,7 +164,7 @@ export function HomeScreen({ engine, onConnect, onNavigate }: Props) {
 function ServiceRow({ icon, name, note, tone, label, live, onClick }: { icon: IconName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
     <button type="button" className={`service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
-      <span className="service__icon"><i /><i /><Icon name={icon} size={17} /></span>
+      <span className="service__icon"><Icon name={icon} size={22} /></span><span className="service__arrow" aria-hidden="true">↗</span>
       <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
       <Badge tone={tone}>{label}</Badge>
     </button>
