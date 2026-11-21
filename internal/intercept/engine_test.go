@@ -1023,6 +1023,8 @@ func TestShortHelloUnderOverlapIsSplitNotRaw(t *testing.T) {
 		Provider: fakeProvider{matchSNI: name, sel: proxy.Selection{Strategy: overlapStrategy(), ID: core.StrategyID("overlap")}},
 		Exec:     packetexec.New(),
 		Parse:    TLSHelloParser,
+
+		ShortHelloFallback: true,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

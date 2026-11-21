@@ -35,6 +35,10 @@ type HelloParser func(hello []byte) (sni string, cuts []core.CutPoint, ok bool)
 // Options задаёт зависимости контура.
 type Options struct {
 	IncludePacketMetadata bool
+	// ShortHelloFallback режет внутри имени ClientHello, слишком короткий для
+	// tcp_overlap. Только для фиксированных стратегий: в песочнице подмена
+	// приписала бы успех кандидату, который не исполнялся.
+	ShortHelloFallback bool
 	// Source, Sink — захват пакетов.
 	Source capture.PacketSource
 	Sink   capture.PacketSink
@@ -140,6 +144,7 @@ type Engine struct {
 	prov                  proxy.StrategyProvider
 	exec                  executor.Executor
 	parse                 HelloParser
+	shortHelloFallback bool
 	log                   *slog.Logger
 	now                   func() time.Time
 	onCH                  func(sni string)
@@ -200,6 +205,7 @@ func New(opts Options) (*Engine, error) {
 		prov:                  opts.Provider,
 		exec:                  opts.Exec,
 		parse:                 opts.Parse,
+		shortHelloFallback:    opts.ShortHelloFallback,
 		includePacketMetadata: opts.IncludePacketMetadata,
 		log:                   opts.Logger,
 		now:                   opts.Now,
@@ -641,7 +647,7 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 	}
 
 	err = e.exec.Execute(ctx, sel.Strategy, conn)
-	if err != nil && !conn.Sent() && errors.Is(err, desync.ErrCutUnavailable) &&
+	if err != nil && e.shortHelloFallback && !conn.Sent() && errors.Is(err, desync.ErrCutUnavailable) &&
 		strategy.RequiredCapabilities(sel.Strategy).Has(core.CapTCPOverlap) {
 		// ClientHello не длиннее cover'а (клиент без постквантового обмена:
 		// старый браузер, сторонний клиент) — перекрытие невозможно. Сырьём

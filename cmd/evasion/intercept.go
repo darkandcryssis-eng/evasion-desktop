@@ -393,6 +393,7 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 
 	engine, err := intercept.New(intercept.Options{
 		IncludePacketMetadata: true,
+		ShortHelloFallback:    true,
 		Source:                source,
 		Sink:                  handle,
 		DesyncSink:            sendYouTube,
