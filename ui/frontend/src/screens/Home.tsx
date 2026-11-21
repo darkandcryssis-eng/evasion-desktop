@@ -34,14 +34,14 @@ export function telegramMode(): TelegramMode {
 const statusLabel: Record<EnginePhase, string> = { stopped: "Готов к запуску", starting: "Включаем", running: "Обход включён", stopping: "Завершаем", failed: "Не удалось включить" };
 const statusTone: Record<EnginePhase, Tone> = { stopped: "neutral", starting: "accent", running: "success", stopping: "accent", failed: "warning" };
 const headline: Record<EnginePhase, [string, string]> = {
-  stopped: ["Интернет.", "Без границ."],
+  stopped: ["Связь вне", "ограничений_"],
   starting: ["Настраиваем", "соединение…"],
-  running: ["Вы на связи.", "Без границ."],
+  running: ["Вы на связи.", "Оставайтесь_"],
   stopping: ["Сворачиваем", "обход…"],
   failed: ["Что-то пошло", "не так."],
 };
 const hint: Record<EnginePhase, string> = {
-  stopped: "Прямое соединение. Без лишних посредников.",
+  stopped: "Ваш интернет. Ваши разговоры. Ваш выбор.",
   starting: "Поднимаем движок и перехват",
   running: "Окно можно свернуть — Evasion продолжит работу в трее",
   stopping: "Возвращаем сеть в исходное состояние",
@@ -85,21 +85,23 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 
   return (
     <div className="dashboard">
-      <header className="dashboard-heading"><div><span className="kicker">ВАШЕ ЛИЧНОЕ ПРОСТРАНСТВО</span><h2>Хороший день быть на связи<span>.</span></h2></div><span className="edition">[ DIRECT CONNECTION ]</span></header>
+      <header className="dashboard-heading"><span>01 / СОЕДИНЕНИЕ</span><span>МЕНЬШЕ ГРАНИЦ. БОЛЬШЕ СВЯЗИ.</span></header>
       <section className="connection-panel" aria-label="Управление подключением" data-phase={phase}>
+        <span className="frame-corner frame-corner--tl" aria-hidden="true">+</span><span className="frame-corner frame-corner--tr" aria-hidden="true">+</span>
         <div className="connection-panel__copy">
-          <div className="eyebrow"><span className="signal-bars" aria-hidden="true"><i /><i /><i /><i /></span> СВОБОДА НАЧИНАЕТСЯ ЗДЕСЬ</div>
+          <span className="eyebrow">ВНЕ ПРИВЫЧНЫХ РАМОК</span>
           <h1 key={phase}>{headline[phase][0]}<br /><span>{headline[phase][1]}</span></h1>
-          <p>Ближе к людям. Ближе к тому, что любите.<br />Один клик — и вы снова на связи.</p>
-          <div className="connection-panel__controls">
-            <button type="button" className="connect-button" disabled={busy || transit || (!active && !ready)} onClick={press}><Icon name={active ? "power" : "up"} size={18} /><span>{transit ? phase === "starting" ? "Подключаем…" : "Отключаем…" : running ? "Отключиться" : phase === "failed" ? "Повторить" : "Подключиться"}</span><span className="connect-button__arrow" aria-hidden="true">↗</span></button>
-            {running ? <button type="button" className="reconnect-button" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={17} /></button> : <kbd>CTRL + ↵</kbd>}
-          </div>
-          <div className="connection-panel__state"><Badge tone={state ? statusTone[phase] : "neutral"} pulse={transit || running}>{state ? statusLabel[phase] : "Получаем состояние…"}</Badge><span>{running ? elapsed : "ВАШ МАРШРУТ — ВАШИ ПРАВИЛА"}</span></div>
+          <p>{hint[phase]}</p>
         </div>
         <AsciiBloom motion={motion} active={running} />
-        <div className="connection-panel__foot"><span>Никаких туннелей. Только ваш интернет.</span><span>ASCII / ЖИВАЯ ПРИРОДА <span aria-hidden="true">✳</span></span></div>
+        <span className="hero-index" aria-hidden="true">СИМВОЛЫ СТАНОВЯТСЯ ДВИЖЕНИЕМ / ∞</span>
+        <span className="frame-corner frame-corner--bl" aria-hidden="true">+</span><span className="frame-corner frame-corner--br" aria-hidden="true">+</span>
       </section>
+      <div className="connection-command">
+        <button type="button" className="connect-button" disabled={busy || transit || (!active && !ready)} onClick={press}><span className="command-prompt" aria-hidden="true">&gt;_</span><span>{transit ? phase === "starting" ? "Подключаем…" : "Отключаем…" : running ? "Отключиться" : phase === "failed" ? "Повторить" : "Подключиться"}</span><span className="connect-button__arrow" aria-hidden="true">↵</span></button>
+        <div className="connection-command__state"><Badge tone={state ? statusTone[phase] : "neutral"} pulse={transit || running}>{state ? statusLabel[phase] : "Получаем состояние…"}</Badge><small>{running ? `НА СВЯЗИ / ${elapsed}` : "ПРЯМОЕ СОЕДИНЕНИЕ / БЕЗ VLESS"}</small></div>
+        {running ? <button type="button" className="reconnect-button" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={18} /></button> : <kbd>CTRL + ENTER</kbd>}
+      </div>
       <div className="connection-notices">
         {state && !state.elevated && <Note tone="warn" icon="alert">Для подключения запустите Evasion от имени администратора.</Note>}
         {state && !state.payload.engine && <Note tone="warn" icon="alert">Движок не встроен в эту сборку. Пересоберите приложение.</Note>}
@@ -107,11 +109,11 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
         {error && <Note tone="warn" icon="alert">{error}</Note>}
       </div>
       <section className="service-section" aria-label="Состояние сервисов">
-        <header className="section-heading"><span className="kicker">ПРИВЫЧНЫЕ СЕРВИСЫ. БЕЗ ПРЕГРАД.</span><button type="button" className="link" onClick={() => onNavigate("services")}>Все сервисы <span aria-hidden="true">↗</span></button></header>
+        <header className="section-heading"><span className="kicker">02 / КАНАЛЫ СВЯЗИ</span><button type="button" className="link" onClick={() => onNavigate("services")}>Все сервисы <span aria-hidden="true">↗</span></button></header>
         <div className="service-grid">
-          <ServiceRow icon="bolt" name="Discord" note="Разговоры, которые не обрываются" tone={running ? "accent" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
-          <ServiceRow icon="play" name="YouTube" note="Больше того, что вдохновляет" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
-          <ServiceRow icon="send" name="Telegram" note="Всё важное — на расстоянии сообщения" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
+          <ServiceRow icon="bolt" name="Discord" note="Голос / чат / медиа" tone={running ? "accent" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
+          <ServiceRow icon="play" name="YouTube" note="Видео / прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
+          <ServiceRow icon="send" name="Telegram" note="Сообщения / MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
         </div>
       </section>
       <section className="session-strip" aria-label="Текущая сессия">
@@ -165,7 +167,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 function ServiceRow({ icon, name, note, tone, label, live, onClick }: { icon: IconName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
     <button type="button" className={`service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
-      <span className="service__icon"><Icon name={icon} size={22} /></span><span className="service__arrow" aria-hidden="true">↗</span>
+      <span className="service__icon" aria-hidden="true">{name === "Discord" ? "01" : name === "YouTube" ? "02" : "03"}</span><span className="service__arrow" aria-hidden="true">[↗]</span>
       <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
       <Badge tone={tone}>{label}</Badge>
     </button>
