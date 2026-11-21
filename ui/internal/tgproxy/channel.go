@@ -93,6 +93,7 @@ type channelAttempt struct {
 	mu        sync.Mutex
 	candidate route
 	known     bool
+	done      bool
 	started   time.Time
 }
 
@@ -124,6 +125,9 @@ func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte
 	}
 	pendingRoute := func() string {
 		for _, a := range attempts {
+			if a.done {
+				continue
+			}
 			if c, ok := a.route(); ok {
 				return c.id
 			}
@@ -151,11 +155,12 @@ func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte
 			}
 		case o := <-results:
 			inflight--
+			o.attempt.done = true
 			if o.err == nil {
 				cancel()
 				winner := o.channel.route.id
 				for _, a := range attempts {
-					if a == o.attempt {
+					if a.done {
 						continue
 					}
 					if c, ok := a.route(); ok && c.id != winner && a.started.Before(o.attempt.started) {
