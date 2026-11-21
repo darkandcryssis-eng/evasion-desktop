@@ -78,11 +78,17 @@ func (a *App) startup(ctx context.Context) {
 	go a.watchGames(ctx)
 	go a.restoreTelegramProxy()
 	a.startUpdater(ctx)
+	if r, ok := parseResume(os.Args[1:]); ok {
+		var autoCtx context.Context
+		autoCtx, a.cancelAutoStart = context.WithCancel(ctx)
+		go a.resumeAfterUpdate(autoCtx, r)
+		return
+	}
 	for _, arg := range os.Args[1:] {
-		if arg == "--autostart" || arg == resumeFlag {
+		if arg == "--autostart" {
 			var autoCtx context.Context
 			autoCtx, a.cancelAutoStart = context.WithCancel(ctx)
-			go a.connectAtLogin(autoCtx, arg == resumeFlag)
+			go a.connectAtLogin(autoCtx, nil)
 			break
 		}
 	}

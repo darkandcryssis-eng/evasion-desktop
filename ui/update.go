@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +32,7 @@ const (
 	updateAsset     = "Evasion.exe"
 	updateInterval  = 6 * time.Hour
 	updatedFromFlag = "--updated-from="
-	resumeFlag      = "--resume"
+	resumeFlag      = "--resume="
 )
 
 // UpdateState — что оболочка знает о новых версиях.
@@ -358,12 +360,66 @@ func (a *App) GetUpdate() UpdateState { return a.updates.snapshot() }
 // CheckUpdate проверяет GitHub сейчас (кнопка в «Настройках»).
 func (a *App) CheckUpdate() (UpdateState, error) { return a.updates.check(context.Background()) }
 
-// InstallUpdate ставит найденную версию и перезапускает Evasion. Если обход
-// был включён, новая копия включит его снова с сохранёнными настройками.
+// resumeState — что было включено до обновления; новая копия получает это
+// в --resume= и включает обратно с теми же параметрами.
+type resumeState struct {
+	Engine  bool         `json:"engine"`
+	Games   bool         `json:"games"`
+	Options StartOptions `json:"options"`
+}
+
+func (r resumeState) arg() string {
+	b, _ := json.Marshal(r)
+	return resumeFlag + base64.RawURLEncoding.EncodeToString(b)
+}
+
+func parseResume(args []string) (resumeState, bool) {
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, resumeFlag) {
+			continue
+		}
+		var r resumeState
+		b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(arg, resumeFlag))
+		if err != nil || json.Unmarshal(b, &r) != nil || r.Options.validate() != nil {
+			return resumeState{}, false
+		}
+		return r, r.Engine || r.Games
+	}
+	return resumeState{}, false
+}
+
+func (a *App) resumeAfterUpdate(ctx context.Context, r resumeState) {
+	if r.Engine {
+		a.connectAtLogin(ctx, &r.Options)
+	}
+	if r.Games && ctx.Err() == nil {
+		if err := a.ApplyGameFilter(r.Options); err != nil {
+			a.engine.consumeLogLine("Игровой фильтр после обновления не включён: " + err.Error())
+		}
+	}
+}
+
+// InstallUpdate ставит найденную версию и перезапускает Evasion. Всё, что
+// было включено (обход, игровой фильтр), новая копия включит снова.
 func (a *App) InstallUpdate() error {
+	engine := a.engine.snapshot()
+	games := a.games.snapshot().Phase
+	r := resumeState{
+		Engine:  engine.Phase == phaseRunning || engine.Phase == phaseStarting,
+		Games:   a.gameArmed.Load() || games == phaseRunning || games == phaseStarting,
+		Options: engine.Options,
+	}
+	if !r.Engine {
+		r.Options = defaultLaunchSettings().Options
+		a.settingsMu.Lock()
+		if s, err := readLaunchSettings(launchSettingsPath()); err == nil {
+			r.Options = s.Options
+		}
+		a.settingsMu.Unlock()
+	}
 	var args []string
-	if a.engine.snapshot().Phase == phaseRunning {
-		args = append(args, resumeFlag)
+	if r.Engine || r.Games {
+		args = append(args, r.arg())
 	}
 	if err := a.updates.install(context.Background(), args); err != nil {
 		return err

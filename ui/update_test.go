@@ -75,7 +75,7 @@ func TestUpdateInstallReplacesExecutable(t *testing.T) {
 	if err != nil || !st.Available || st.Latest != "0.1.2" {
 		t.Fatalf("check = %+v, %v", st, err)
 	}
-	if err := u.install(context.Background(), []string{resumeFlag}); err != nil {
+	if err := u.install(context.Background(), []string{resumeFlag + "x"}); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "new build" {
@@ -84,7 +84,7 @@ func TestUpdateInstallReplacesExecutable(t *testing.T) {
 	if b, _ := os.ReadFile(exe + ".old"); string(b) != "old build" {
 		t.Fatalf("old = %q", b)
 	}
-	if len(launched) != 3 || launched[0] != exe || !strings.HasPrefix(launched[1], updatedFromFlag) || launched[2] != resumeFlag {
+	if len(launched) != 3 || launched[0] != exe || !strings.HasPrefix(launched[1], updatedFromFlag) || launched[2] != resumeFlag+"x" {
 		t.Fatalf("launched = %v", launched)
 	}
 }
@@ -120,5 +120,19 @@ func TestUpdateCheckSkipsDevBuild(t *testing.T) {
 	st, err := u.check(context.Background())
 	if err != nil || st.Available {
 		t.Fatalf("check = %+v, %v", st, err)
+	}
+}
+
+func TestResumeStateRoundTrip(t *testing.T) {
+	want := resumeState{Engine: true, Games: true, Options: StartOptions{Voice: "ttl", Quic: "off", Boost: true}}
+	got, ok := parseResume([]string{"--updated-from=1", want.arg()})
+	if !ok || got != want {
+		t.Fatalf("parseResume = %+v, %v", got, ok)
+	}
+	if _, ok := parseResume([]string{resumeFlag + "%%%"}); ok {
+		t.Fatal("parseResume accepted garbage")
+	}
+	if _, ok := parseResume([]string{"--autostart"}); ok {
+		t.Fatal("parseResume fired without the flag")
 	}
 }
