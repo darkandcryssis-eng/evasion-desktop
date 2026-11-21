@@ -96,7 +96,8 @@ h1, h2, p { margin: 0; }
 .stage__page { max-width: 980px; margin: 0 auto; }
 
 /* Sections arrive tile by tile. */
-.bento > *, .page-body > *, .dashboard-details > *, .connection-notices > * { animation: arrive .8s var(--glide) both; }
+/* backwards, not both: a held last keyframe would pin transform and cancel the hover lift. */
+.bento > *, .page-body > *, .dashboard-details > *, .connection-notices > * { animation: arrive .8s var(--glide) backwards; }
 .bento > :nth-child(2), .page-body > :nth-child(2) { animation-delay: .05s; }
 .bento > :nth-child(3), .page-body > :nth-child(3) { animation-delay: .1s; }
 .bento > :nth-child(4), .page-body > :nth-child(4) { animation-delay: .15s; }
@@ -179,8 +180,9 @@ kbd { font: 500 10px/1 var(--sans); padding: 5px 7px; border-radius: 6px; backgr
 
 .service { grid-column: span 3; min-height: 148px; padding: 16px 16px 15px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .service__top { display: flex; align-items: center; justify-content: space-between; }
-.service__icon { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--raise); color: var(--ink-2); transition: background .6s, color .6s, box-shadow .6s; }
-.service--live .service__icon { background: var(--accent); color: #fff; box-shadow: 0 6px 22px var(--accent-glow); }
+.service__icon { width: 40px; height: 40px; border-radius: 14px; display: grid; place-items: center; background: var(--raise); box-shadow: inset 1px 1.5px 2px -1px rgba(255, 255, 255, .22); color: var(--ink-2); transition: background .6s, color .6s, box-shadow .6s, transform .6s var(--spring); }
+.service--live .service__icon { background: linear-gradient(150deg, color-mix(in srgb, var(--accent) 82%, #fff), var(--accent-deep)); color: #fff; box-shadow: inset 1px 1.5px 2px -1px rgba(255, 255, 255, .6), 0 8px 22px -6px var(--accent-glow); }
+.service:hover .service__icon { transform: scale(1.06) rotate(-4deg); }
 .service__arrow { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-3); background: var(--raise); transition: transform .6s var(--spring), background .4s, color .4s; }
 .service:hover .service__arrow { transform: translate(2px, -2px) rotate(0deg); background: var(--solid); color: var(--solid-ink); }
 .service__text { margin-top: auto; display: grid; }
