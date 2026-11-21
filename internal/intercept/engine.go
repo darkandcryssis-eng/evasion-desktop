@@ -488,12 +488,18 @@ func (e *Engine) applyAssembled(ctx context.Context, pkt capture.Packet, act flo
 	sel := e.prov.Select(e.packetConnMeta(pkt, sni, localPort, len(act.Hello)))
 	wholeSLD := strategyCutsSLD(sel.Strategy)
 	if sel.Strategy != nil && (wholeSLD || strategy.RequiredCapabilities(sel.Strategy).Has(core.CapTCPOverlap)) {
+		// Склейка длиннее любого исходного сегмента, а значит и MSS пути: одним
+		// пакетом она в MTU не пролезет (у Chrome hello ~1800 байт), и настоящий
+		// ClientHello терялся бы. Режем замену не крупнее самого большого
+		// исходного сегмента — он заведомо проходил.
 		limit := 0
-		if wholeSLD {
-			// The SNI tail must precede the TLS header even across original segments.
-			for _, n := range act.SegLens {
-				limit = max(limit, n)
-			}
+		for _, n := range act.SegLens {
+			limit = max(limit, n)
+		}
+		if !wholeSLD && limit < overlapMinSegment {
+			// Мелкие исходные сегменты: последний кусок обязан вмещать cover
+			// целиком, иначе сервер примет cover как данные.
+			limit = max(limit, min(len(act.Hello), safeSegment))
 		}
 		if e.execDesync(ctx, pkt, act.Hello, cuts, act.BaseSeq, sni, localPort, flowID, true, limit) {
 			// Не отправлено (вне радиуса/неисполнимо) — досылаем всю склейку
@@ -623,9 +629,15 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 	conn.SetSegmentLimit(segmentLimit)
 	if strategyCutsSLD(sel.Strategy) {
 		// Captured offloaded packets can exceed the actual path MSS.
-		if segmentLimit <= 0 || segmentLimit > 1400 {
-			conn.SetSegmentLimit(1400)
+		if segmentLimit <= 0 || segmentLimit > safeSegment {
+			conn.SetSegmentLimit(safeSegment)
 		}
+	} else if strategy.RequiredCapabilities(sel.Strategy).Has(core.CapTCPOverlap) {
+		// Cover перекрывает хвост и уходит первым. Сервер выбросит его, только
+		// если настоящие байты поверх него придут одним сегментом по порядку;
+		// при нарезке с головы граница попала бы внутрь cover, и он был бы
+		// принят как данные. Поэтому полным делаем последний кусок.
+		conn.SetSegmentTailAligned(true)
 	}
 
 	if err := e.exec.Execute(ctx, sel.Strategy, conn); err != nil {
@@ -671,6 +683,14 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 // пропуск нагрузки. Нужна для досылки удержанных сегментов сырьём через того же
 // исполнителя (единый путь сборки пакета, верные суммы).
 var rawPassthrough = &strategy.Strategy{}
+
+const (
+	// safeSegment — нагрузка, которая проходит и там, где MSS пути меньше 1460.
+	safeSegment = 1400
+	// overlapMinSegment — нижняя граница куска для tcp_overlap: он должен быть
+	// заведомо длиннее cover (самый длинный пресет — 681 байт).
+	overlapMinSegment = 1200
+)
 
 // emitHeldRange досылает сырьём сегменты склейки с индексами [from, to) по их
 // исходным границам (segLens), каждый отдельным пакетом с верным seq. Пакеты
