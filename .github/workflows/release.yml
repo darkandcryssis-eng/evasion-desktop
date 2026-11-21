@@ -70,6 +70,9 @@ jobs:
         working-directory: ui
         run: |
           go install "github.com/wailsapp/wails/v2/cmd/wails@$WAILS_VER"
+          # tray_windows.go встраивает icon.ico, а wails создаёт его позже, чем
+          # компилирует приложение ради привязок.
+          cp assets/tray.ico build/windows/icon.ico
           wails build -trimpath -ldflags "-X main.appVersion=$VERSION"
           cd build/bin
           sha256sum Evasion.exe > Evasion.exe.sha256
