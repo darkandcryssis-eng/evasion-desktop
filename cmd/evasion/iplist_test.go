@@ -30,6 +30,11 @@ func TestIPListProvider(t *testing.T) {
 	if small.Strategy == nil || small.ID == big.ID {
 		t.Fatal("короткий ClientHello должен получить свою стратегию")
 	}
+	listed.SNI = ""
+	if got := p.Select(listed); got.ID != big.ID {
+		t.Fatal("короткий ClientHello без SNI должен получить перекрытие, а не разрез по SNI")
+	}
+	listed.SNI = "unknown.example"
 	for name, meta := range map[string]proxy.ConnMeta{
 		"чужой адрес":      {Host: "198.51.100.1", IsClientHello: true, PayloadLength: 517},
 		"не ClientHello":   {Host: "203.0.113.9", PayloadLength: 517},

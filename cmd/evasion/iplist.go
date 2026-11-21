@@ -48,7 +48,8 @@ func (p *ipListProvider) Select(meta proxy.ConnMeta) proxy.Selection {
 	if err != nil || !p.set.Contains(ip) {
 		return selected
 	}
-	if meta.PayloadLength <= 681 {
+	// Разрез по SNI возможен, только если SNI есть (к голому IP его часто нет).
+	if meta.SNI != "" && meta.PayloadLength <= 681 {
 		return p.small
 	}
 	return p.normal
