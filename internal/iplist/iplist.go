@@ -103,6 +103,10 @@ func (s *Set) Contains(ip netip.Addr) bool {
 		return false
 	}
 	ip = ip.Unmap()
+	// Широкая запись (172.0.0.0/8) может накрыть частную сеть — её не трогаем.
+	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return false
+	}
 	for _, p := range s.prefixes {
 		if p.Contains(ip) {
 			return true

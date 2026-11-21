@@ -43,3 +43,13 @@ func TestEmptyAndNil(t *testing.T) {
 		t.Fatalf("missing file: len=%d err=%v", s.Len(), err)
 	}
 }
+
+func TestWideEntrySkipsPrivate(t *testing.T) {
+	s, err := Parse("172.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Contains(netip.MustParseAddr("172.64.0.1")) || s.Contains(netip.MustParseAddr("172.16.5.1")) {
+		t.Fatal("частная сеть внутри широкой записи должна пропускаться")
+	}
+}
