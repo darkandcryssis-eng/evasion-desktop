@@ -187,7 +187,6 @@ func (a *App) showWindow() {
 
 func (a *App) trayQuit() {
 	a.trayAvailable.Store(false)
-	trayAnimation.Add(1)
 	if a.tray != nil {
 		a.tray.close()
 	}
