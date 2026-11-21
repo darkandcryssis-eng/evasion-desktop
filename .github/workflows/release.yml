@@ -1,0 +1,83 @@
+name: Release
+
+# Каждое обновление main собирает Evasion.exe и публикует новый релиз.
+# Приложение сверяет свою версию с последним релизом и предлагает обновиться.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  WINDIVERT_VER: 2.2.2
+  WINDIVERT_DLL_SHA: c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2
+  WINDIVERT_SYS_SHA: 8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2
+  WAILS_VER: v2.17.0
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ui/go.mod
+          cache-dependency-path: |
+            go.sum
+            ui/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Версия: старшие числа из ui/wails.json, последнее — номер запуска,
+      # поэтому каждый релиз новее предыдущего.
+      - name: Version
+        run: |
+          base=$(node -p "require('./ui/wails.json').info.productVersion.split('.').slice(0,2).join('.')")
+          version="$base.$GITHUB_RUN_NUMBER"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          node -e "const fs=require('fs'),p='ui/wails.json',j=JSON.parse(fs.readFileSync(p,'utf8'));j.info.productVersion='$version';fs.writeFileSync(p,JSON.stringify(j,null,2))"
+
+      - name: Engine and config
+        run: |
+          go build -trimpath -o ui/payload/evasion.exe ./cmd/evasion
+          cp examples/config.json ui/payload/config.json
+
+      - name: WinDivert
+        run: |
+          name="WinDivert-$WINDIVERT_VER-A"
+          curl -fsSL -o "$RUNNER_TEMP/wd.zip" "https://github.com/basil00/WinDivert/releases/download/v$WINDIVERT_VER/$name.zip"
+          7z x -y -o"$RUNNER_TEMP" "$RUNNER_TEMP/wd.zip" > /dev/null
+          src="$RUNNER_TEMP/$name"
+          echo "$WINDIVERT_DLL_SHA *$src/x64/WinDivert.dll" | sha256sum -c -
+          echo "$WINDIVERT_SYS_SHA *$src/x64/WinDivert64.sys" | sha256sum -c -
+          cp "$src/x64/WinDivert.dll" "$src/x64/WinDivert64.sys" ui/payload/
+          cp "$src/LICENSE" ui/payload/WinDivert-LICENSE.txt
+
+      - name: Build Evasion.exe
+        working-directory: ui
+        run: |
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$WAILS_VER"
+          wails build -trimpath -ldflags "-X main.appVersion=$VERSION"
+          cd build/bin
+          sha256sum Evasion.exe > Evasion.exe.sha256
+          cat Evasion.exe.sha256
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" ui/build/bin/Evasion.exe ui/build/bin/Evasion.exe.sha256 \
+            --target "$GITHUB_SHA" --title "Evasion $VERSION" --generate-notes --latest

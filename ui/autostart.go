@@ -182,7 +182,9 @@ func taskEnabledXML(b []byte) (bool, error) {
 	return task.Settings.Enabled == nil || *task.Settings.Enabled, nil
 }
 
-func (a *App) connectAtLogin(ctx context.Context) {
+// force — перезапуск после обновления: обход был включён, поэтому
+// подключаемся и без галочки автозапуска.
+func (a *App) connectAtLogin(ctx context.Context, force bool) {
 	a.settingsMu.Lock()
 	s, err := readLaunchSettings(launchSettingsPath())
 	a.settingsMu.Unlock()
@@ -190,7 +192,7 @@ func (a *App) connectAtLogin(ctx context.Context) {
 		a.engine.consumeLogLine("Автозапуск: " + err.Error())
 		return
 	}
-	if !s.AutoStart {
+	if !s.AutoStart && !force {
 		return
 	}
 	// Opening Evasion at login should not close an already open Discord.

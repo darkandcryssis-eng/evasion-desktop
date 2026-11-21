@@ -14,6 +14,10 @@
 </p>
 
 <p align="center">
+  <sub>Evasion сам проверяет новые версии и показывает «Доступно обновление» — ставится по вашему нажатию.</sub>
+</p>
+
+<p align="center">
   <img src="docs/readme/app-on.png" alt="Главное окно Evasion: обход включён, идёт сессия, Discord и YouTube доступны" width="820">
 </p>
 
