@@ -177,3 +177,95 @@ func TestQUICShouldNotBlock(t *testing.T) {
 		}
 	})
 }
+
+// udp4From — udp4 с заданным портом источника: отдельный UDP-поток.
+func udp4From(srcPort uint16, payload []byte) []byte {
+	b := udp4(443, payload)
+	binary.BigEndian.PutUint16(b[20:], srcPort)
+	return b
+}
+
+// TestQUICFlowsBlockAfterDCIDChange: когда ClientHello к радиусу собран, поток
+// блокируется целиком. Живой Chrome после сброса повторяет Initial с новым DCID
+// (его сборщик расшифровать не может) и шлёт пакеты с коротким заголовком — они
+// не должны проходить, иначе рукопожатие QUIC завершается мимо блокировки.
+func TestQUICFlowsBlockAfterDCIDChange(t *testing.T) {
+	parts, ok := quic.SplitClientInitial(mustHex(t, clientInitialExampleCom), 20)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("не удалось разбить Initial: ok=%v частей=%d", ok, len(parts))
+	}
+	ds := domainSetFor(t, "example.com")
+	reasm, flows, now := quic.NewReassembler(), newQUICFlows(nil), time.Now()
+	out := func(srcPort uint16, payload []byte) capture.Packet {
+		return capture.Packet{Data: udp4From(srcPort, payload), Dir: core.DirectionOutbound}
+	}
+
+	if _, block := flows.shouldBlock(out(50000, parts[0]), ds, reasm, now); block {
+		t.Fatal("первая часть ClientHello: имени ещё нет, блокировать рано")
+	}
+	if sni, block := flows.shouldBlock(out(50000, parts[1]), ds, reasm, now); !block || sni != "example.com" {
+		t.Fatalf("собранный ClientHello к радиусу: sni=%q block=%v", sni, block)
+	}
+
+	// Повтор с новым DCID: ключи остались от исходного, сборщику его не разобрать.
+	retry := append([]byte(nil), parts[1]...)
+	retry[6] ^= 0x80
+	if _, ok := quic.NewReassembler().Offer(retry, now); ok {
+		t.Fatal("тест-вектор негоден: повтор с чужим DCID не должен разбираться")
+	}
+	if sni, block := flows.shouldBlock(out(50000, retry), ds, reasm, now); !block || sni != "example.com" {
+		t.Fatalf("повтор с новым DCID на заблокированном потоке прошёл: sni=%q block=%v", sni, block)
+	}
+	short := []byte{0x40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
+	if _, block := flows.shouldBlock(out(50000, short), ds, reasm, now); !block {
+		t.Fatal("короткий заголовок на заблокированном потоке прошёл")
+	}
+
+	if _, block := flows.shouldBlock(out(50001, retry), ds, reasm, now); block {
+		t.Fatal("чужой поток (другой порт) блокировать нельзя")
+	}
+	in := capture.Packet{Data: udp4From(50000, short), Dir: core.DirectionInbound}
+	if _, block := flows.shouldBlock(in, ds, reasm, now); block {
+		t.Fatal("входящий пакет не блокируем")
+	}
+	if _, block := flows.shouldBlock(out(50000, short), ds, reasm, now.Add(quicFlowTTL+2*time.Second)); block {
+		t.Fatal("после простоя дольше quicFlowTTL поток должен быть забыт")
+	}
+}
+
+// TestQUICFlowsReleaseOnOtherDomain: собранное имя вне радиуса на том же потоке
+// снимает блокировку — порт мог достаться другому соединению.
+func TestQUICFlowsReleaseOnOtherDomain(t *testing.T) {
+	ds := domainSetFor(t, "example.com")
+	reasm, flows, now := quic.NewReassembler(), newQUICFlows(nil), time.Now()
+	pkt := func(payload []byte) capture.Packet {
+		return capture.Packet{Data: udp4From(50000, payload), Dir: core.DirectionOutbound}
+	}
+	if _, block := flows.shouldBlock(pkt(mustHex(t, clientInitialExampleCom)), ds, reasm, now); !block {
+		t.Fatal("Initial к радиусу должен блокироваться")
+	}
+	if _, block := flows.shouldBlock(pkt(initialForYouTube(t)), ds, reasm, now); block {
+		t.Fatal("Initial к домену вне радиуса блокировать нельзя")
+	}
+	if _, block := flows.shouldBlock(pkt([]byte{0x40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}), ds, reasm, now); block {
+		t.Fatal("после чужого ClientHello поток должен быть разблокирован")
+	}
+}
+
+// TestQUICFlowsKnownFlowNoAllocs: вердикт по уже известному потоку — горячий
+// путь (каждая датаграмма установленной сессии) и памяти не выделяет.
+func TestQUICFlowsKnownFlowNoAllocs(t *testing.T) {
+	ds := domainSetFor(t, "example.com")
+	reasm, flows, now := quic.NewReassembler(), newQUICFlows(nil), time.Now()
+	if _, block := flows.shouldBlock(capture.Packet{Data: udp4From(50000, mustHex(t, clientInitialExampleCom)), Dir: core.DirectionOutbound}, ds, reasm, now); !block {
+		t.Fatal("Initial к радиусу должен блокироваться")
+	}
+	short := capture.Packet{Data: udp4From(50000, []byte{0x40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}), Dir: core.DirectionOutbound}
+	if n := testing.AllocsPerRun(100, func() {
+		if _, block := flows.shouldBlock(short, ds, reasm, now); !block {
+			t.Fatal("известный поток должен блокироваться")
+		}
+	}); n != 0 {
+		t.Fatalf("вердикт по известному потоку выделяет память: %v на вызов", n)
+	}
+}
