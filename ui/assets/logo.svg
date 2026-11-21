@@ -1,17 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <radialGradient id="wash"><stop stop-color="#2a1c96"/><stop offset="1" stop-color="#2a1c96" stop-opacity="0"/></radialGradient>
-    <filter id="halo" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="46"/></filter>
-    <filter id="core" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="14"/></filter>
+    <radialGradient id="floor" cx=".78" cy=".98" r=".62"><stop stop-color="#2c1e96"/><stop offset="1" stop-color="#2c1e96" stop-opacity="0"/></radialGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff"/><stop offset="1" stop-color="#d0caff"/></linearGradient>
+    <linearGradient id="run" gradientUnits="userSpaceOnUse" x1="456" y1="512" x2="824" y2="512"><stop stop-color="#5442ff"/><stop offset="1" stop-color="#fff"/></linearGradient>
+    <filter id="halo" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="56"/></filter>
+    <filter id="core" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="18"/></filter>
   </defs>
-  <rect x="26" y="26" width="972" height="972" rx="240" fill="#040406"/>
-  <circle cx="512" cy="512" r="430" fill="url(#wash)" opacity=".55"/>
-  <circle cx="512" cy="512" r="276" fill="#0d0d14"/>
-  <g fill="none" stroke-linecap="round">
-    <circle cx="512" cy="512" r="276" stroke="#5442ff" stroke-width="72" filter="url(#halo)"/>
-    <circle cx="512" cy="512" r="276" stroke="#7c6cff" stroke-width="42" filter="url(#core)"/>
-    <circle cx="512" cy="512" r="276" stroke="#f1efff" stroke-width="28"/>
+  <rect x="26" y="26" width="972" height="972" rx="240" fill="#050507"/>
+  <rect x="26" y="26" width="972" height="972" rx="240" fill="url(#floor)"/>
+  <g fill="none" stroke-linecap="round" stroke-width="102">
+    <path d="M507 512H773" stroke="#5442ff" filter="url(#halo)"/>
+    <path d="M507 512H773" stroke="#7c6cff" filter="url(#core)" opacity=".7"/>
+    <path d="M573 312H394A123 123 0 0 0 271 435V589A123 123 0 0 0 394 712H573" stroke="url(#ink)"/>
+    <path d="M507 512H773" stroke="url(#run)"/>
   </g>
-  <circle cx="512" cy="512" r="68" fill="#7c6cff" filter="url(#core)"/>
-  <circle cx="512" cy="512" r="45" fill="#fff"/>
 </svg>

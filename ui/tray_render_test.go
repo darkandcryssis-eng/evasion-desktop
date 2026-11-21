@@ -33,12 +33,12 @@ func TestTrayPanelShowsState(t *testing.T) {
 	if trayPixel(off, right, tg.Y+tg.H/2) != trayPixel(on, right, tg.Y+tg.H/2) {
 		t.Fatal("Telegram toggle changed with the bypass state")
 	}
-	// The mark holds its centre dot only while the bypass runs.
-	if got := trayPixel(on, 30, 34); got != [3]byte{255, 255, 255} {
-		t.Fatalf("lit mark centre = %v, want white", got)
+	// The mark's middle bar slips out past the bracket only while the bypass runs.
+	if got := trayPixel(on, 38, 34); got != [3]byte{255, 255, 255} {
+		t.Fatalf("lit mark bar head = %v, want white", got)
 	}
-	if got := trayPixel(off, 30, 34); got != [3]byte{0, 0, 0} {
-		t.Fatalf("idle mark centre = %v, want black", got)
+	if got := trayPixel(off, 38, 34); got != [3]byte{0, 0, 0} {
+		t.Fatalf("idle mark bar head = %v, want black", got)
 	}
 }
 

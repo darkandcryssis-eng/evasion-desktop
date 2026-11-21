@@ -205,25 +205,27 @@ func paintTray(c *trayCanvas, v trayView, press trayPress) {
 	}
 	c.strokeBox(panel, trayPanelRadius, 1, th.line, 1)
 
-	// The mark: the ring is lit and holds its dot while the bypass runs.
+	// The mark: an E whose middle bar slips out of the bracket while the bypass runs.
 	const mx, my = 30.0, 34.0
-	lit := trayHex(0xf1efff)
-	c.disc(mx, my, 16, trayHex(0x000000), 1)
-	c.ring(mx, my, 16, 1, trayHex(0x2a2a30), 1)
+	c.fillBox(trayBox{mx - 16, my - 16, 32, 32}, 10, trayHex(0x000000), 1)
+	ink, bar, slip := trayHex(0x8b8a96), trayHex(0x8b8a96), -3.0
 	switch {
 	case v.DPIOn:
-		c.glow(mx, my, 9.5, 3.4, violet, .95)
-		c.ring(mx, my, 9.5, 1.7, lit, 1)
-		c.glow(mx, my, 0, 3, violet, .8)
-		c.disc(mx, my, 2.4, trayHex(0xffffff), 1)
+		ink, bar, slip = trayHex(0xf1efff), trayHex(0xffffff), 0
+		c.glow(mx+4, my, 0, 4.2, violet, .95)
 	case v.DPIBusy:
-		c.glow(mx, my, 9.5, 3, violet, .55)
-		c.ring(mx, my, 9.5, 1.5, lit, .85)
-	default:
-		c.ring(mx, my, 9.5, 1.2, lit, .32)
-		c.glow(mx, my+9.5, 0, 2.4, violet, .7)
-		c.disc(mx, my+9.5, 1.6, lit, .9)
+		ink, bar, slip = trayHex(0xf1efff), trayHex(0xa79dff), -1.5
+		c.glow(mx+2.5, my, 0, 3.6, violet, .55)
 	}
+	bracket := [][2]float64{{mx + 1.92, my - 6.24}}
+	for _, corner := range [][3]float64{{my - 2.4, -1, 0}, {my + 2.4, 1, 1}} {
+		for n := 0.0; n <= 6; n++ {
+			a := math.Pi / 2 * (corner[2] + (1-2*corner[2])*n/6)
+			bracket = append(bracket, [2]float64{mx - 3.68 - 3.84*math.Sin(a), corner[0] + corner[1]*3.84*math.Cos(a)})
+		}
+	}
+	c.polyline(append(bracket, [2]float64{mx + 1.92, my + 6.24}), 3.2, ink, 1)
+	c.polyline([][2]float64{{mx - .16 + slip, my}, {mx + 8.16 + slip, my}}, 3.2, bar, 1)
 
 	// Status pill at the right of the header.
 	pill := trayBox{trayPanelWidth - 12 - 98, 22, 98, 24}

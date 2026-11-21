@@ -5,6 +5,7 @@ import { useConnectionOptions, readPreference, savePreference } from "../prefere
 import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
 import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
+import { LogShowcase } from "../components/LogShowcase";
 import { Badge, BrandIcon, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
 import type { Page } from "../types";
 
@@ -85,7 +86,6 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   const orb: OrbMode = lit ? (running ? "on" : "busy") : phase === "failed" ? "failed" : "off";
   const action = transit ? (phase === "starting" ? "Подключаем…" : "Отключаем…") : running ? "Выключить обход" : phase === "failed" ? "Попробовать снова" : "Включить обход";
   const [lead, strong] = headline[phase];
-  const [hours, minutes, seconds] = elapsed.split(":");
 
   return (
     <div className="home">
@@ -106,18 +106,9 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
           </div>
         </section>
 
-        <section className="tile session" aria-label="Сессия" data-live={running || undefined}>
-          <div className="aurora" aria-hidden="true"><i /><i /><i /><i /></div>
-          <div className="folder">
-            <div className="folder__tab"><span>Сессия</span></div>
-            <div className="folder__body">
-              <div className="timer" aria-label={running ? `В сети ${elapsed}` : "Сессия не начата"}><b>{hours}</b><i>:</i><b>{minutes}</b><i>:</i><b>{seconds}</b></div>
-              <div className="folder__meta">
-                <div><strong>{running && hello ? <Ticker value={hello.complete + hello.assembled} /> : "—"}</strong><span>соединений</span></div>
-                <div><strong>{yt?.fresh && active ? yt.switches : "—"}</strong><span>замен способа</span></div>
-              </div>
-            </div>
-          </div>
+        <section className="tile session" aria-label="Журнал подключения" data-live={running || undefined}>
+          <div className="aurora" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
+          <LogShowcase logs={logs} motion={motion} />
         </section>
 
         <ServiceTile brand="discord" name="Discord" note="Голос · чат · медиа" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />

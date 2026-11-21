@@ -83,7 +83,11 @@ export default function App() {
   return (
     <main className="shell" data-phase={phase} data-page={page}>
       <header className="bar">
-        <div className="brand" aria-label="Evasion"><span className="brand__mark" aria-hidden="true"><i /></span><span className="brand__name">evasion</span></div>
+        <div className="brand" aria-label="Evasion"><svg className="brand__mark" viewBox="0 0 30 30" aria-hidden="true">
+            <defs><linearGradient id="brand-run" gradientUnits="userSpaceOnUse" x1="14" y1="15" x2="23" y2="15"><stop stopColor="#7c6cff" /><stop offset="1" stopColor="#fff" /></linearGradient></defs>
+            <path d="M16.8 9.15H11.55A3.6 3.6 0 0 0 7.95 12.75V17.25A3.6 3.6 0 0 0 11.55 20.85H16.8" />
+            <path className="brand__run" d="M14.85 15H22.65" />
+          </svg><span className="brand__name">evasion</span></div>
         <Navigation page={page} onChange={setPage} />
         <div className="bar__tools">
           <span className="engine-pill" data-phase={phase}><i />{engine.state ? phaseLabel[phase] : "Получаем состояние"}</span>
