@@ -147,7 +147,7 @@ type interceptInfo struct {
 	// Overrides — подгрупповые переопределения стратегий (cfg.Strategies) в
 	// порядке применения. Пусто, если переопределений нет (поведение прежнее).
 	Overrides []overrideInfo `json:"overrides,omitempty"`
-	// IPList — число записей пользовательского списка IP (--ip-list).
+	// IPList — число применяемых записей пользовательского списка IP (--ip-list).
 	IPList int `json:"ip_list,omitempty"`
 }
 
@@ -344,7 +344,8 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 		if err != nil {
 			return fmt.Errorf("список IP %s: %w", ipListPath, err)
 		}
-		if ipEntries = ips.Len(); ipEntries > 0 && !cfg.Observe {
+		if n := ips.Len(); n > 0 && !cfg.Observe {
+			ipEntries = n
 			if provider, err = newIPListProvider(provider, ips); err != nil {
 				return err
 			}
@@ -1097,6 +1098,8 @@ func emitInterceptInfo(w *os.File, info interceptInfo, jsonOut bool) {
 	switch {
 	case info.Auto:
 		fmt.Fprintln(w, "стратегия: авто-подбор из портфеля")
+	case info.StrategyID == "" && len(info.Overrides) == 0 && info.IPList > 0:
+		fmt.Fprintln(w, "стратегия: только свой список IP")
 	case info.StrategyID == "" && len(info.Overrides) == 0:
 		fmt.Fprintln(w, "стратегия: нет (прозрачный перехват)")
 	case !info.StrategyApplies:
@@ -1108,5 +1111,8 @@ func emitInterceptInfo(w *os.File, info interceptInfo, jsonOut bool) {
 	}
 	for _, o := range info.Overrides {
 		fmt.Fprintf(w, "  группа %s → %s\n", o.Group, o.StrategyID)
+	}
+	if info.IPList > 0 {
+		fmt.Fprintf(w, "свой список IP: %d записей — обход по адресу назначения\n", info.IPList)
 	}
 }
