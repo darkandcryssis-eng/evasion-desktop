@@ -144,7 +144,7 @@ type Engine struct {
 	prov                  proxy.StrategyProvider
 	exec                  executor.Executor
 	parse                 HelloParser
-	shortHelloFallback bool
+	shortHelloFallback    bool
 	log                   *slog.Logger
 	now                   func() time.Time
 	onCH                  func(sni string)
