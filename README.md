@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/readme/app-on.png" alt="Главное окно Evasion: обход включён, идёт сессия, Discord и YouTube доступны" width="820">
+  <img src="docs/readme/app-on.png" alt="Главное окно Evasion: обход включён, идёт сессия, за таймером плывёт журнал простыми словами, Discord, YouTube и Telegram доступны" width="820">
 </p>
 
 ## Что умеет
@@ -57,7 +57,7 @@
 3. **Нажмите на кольцо.** Через несколько секунд загорится «Вы подключены».
 
 <p align="center">
-  <img src="docs/readme/power-on.webp" alt="Анимация кнопки включения: кольцо загорается" width="440">
+  <img src="docs/readme/power-on.webp" alt="Анимация включения: кольцо загорается, запускается таймер сессии, за ним плывёт журнал" width="440">
 </p>
 
 > [!NOTE]
