@@ -301,7 +301,7 @@ export function DiagnosticsScreen() {
       <Glass className="guard">
         <span className="guard__mark"><Icon name="shield" size={20} /></span>
         <div><strong>Отчёт без секретов</strong><p>Результаты, состояния маршрутов и счётчики. Без ключей, ссылок прокси, конфигов, журналов и личных путей.</p></div>
-        <Button icon="download" disabled={busy !== ""} onClick={() => void run("export", async () => { const path = await api.exportDiagnosticReport(); if (path) setNotice(`Отчёт сохранён: ${fileName(path)}`); })}>{busy === "export" ? "Сохранение…" : "Экспорт JSON"}</Button>
+        <Button icon="download" disabled={busy !== ""} onClick={() => void run("export", async () => { const path = await api.exportDiagnosticReport(); if (path) { setNotice(`Отчёт сохранён: ${fileName(path)}`); await load(); } })}>{busy === "export" ? "Сохранение…" : "Экспорт JSON"}</Button>
       </Glass>
       <Glass className="card">
         <header className="card-head"><span className="kicker">Готовность приложения</span><Button kind="ghost" icon="pulse" disabled={busy !== ""} onClick={() => void run("doctor", async () => setChecks(await api.runDoctor()))}>{busy === "doctor" ? "Проверка…" : "Проверить движок"}</Button></header>

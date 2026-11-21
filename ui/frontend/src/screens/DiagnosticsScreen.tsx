@@ -49,7 +49,7 @@ export function DiagnosticsScreen() {
   };
   const exportReport = async () => {
     setExportBusy(true); setNotice("");
-    try { const path = await api.exportDiagnosticReport(); if (path) setNotice(`Отчёт сохранён: ${path.split(/[\\/]/).pop()}`); }
+    try { const path = await api.exportDiagnosticReport(); if (path) { setNotice(`Отчёт сохранён: ${path.split(/[\\/]/).pop()}`); await load(); } }
     catch (e) { setNotice(String(e)); }
     finally { setExportBusy(false); }
   };
