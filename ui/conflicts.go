@@ -59,11 +59,19 @@ func servicePath(imagePath string) string {
 		return strings.TrimPrefix(s[1:], `\??\`)
 	}
 	s = strings.TrimPrefix(s, `\??\`)
+	// Расширение считается концом пути только перед пробелом или концом строки:
+	// `.exe` встречается и в именах каталогов (C:\Users\alex.exeter\...).
 	lower := strings.ToLower(s)
-	for _, ext := range []string{".exe", ".sys"} {
-		if i := strings.Index(lower, ext); i >= 0 {
-			return s[:i+len(ext)]
+	for from := 0; from < len(lower); {
+		i := strings.IndexAny(lower[from:], ".")
+		if i < 0 {
+			break
 		}
+		end := from + i + 4
+		if end <= len(lower) && (lower[from+i:end] == ".exe" || lower[from+i:end] == ".sys") && (end == len(lower) || lower[end] == ' ') {
+			return s[:end]
+		}
+		from += i + 1
 	}
 	return s
 }
@@ -81,11 +89,19 @@ func staleDriver(imagePath string, disabled bool, systemRoot string, exists func
 		return false
 	}
 	lower := strings.ToLower(path)
+	if strings.HasPrefix(lower, `%systemroot%`) {
+		path = `\SystemRoot` + path[len(`%systemroot%`):]
+		lower = strings.ToLower(path)
+	}
 	switch {
 	case strings.HasPrefix(lower, `\systemroot\`):
 		path = strings.TrimSuffix(systemRoot, `\`) + path[len(`\systemroot`):]
 	case strings.HasPrefix(lower, `system32\`):
 		path = strings.TrimSuffix(systemRoot, `\`) + `\` + path
+	}
+	// Путь, который не удалось разобрать до абсолютного, не повод удалять запись.
+	if len(path) < 3 || path[1] != ':' || strings.Contains(path, "%") {
+		return false
 	}
 	return !exists(path)
 }

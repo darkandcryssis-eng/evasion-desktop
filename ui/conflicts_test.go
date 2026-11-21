@@ -24,6 +24,8 @@ func TestConflictDetection(t *testing.T) {
 		{"GoodbyeDPI", `"C:\gdpi\x86_64\goodbyedpi.exe" -9`, true},
 		{"zapret_discord", `"C:\Program Files\zapret\bin\winws.exe" --wf-tcp=443`, true},
 		{"custom", `C:\tools\winws.exe --wf-tcp=443 --dpi-desync=fake`, true},
+		{"zapret_user", `C:\Users\alex.exeter\zapret\winws.exe --wf-tcp=443`, true},
+		{"other", `C:\Users\alex.exeter\app\tool.exe winws.exe`, false},
 		{"WinDivert", `\??\C:\zapret\bin\WinDivert64.sys`, false},
 		{"BFE", `C:\Windows\system32\svchost.exe -k LocalServiceNoNetworkFirewall -p`, false},
 		{"Dnscache", `C:\Windows\system32\svchost.exe -k winws.exe`, false},
@@ -49,6 +51,10 @@ func TestStaleDriver(t *testing.T) {
 		{`\SystemRoot\System32\drivers\WinDivert64.sys`, false, false},
 		{`system32\drivers\WinDivert64.sys`, false, false},
 		{`system32\drivers\gone.sys`, false, true},
+		{`%SystemRoot%\System32\drivers\WinDivert64.sys`, false, false},
+		{`%SystemRoot%\System32\drivers\gone.sys`, false, true},
+		{`%ProgramData%\zapret\WinDivert64.sys`, false, false},
+		{`drivers\WinDivert64.sys`, false, false},
 		{``, false, false},
 	}
 	for _, c := range cases {
