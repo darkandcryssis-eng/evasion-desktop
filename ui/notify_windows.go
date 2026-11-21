@@ -22,6 +22,7 @@ var toastIcon []byte
 
 var (
 	toastSetup sync.Once
+	toastIconPath string // задаётся до первого уведомления той же горутиной
 	toastQueue = make(chan string, 4)
 )
 
@@ -40,6 +41,7 @@ func (a *App) notifyUpdate(latest string) {
 			icon := filepath.Join(dataDir(), "icon.png")
 			if os.MkdirAll(dataDir(), 0o755) == nil && os.WriteFile(icon, toastIcon, 0o644) == nil {
 				data.IconPath = icon
+				toastIconPath = icon
 			}
 			_ = toast.SetAppData(data)
 			toast.SetActivationCallback(func(string, []toast.UserData) { a.showWindow() })
@@ -60,6 +62,7 @@ func (a *App) pushUpdateToast(latest string) {
 		AppID:          toastAppID,
 		Title:          "Доступно обновление Evasion " + latest,
 		Body:           "Откройте Evasion и нажмите «Обновить».",
+		Icon:           toastIconPath,
 		ActivationType: toast.Foreground,
 		Audio:          toast.Default,
 	}
