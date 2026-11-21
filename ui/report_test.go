@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -90,5 +91,23 @@ func TestGameReportPreservesTransportWithoutFreeText(t *testing.T) {
 	b, _ := json.Marshal(r)
 	if strings.Contains(string(b), "PRIVATE-TOKEN") || r.Transport.Connecting != 0 || r.Transport.NoTCPReply != 8192 {
 		t.Fatal("unsafe transport report")
+	}
+}
+
+func TestReportContext(t *testing.T) {
+	if v := safeVersion("v0.1.3"); v != "0.1.3" {
+		t.Errorf("версия: %q", v)
+	}
+	if v := safeVersion("PRIVATE"); v != "dev" {
+		t.Errorf("мусор в версии: %q", v)
+	}
+	e := safeEngineReport(EngineState{Options: StartOptions{Voice: "badsum", Quic: "PRIVATE"}, Restarts: 2, Hello: &HelloStats{Complete: 5, Skipped: 1, Reasons: "PRIVATE"}})
+	if e.Voice != "badsum" || e.Quic != "unknown" || e.Restarts != 2 || e.Complete != 5 || e.Skipped != 1 {
+		t.Errorf("движок: %+v", e)
+	}
+	c := safeConflicts(conflictReport{Stopped: []string{"служба zapret", "winws.exe", "устаревшая запись драйвера WinDivert", "служба PRIVATE"}, Failed: []string{"GoodbyeDPI.exe"}})
+	want := []string{"service:zapret", "winws.exe", "windivert-stale", "service:other"}
+	if !slices.Equal(c.Stopped, want) || !slices.Equal(c.Failed, []string{"goodbyedpi.exe"}) {
+		t.Errorf("конфликты: %+v", c)
 	}
 }
