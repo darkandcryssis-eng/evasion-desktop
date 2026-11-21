@@ -195,7 +195,7 @@ func (r *router) connect(ctx context.Context, dc int, media bool) (peer, route, 
 
 // connectAvoid — connect для страхующей попытки: маршрут avoid ещё ждёт первого
 // ответа, поэтому прогретый пул пропускается (там чаще всего тот же маршрут),
-// а сам avoid уходит в конец гонки.
+// а сам avoid исключается из гонки, если есть другие маршруты.
 func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid string) (peer, route, time.Duration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, route{}, 0, err
@@ -255,7 +255,15 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 		return routeRank(a) > 0 && a.latency < b.latency
 	})
 	if avoid != "" {
-		sort.SliceStable(available, func(i, j int) bool { return available[i].id != avoid && available[j].id == avoid })
+		others := available[:0:0]
+		for _, candidate := range available {
+			if candidate.id != avoid {
+				others = append(others, candidate)
+			}
+		}
+		if len(others) > 0 {
+			available = others
+		}
 	}
 	r.mu.Unlock()
 	type result struct {
