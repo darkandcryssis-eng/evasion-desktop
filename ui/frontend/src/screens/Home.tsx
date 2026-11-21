@@ -5,7 +5,7 @@ import { useConnectionOptions, readPreference, savePreference } from "../prefere
 import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
 import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
-import { LogShowcase } from "../components/LogShowcase";
+import { LogShowcase, LogStream } from "../components/LogShowcase";
 import { Badge, BrandIcon, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
 import type { Page } from "../types";
 
@@ -86,6 +86,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   const orb: OrbMode = lit ? (running ? "on" : "busy") : phase === "failed" ? "failed" : "off";
   const action = transit ? (phase === "starting" ? "Подключаем…" : "Отключаем…") : running ? "Выключить обход" : phase === "failed" ? "Попробовать снова" : "Включить обход";
   const [lead, strong] = headline[phase];
+  const [hours, minutes, seconds] = elapsed.split(":");
 
   return (
     <div className="home">
@@ -96,19 +97,28 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
             <h1 aria-live="polite" key={phase}>{state ? <><span>{lead}</span> <strong>{strong}</strong></> : <span>Получаем состояние…</span>}</h1>
             <p key={`hint-${phase}`}>{hint[phase]}</p>
           </div>
-          <button type="button" className="power" aria-label={action} aria-pressed={active} title={action} aria-disabled={locked} onClick={press}>
+          <button type="button" className="power" aria-label={action} aria-pressed={active} aria-disabled={locked} onClick={press}>
             <PowerOrb mode={orb} motion={motion} />
           </button>
           <div className="hero__foot">
             <span className="hero__action" key={action}>{action}</span>
             <span className="hero__keys">{running ? <>В сети <b>{elapsed}</b></> : <><kbd>Ctrl</kbd><kbd>Enter</kbd> быстрое подключение</>}</span>
-            {running && <button type="button" className="ghost-chip" title="Переподключить" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={14} />Переподключить</button>}
+            {running && <button type="button" className="ghost-chip" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={14} />Переподключить</button>}
           </div>
         </section>
 
-        <section className="tile session" aria-label="Журнал подключения" data-live={running || undefined}>
+        <section className="tile session" aria-label="Сессия" data-live={running || undefined}>
           <div className="aurora" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
-          <LogShowcase logs={logs} motion={motion} />
+          <LogStream logs={logs} live={running} motion={motion} />
+          <LogShowcase>
+            <div className="timer" aria-label={running ? `В сети ${elapsed}` : "Сессия не начата"}>
+              <b>{hours}</b><i>:</i><b>{minutes}</b><i>:</i><b>{seconds}</b>
+            </div>
+            <div className="pane__meta">
+              <div><strong>{running && hello ? <Ticker value={hello.complete + hello.assembled} /> : "—"}</strong><span>соединений</span></div>
+              <div><strong>{yt?.fresh && active ? yt.switches : "—"}</strong><span>замен способа</span></div>
+            </div>
+          </LogShowcase>
         </section>
 
         <ServiceTile brand="discord" name="Discord" note="Голос · чат · медиа" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />

@@ -1,5 +1,6 @@
 // Accessible, familiar controls shared by the desktop screens.
 import { Component, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { House, Layers, Gamepad2, Send, Activity, Settings, Power, RefreshCw, ChevronDown, Copy, ExternalLink, Folder, Trash2, Plus, Shield, TriangleAlert, Download, Search, Eye, X, ArrowDownLeft, ArrowUpRight, PanelBottom, Info, Play, Zap, Route, Sun, Moon, Minus, Square } from "lucide-react";
 
 const glyphs = {
@@ -94,7 +95,7 @@ export function Segmented<T extends string>({ value, options, onChange, label, d
     <div className="segmented" role="radiogroup" aria-label={label} ref={root} data-disabled={disabled || undefined}>
       {box && <span className="segmented__drop" style={{ transform: `translateX(${box.left}px)`, width: box.width }} />}
       {options.map((o) => (
-        <button key={o.id} type="button" role="radio" data-id={o.id} aria-checked={o.id === value} title={o.hint} disabled={disabled} onClick={() => onChange(o.id)}>{o.label}</button>
+        <button key={o.id} type="button" role="radio" data-id={o.id} aria-checked={o.id === value} data-tip={o.hint} disabled={disabled} onClick={() => onChange(o.id)}>{o.label}</button>
       ))}
     </div>
   );
@@ -209,7 +210,7 @@ export function Feed({ logs, limit = 80, empty = "Здесь появятся с
         const t = Date.parse(l.at);
         const lvl = l.level.toUpperCase();
         return (
-          <div className={`feed__line feed__line--${lvl === "ERROR" ? "err" : lvl === "WARN" ? "warn" : "info"}`} key={`${l.at}-${i}`} title={l.attrs || undefined}>
+          <div className={`feed__line feed__line--${lvl === "ERROR" ? "err" : lvl === "WARN" ? "warn" : "info"}`} key={`${l.at}-${i}`} data-tip={l.attrs || undefined}>
             <time>{Number.isFinite(t) ? new Date(t).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}</time>
             <span>{l.msg}{l.attrs && <em> {l.attrs}</em>}</span>
           </div>
@@ -247,4 +248,74 @@ export class Boundary extends Component<{ children: ReactNode; resetKey?: string
       </div>
     );
   }
+}
+
+// Hover hints drawn by the app instead of the system tooltip: any element with data-tip gets one.
+export function Tips() {
+  const [tip, setTip] = useState<{ text: string; at: DOMRect } | null>(null);
+  const bubble = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<CSSProperties>({ visibility: "hidden" });
+  useEffect(() => {
+    let timer = 0, anchor: Element | null = null, shown: DOMRect | null = null;
+    const quiet = () => { window.clearTimeout(timer); shown = null; setTip(null); };
+    const hide = () => { quiet(); anchor = null; };
+    const show = (target: EventTarget | null, delay: number) => {
+      const el = target instanceof Element ? target.closest("[data-tip]") : null;
+      if (el === anchor) return;
+      hide();
+      if (!el) return;
+      anchor = el;
+      timer = window.setTimeout(() => {
+        const text = el.getAttribute("data-tip");
+        if (!text || !el.isConnected) return;
+        shown = el.getBoundingClientRect();
+        setTip({ text, at: shown });
+      }, delay);
+    };
+    const over = (e: PointerEvent) => show(e.target, 420);
+    // Focus brings a hint up only when the keyboard moved it there, not when the app places focus itself.
+    let tabbed = false;
+    const focus = (e: FocusEvent) => { if (tabbed) show(e.target, 120); };
+    const key = (e: KeyboardEvent) => { tabbed = e.key === "Tab"; if (e.key === "Escape") quiet(); };
+    const press = () => { tabbed = false; quiet(); };
+    // A hint does not follow its element: once that scrolls away under the pointer, the hint goes.
+    const scroll = (e: Event) => {
+      if (!anchor || !shown || !(e.target instanceof Node) || !e.target.contains(anchor)) return;
+      const now = anchor.getBoundingClientRect();
+      if (Math.abs(now.top - shown.top) > 6 || Math.abs(now.left - shown.left) > 6) hide();
+    };
+    document.addEventListener("pointerover", over);
+    document.addEventListener("pointermove", over);
+    document.addEventListener("focusin", focus);
+    document.addEventListener("focusout", hide);
+    document.addEventListener("pointerdown", press);
+    document.documentElement.addEventListener("mouseleave", hide);
+    document.addEventListener("keydown", key);
+    window.addEventListener("scroll", scroll, true);
+    window.addEventListener("blur", hide);
+    window.addEventListener("resize", hide);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("pointerover", over);
+      document.removeEventListener("pointermove", over);
+      document.removeEventListener("focusin", focus);
+      document.removeEventListener("focusout", hide);
+      document.removeEventListener("pointerdown", press);
+      document.documentElement.removeEventListener("mouseleave", hide);
+      document.removeEventListener("keydown", key);
+      window.removeEventListener("scroll", scroll, true);
+      window.removeEventListener("blur", hide);
+      window.removeEventListener("resize", hide);
+    };
+  }, []);
+  useLayoutEffect(() => {
+    const el = bubble.current;
+    if (!tip || !el) { setPlace({ visibility: "hidden" }); return; }
+    const { width, height } = el.getBoundingClientRect(), gap = 8, edge = 8;
+    const below = tip.at.bottom + gap + height <= window.innerHeight - edge;
+    const left = Math.min(Math.max(tip.at.left + tip.at.width / 2 - width / 2, edge), window.innerWidth - width - edge);
+    setPlace({ left, top: below ? tip.at.bottom + gap : Math.max(edge, tip.at.top - gap - height) });
+  }, [tip]);
+  if (!tip) return null;
+  return createPortal(<div className="tip" role="tooltip" ref={bubble} style={place}>{tip.text}</div>, document.body);
 }

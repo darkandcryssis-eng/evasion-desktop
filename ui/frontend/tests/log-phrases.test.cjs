@@ -1,0 +1,9 @@
+const assert=require("node:assert/strict");const {readFileSync}=require("node:fs");const path=require("node:path");const test=require("node:test");const vm=require("node:vm");const ts=require("typescript");
+const exportsObject={};const source=readFileSync(path.join(__dirname,"../src/logPhrases.ts"),"utf8");const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;vm.runInNewContext(code,{exports:exportsObject});const {plain,phrases}=exportsObject;
+const line=(msg,attrs="")=>({msg,attrs});
+test("a strategy pick names its group",()=>assert.equal(plain(line("стратегия по группе","группа=discord стратегия=a1b2")),"Подобран способ обхода для discord"));
+test("a rotation without a group still reads whole",()=>assert.equal(plain(line("стратегия по группе (ротация)")),"Меняем способ обхода"));
+test("a fallback route keeps the service name",()=>assert.equal(plain(line("резервный маршрут Telegram недоступен; прямые WS-каналы продолжают работать")),"Запасной маршрут Telegram недоступен"));
+test("technical lines stay out of the showcase",()=>{for(const msg of ["суммы IPv6-пакета неверны","wg","QUIC: сводка","десинк голоса: не удалось отправить пакет","побочный вред изменён","evasion run: exit status 1"])assert.equal(plain(line(msg,"ошибка=x")),"");});
+test("sentences written for people pass through",()=>{assert.equal(plain(line("Есть обмен с Telegram")),"Есть обмен с Telegram");assert.equal(plain(line("Запуск: распаковка 12 мс, движок 340 мс")),"");});
+test("the stream keeps the newest distinct phrases in order",()=>assert.deepEqual([...phrases([line("соединение принято"),line("журнал событий поднят"),line("wg"),line("соединение принято"),line("проба выполнена")],2)],["Новое соединение","Проверка связи пройдена"]));
