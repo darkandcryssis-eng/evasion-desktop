@@ -21,7 +21,8 @@ type TransportState struct {
 type transportFlow struct {
 	group                       flowKey
 	first, last, tls, responded time.Time
-	synSeq, helloAck            uint32
+	synSeq, helloAck, sent      uint32
+	gap                         bool
 	sawSYN, connected           bool
 	closed, peerClosed, failed  bool
 }
@@ -60,7 +61,19 @@ func (p *Processor) observeTransport(pkt capture.Packet, d packet.Dissection, ke
 	}
 	v.last = now
 	if syn {
-		v.sawSYN, v.synSeq = true, h.Seq()
+		v.sawSYN, v.synSeq, v.sent = true, h.Seq(), h.Seq()+1
+	}
+	// Bytes the game sent that were never captured (the filter did not cover
+	// the port yet): what this flow carried is unknown.
+	if v.sawSYN && !syn && h.Flags()&packet.FlagRST == 0 {
+		if outbound {
+			v.gap = v.gap || int32(h.Seq()-v.sent) > 0
+			if end := h.Seq() + uint32(len(payload)); int32(end-v.sent) > 0 {
+				v.sent = end
+			}
+		} else if h.Flags()&packet.FlagACK != 0 {
+			v.gap = v.gap || int32(h.Ack()-v.sent) > 1
+		}
 	}
 	if !outbound && h.Flags()&(packet.FlagSYN|packet.FlagACK) == packet.FlagSYN|packet.FlagACK {
 		v.connected = true
@@ -150,7 +163,7 @@ func (p *Processor) TransportState() TransportState {
 		case v.closed && v.peerClosed:
 			if !v.tls.IsZero() {
 				s.TLSClosed++
-			} else {
+			} else if !v.gap {
 				s.TCPClosed++
 			}
 		case !v.tls.IsZero():

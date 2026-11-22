@@ -195,4 +195,18 @@ func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
 	if s := q.TransportState(); s.NoTCPReply != 0 {
 		t.Fatal("established connection counted as unanswered", s)
 	}
+	// A server FIN on a connection whose ClientHello was never captured says
+	// nothing about the connection having failed.
+	syn := transportPacket(t, packet.FlagSYN, nil, false, 45003)
+	q.Observe(syn, sink)
+	sd, _ := packet.Dissect(syn.Data)
+	sh, _ := sd.TCP(syn.Data)
+	end := transportPacket(t, packet.FlagACK|packet.FlagFIN, nil, true, 45003)
+	ed, _ := packet.Dissect(end.Data)
+	eh, _ := ed.TCP(end.Data)
+	eh.SetAck(sh.Seq() + 600)
+	q.Observe(end, sink)
+	if s := q.TransportState(); s.TCPClosed != 0 {
+		t.Fatal("close after uncaptured game data counted as a broken connection", s)
+	}
 }
