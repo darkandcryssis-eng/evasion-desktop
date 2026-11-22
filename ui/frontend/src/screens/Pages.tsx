@@ -136,7 +136,9 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
     finally { setBusy(false); }
   };
   const persist = (patch: Partial<GameFilterSettings>, apply: boolean) => act(async () => {
-    await api.setGameFilter({ ...settings, ...patch, adaptive: true });
+    const next = { ...settings, ...patch, adaptive: true };
+    if (next.executables.length === 0) next.mode = "off";
+    await api.setGameFilter(next);
     if (apply) await api.applyGameFilter(loadOptions());
   });
   const toggle = () => on ? act(() => api.stopGameFilter()) : persist({}, true);
