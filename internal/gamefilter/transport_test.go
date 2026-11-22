@@ -146,3 +146,31 @@ func TestTransportIgnoresForeignSocketsAndExpiresBoundedState(t *testing.T) {
 		t.Fatal("expired state remained", s)
 	}
 }
+
+func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
+	o := Default()
+	o.Mode = "auto"
+	p := New(o, testOwner(true))
+	p.ObserveOnly = true
+	now := time.Now()
+	p.Now = func() time.Time { return now }
+	sink := &testSink{}
+	out := func(flags byte, data []byte, ack uint32) {
+		pkt := transportPacket(t, flags, data, false, 45000)
+		d, _ := packet.Dissect(pkt.Data)
+		h, _ := d.TCP(pkt.Data)
+		h.SetAck(ack)
+		p.Observe(pkt, sink)
+	}
+	out(packet.FlagSYN, nil, 0)
+	out(packet.FlagACK|packet.FlagPSH, []byte{22, 3, 3, 0, 1, 1}, 1000)
+	out(packet.FlagACK, nil, 1001)
+	now = now.Add(13 * time.Second)
+	if s := p.TransportState(); s.NoTLSReply != 1 {
+		t.Fatal("peer FIN acknowledgement counted as a reply", s)
+	}
+	out(packet.FlagACK, nil, 2400)
+	if s := p.TransportState(); s.NoTLSReply != 0 || s.Responding != 1 {
+		t.Fatal("acknowledged server data ignored", s)
+	}
+}

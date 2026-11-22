@@ -21,7 +21,7 @@ type TransportState struct {
 type transportFlow struct {
 	group                       flowKey
 	first, last, tls, responded time.Time
-	synSeq                      uint32
+	synSeq, helloAck            uint32
 	sawSYN, connected           bool
 	closed, peerClosed, failed  bool
 }
@@ -68,8 +68,14 @@ func (p *Processor) observeTransport(pkt capture.Packet, d packet.Dissection, ke
 	if outbound && len(payload) >= 3 && payload[0] == 22 && payload[1] == 3 && v.tls.IsZero() {
 		v.connected = true
 		v.tls = now
+		v.helloAck = h.Ack()
 	}
-	if !outbound && len(payload) > 0 && !alert {
+	// The server's first reply can arrive before the socket's port is in the
+	// capture filter. The game acknowledging more than a FIN after its
+	// ClientHello proves that reply was received.
+	acked := outbound && !v.tls.IsZero() && v.responded.IsZero() && !v.closed &&
+		h.Flags()&(packet.FlagACK|packet.FlagRST) == packet.FlagACK && int32(h.Ack()-v.helloAck) > 1
+	if !outbound && len(payload) > 0 && !alert || acked {
 		v.connected = true
 		firstReply := v.responded.IsZero()
 		v.responded = now
