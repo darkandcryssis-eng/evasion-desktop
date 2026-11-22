@@ -98,8 +98,12 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
             <h1 aria-live="polite" key={phase}>{state ? <><span>{lead}</span> <strong>{strong}</strong></> : <span>Получаем состояние…</span>}</h1>
             <p key={`hint-${phase}`}>{hint[phase]}</p>
           </div>
-          <div className="orbit" aria-hidden="true" data-on={(running && lit) || undefined}>
-            {orbit.map((name) => <span className="orbit__lane" key={name}><span className="orbit__mark" data-brand={name}><BrandLogo name={name} size={name === "discord" ? 30 : 28} /></span></span>)}
+          <div className="links" aria-hidden="true" data-on={(running && lit) || undefined}>
+            <svg width="344" height="348" viewBox="0 0 344 348">
+              {links.map((l) => <g key={l.name}><path className="links__wire" d={l.d} /><path className="links__flow" d={l.d} pathLength={1} /></g>)}
+            </svg>
+            {links.map((l) => <i className="links__spark" key={l.name} style={{ offsetPath: `path("${l.d}")` }} />)}
+            {links.map((l) => <span className="links__mark" key={l.name} data-brand={l.name} style={{ top: l.y }}><BrandLogo name={l.name} size={l.name === "discord" ? 30 : 28} /></span>)}
           </div>
           <button type="button" className="power" aria-label={action} aria-pressed={active} aria-disabled={locked} onClick={press}>
             <PowerOrb mode={orb} motion={motion} />
@@ -183,7 +187,12 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   );
 }
 
-const orbit: BrandName[] = ["discord", "youtube", "telegram"];
+// Wires from the power ring (centre 150,150 in the 344×348 stage) to the three services on its right.
+const links: { name: BrandName; y: number; d: string }[] = [
+  { name: "discord", y: 70, d: "M219 96C243 79 259 70 283 70" },
+  { name: "youtube", y: 150, d: "M238 150H283" },
+  { name: "telegram", y: 230, d: "M219 204C243 221 259 230 283 230" },
+];
 
 // The tile carries only the mark and the name; its state is spoken and shown in the hover hint, a dot flags trouble.
 function ServiceTile({ brand, name, tone, label, live, onClick }: { brand: BrandName; name: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
