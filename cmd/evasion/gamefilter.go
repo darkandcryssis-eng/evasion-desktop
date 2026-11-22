@@ -347,6 +347,9 @@ func runGamesOnly(ctx context.Context, o gamefilter.Options, adaptive bool, logg
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+		case <-owners.Changed():
+			// Let a burst of new connections settle into one filter update.
+			time.Sleep(25 * time.Millisecond)
 		}
 	}
 }

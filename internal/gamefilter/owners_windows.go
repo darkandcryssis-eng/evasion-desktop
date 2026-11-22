@@ -22,12 +22,22 @@ type Owners struct {
 	lastError string
 	processes []ProcessState
 	active    bool
-	kept      map[uint32]string
+	kept      map[uint32]keptProcess
+	changed   chan struct{}
+}
+
+// A PID alone can be reused by another program, so a kept helper is recognised
+// by its image path and creation time as well.
+type keptProcess struct {
+	image   string
+	created int64
 }
 
 var ipHelper = windows.NewLazySystemDLL("iphlpapi.dll")
 
-func NewOwners(o Options) *Owners { return &Owners{options: o, ports: map[string]owner{}} }
+func NewOwners(o Options) *Owners {
+	return &Owners{options: o, ports: map[string]owner{}, changed: make(chan struct{}, 1)}
+}
 func (o *Owners) Owns(protocol string, port uint16) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -103,17 +113,25 @@ func processList() ([]processInfo, error) {
 	return out, nil
 }
 func processImage(pid uint32) string {
+	image, _ := processIdentity(pid)
+	return image
+}
+func processIdentity(pid uint32) (string, int64) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return ""
+		return "", 0
 	}
 	defer windows.CloseHandle(h)
 	buffer := make([]uint16, 32768)
 	size := uint32(len(buffer))
 	if windows.QueryFullProcessImageName(h, 0, &buffer[0], &size) != nil {
-		return ""
+		return "", 0
 	}
-	return windows.UTF16ToString(buffer[:size])
+	var created, exited, kernel, user windows.Filetime
+	if windows.GetProcessTimes(h, &created, &exited, &kernel, &user) != nil {
+		return "", 0
+	}
+	return windows.UTF16ToString(buffer[:size]), created.Nanoseconds()
 }
 func (o *Owners) refresh() {
 	o.last = time.Now()
@@ -130,6 +148,7 @@ func (o *Owners) refresh() {
 	selected := map[uint32]string{}
 	images := map[uint32]string{}
 	direct := map[uint32]bool{}
+	identities := map[uint32]keptProcess{}
 	for _, p := range processes {
 		if p.pid <= 4 || Protected(p.name) {
 			continue
@@ -155,7 +174,13 @@ func (o *Owners) refresh() {
 	}
 	// A game stays covered after the launcher that started it has exited.
 	for _, p := range processes {
-		if name, ok := o.kept[p.pid]; ok && selected[p.pid] == "" && strings.EqualFold(name, p.name) && !Protected(p.name) {
+		k, ok := o.kept[p.pid]
+		if !ok || selected[p.pid] != "" || Protected(p.name) {
+			continue
+		}
+		if image, created := processIdentity(p.pid); created != 0 && created == k.created && strings.EqualFold(image, k.image) {
+			images[p.pid] = image
+			identities[p.pid] = k
 			selected[p.pid] = "custom"
 		}
 	}
@@ -182,10 +207,17 @@ func (o *Owners) refresh() {
 			break
 		}
 	}
-	o.kept = map[uint32]string{}
-	for _, p := range processes {
-		if selected[p.pid] != "" && !direct[p.pid] {
-			o.kept[p.pid] = p.name
+	o.kept = map[uint32]keptProcess{}
+	for pid := range selected {
+		if direct[pid] {
+			continue
+		}
+		k, ok := identities[pid]
+		if !ok {
+			k.image, k.created = processIdentity(pid)
+		}
+		if k.created != 0 {
+			o.kept[pid] = k
 		}
 	}
 	o.processes = summarizeProcesses(selected, direct)
@@ -260,18 +292,28 @@ func (o *Owners) Processes() []ProcessState {
 	return append([]ProcessState{}, o.processes...)
 }
 
-// A just-created socket can be newer than the periodic table snapshot. A port
-// the snapshot already attributes to a process is trusted for a short time, so
-// a burst of new connections from other applications costs one table read.
+// A just-created socket can be newer than the periodic table snapshot, so a
+// port the snapshot does not know is looked up again. A port it attributes to
+// another process is trusted for a short time: other applications' traffic
+// must not cost a table read per packet.
 func (o *Owners) OwnsCurrent(protocol string, port uint16) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	v, known := o.ports[ownerKey(protocol, port)]
-	if !known || !v.selected || time.Since(o.last) > 100*time.Millisecond {
-		if time.Since(o.last) > 5*time.Millisecond {
-			o.refresh()
+	key := ownerKey(protocol, port)
+	v, known := o.ports[key]
+	if !known || time.Since(o.last) > 100*time.Millisecond {
+		o.refresh()
+		v = o.ports[key]
+		if v.selected && !v.ambiguous && !known {
+			select {
+			case o.changed <- struct{}{}:
+			default:
+			}
 		}
-		v = o.ports[ownerKey(protocol, port)]
 	}
 	return v.selected && !v.ambiguous
 }
+
+// Changed fires when a new socket of a selected application is first seen, so
+// the capture filter can include it before the server replies.
+func (o *Owners) Changed() <-chan struct{} { return o.changed }
