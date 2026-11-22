@@ -3,7 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 
 	"github.com/fitting-1c/evasion/internal/enginelock"
 )
@@ -18,8 +21,9 @@ import (
 func acquireEngineLock(filter string) (*enginelock.Lock, error) {
 	path := filepath.Join(defaultStateDir, "engine.lock")
 	lock, err := enginelock.Acquire(enginelock.Options{
-		Path:   path,
-		Filter: filter,
+		Path:    path,
+		Filter:  filter,
+		SelfPID: enginePID(),
 	})
 	if err != nil {
 		if errors.Is(err, enginelock.ErrConflict) {
@@ -31,4 +35,16 @@ func acquireEngineLock(filter string) (*enginelock.Lock, error) {
 		return nil, err
 	}
 	return lock, nil
+}
+
+// enginePID — PID, под которым движок виден оболочке. На macOS оболочка
+// запускает движок через посредника и знает PID своего дочернего процесса,
+// а не движка: посредник передаёт его в EVASION_PID.
+func enginePID() int {
+	if runtime.GOOS == "darwin" {
+		if pid, err := strconv.Atoi(os.Getenv("EVASION_PID")); err == nil && pid > 1 {
+			return pid
+		}
+	}
+	return os.Getpid()
 }

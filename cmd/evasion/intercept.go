@@ -474,7 +474,7 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 		go func() { defer close(autoDone); monitor.run(autoCtx) }()
 		defer func() { autoCancel(); <-autoDone }()
 	} else {
-		writeYouTubeJSON(filepath.Join(defaultStateDir, "youtube-health.json"), youtubeHealth{PID: os.Getpid(), At: time.Now().UTC(), Phase: "disabled", Profile: "current"})
+		writeYouTubeJSON(filepath.Join(defaultStateDir, "youtube-health.json"), youtubeHealth{PID: enginePID(), At: time.Now().UTC(), Phase: "disabled", Profile: "current"})
 	}
 	// killswitch: при потере связности с контрольными целями — прозрачный режим
 	// (1.6). Без контрольных целей сторож не запускается: судить о связности не

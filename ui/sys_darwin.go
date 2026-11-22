@@ -83,7 +83,7 @@ func prepareEngine(l layout) error {
 	quoted := "'" + strings.ReplaceAll(l.Engine, "'", `'\''`) + "'"
 	shell := fmt.Sprintf("/bin/rm -rf %[1]s && /bin/mkdir -m 755 %[1]s && /bin/cp %[2]s %[3]s && "+
 		"/usr/sbin/chown root:wheel %[3]s && /bin/chmod 755 %[3]s && "+
-		"%[3]s broker --pid %[4]d --uid %[5]d --gid %[6]d </dev/null >/dev/null 2>&1 &",
+		"(%[3]s broker --pid %[4]d --uid %[5]d --gid %[6]d </dev/null >/dev/null 2>&1 &)",
 		brokerDir, quoted, brokerEngine, os.Getpid(), os.Getuid(), os.Getgid())
 	esc := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace
 	script := fmt.Sprintf(`do shell script "%s" with prompt "%s" with administrator privileges`,

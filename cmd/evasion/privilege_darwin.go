@@ -307,6 +307,7 @@ func brokerCommand(conn *net.UnixConn, exe string, app, uid, gid int) (*exec.Cmd
 	cmd.Env = []string{
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/empty",
 		brokerOwner + "=" + strconv.Itoa(uid) + ":" + strconv.Itoa(gid),
+		"EVASION_PID=" + strconv.Itoa(peerPID),
 	}
 	return cmd, nil
 }
