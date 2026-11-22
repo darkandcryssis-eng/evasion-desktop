@@ -114,7 +114,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 
         <section className="tile session" aria-label="Сессия" data-live={running || undefined}>
           <div className="aurora" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
-          <LogStream logs={logs} live={running} motion={motion} />
+          <LogStream logs={logs} live={running} motion={motion} session={state?.engine.startedAt} />
           <LogShowcase>
             <div className="timer" aria-label={running ? `В сети ${elapsed}` : "Сессия не начата"}>
               <b>{hours}</b><i>:</i><b>{minutes}</b><i>:</i><b>{seconds}</b>
