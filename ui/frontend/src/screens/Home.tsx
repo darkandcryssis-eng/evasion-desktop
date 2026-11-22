@@ -6,7 +6,7 @@ import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
 import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
 import { LogShowcase, LogStream } from "../components/LogShowcase";
-import { BrandLogo, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
+import { Badge, BrandIcon, BrandLogo, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
 import type { Page } from "../types";
 
 const voiceOptions = [
@@ -98,12 +98,8 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
             <h1 aria-live="polite" key={phase}>{state ? <><span>{lead}</span> <strong>{strong}</strong></> : <span>Получаем состояние…</span>}</h1>
             <p key={`hint-${phase}`}>{hint[phase]}</p>
           </div>
-          <div className="links" aria-hidden="true" data-on={(running && lit) || undefined}>
-            <svg width="344" height="348" viewBox="0 0 344 348">
-              {links.map((l) => <g key={l.name}><path className="links__wire" d={l.d} /><path className="links__flow" d={l.d} pathLength={1} /></g>)}
-            </svg>
-            {links.map((l) => <i className="links__spark" key={l.name} style={{ offsetPath: `path("${l.d}")` }} />)}
-            {links.map((l) => <span className="links__mark" key={l.name} data-brand={l.name} style={{ top: l.y }}><BrandLogo name={l.name} size={l.name === "discord" ? 30 : 28} /></span>)}
+          <div className="orbit" aria-hidden="true" data-on={(running && lit) || undefined}>
+            {orbit.map((name) => <span className="orbit__lane" key={name}><span className="orbit__mark" data-brand={name}><BrandLogo name={name} size={name === "discord" ? 30 : 28} /></span></span>)}
           </div>
           <button type="button" className="power" aria-label={action} aria-pressed={active} aria-disabled={locked} onClick={press}>
             <PowerOrb mode={orb} motion={motion} />
@@ -130,12 +126,12 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
           </LogShowcase>
         </section>
 
-        <ServiceTile brand="discord" name="Discord" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
-        <ServiceTile brand="youtube" name="YouTube" tone={ytTone} label={ytLabel} live={active} onClick={() => onNavigate("settings")} />
-        <ServiceTile brand="telegram" name="Telegram" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
-        <button type="button" className="tile cta" onClick={() => onNavigate("diagnostics")}>
-          <span className="cta__arrow" aria-hidden="true"><Icon name="up" size={16} /></span>
-          <span className="cta__text"><small>Что-то не работает?</small><strong>Проверить связь</strong></span>
+        <ServiceTile brand="discord" name="Discord" note="Голос · чат · медиа" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
+        <ServiceTile brand="youtube" name="YouTube" note="Видео · прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
+        <ServiceTile brand="telegram" name="Telegram" note="Сообщения · MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
+        <button type="button" className="tile service cta" onClick={() => onNavigate("diagnostics")}>
+          <span className="service__top"><span className="service__icon" aria-hidden="true"><Icon name="pulse" size={20} /></span><Icon name="right" size={16} className="service__arrow" /></span>
+          <span className="service__text"><small>Что-то не работает?</small><strong>Проверить связь</strong></span>
         </button>
       </div>
 
@@ -187,19 +183,14 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   );
 }
 
-// Wires from the power ring (centre 150,150 in the 344×348 stage) to the three services on its right.
-const links: { name: BrandName; y: number; d: string }[] = [
-  { name: "discord", y: 70, d: "M214 100C240 80 258 70 283 70" },
-  { name: "youtube", y: 150, d: "M231 150H283" },
-  { name: "telegram", y: 230, d: "M214 200C240 220 258 230 283 230" },
-];
+const orbit: BrandName[] = ["discord", "youtube", "telegram"];
 
-// The tile carries only the mark and the name; its state is spoken and shown in the hover hint, a dot flags trouble.
-function ServiceTile({ brand, name, tone, label, live, onClick }: { brand: BrandName; name: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
+function ServiceTile({ brand, name, note, tone, label, live, onClick }: { brand: BrandName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
-    <button type="button" className={`tile service${live ? " service--live" : ""}`} aria-label={`${name}: ${label}`} data-tip={label} onClick={onClick}>
-      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandLogo name={brand} size={brand === "discord" ? 32 : 30} /></span><span className="service__arrow" aria-hidden="true"><Icon name="up" size={14} /></span></span>
-      <span className="service__text"><strong>{name}</strong>{tone === "warning" && <i className="service__flag" aria-hidden="true" />}</span>
+    <button type="button" className={`tile service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
+      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandIcon name={brand} size={brand === "telegram" ? 17 : 19} /></span><Icon name="right" size={16} className="service__arrow" /></span>
+      <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
+      <Badge tone={tone} pulse={live}>{label}</Badge>
     </button>
   );
 }
