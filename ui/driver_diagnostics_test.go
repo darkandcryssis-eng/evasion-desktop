@@ -36,7 +36,7 @@ func TestDriverAndGameReportAllowlist(t *testing.T) {
 	secret := "PRIVATE-TOKEN-42"
 	d := driverDiagnostic{Status: secret, Summary: secret, Advice: secret, Code: 99999, Services: []driverService{{ID: secret, State: secret}, {ID: "windivert", State: secret, Start: secret, Code: 99999}, {ID: "battleye", State: "running", Start: "demand"}}}
 	r := buildSafeReport("failed", TelegramState{}, nil, nil, d)
-	r.Games = safeGameReport(GameFilterView{Error: secret, Settings: GameFilterSettings{Executables: []string{secret}}, ActiveMode: secret, ActiveProtocol: secret, Processes: []GameProcessState{{Family: secret}, {Family: "albion", Clients: -1}}})
+	r.Games = safeGameReport(GameFilterView{Error: secret, Settings: GameFilterSettings{Executables: []string{secret}}, ActiveMode: secret, ActiveProtocol: secret, Processes: []GameProcessState{{Family: secret}, {Family: "custom", Clients: -1}}})
 	b, _ := json.Marshal(r)
 	if strings.Contains(string(b), secret) || strings.Contains(string(b), "99999") {
 		t.Fatal(string(b))

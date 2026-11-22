@@ -151,7 +151,7 @@ export type PortfolioView = { found: boolean; updatedAt: string; holdings: Portf
 
 export type NetworkTuningView = { health?: { running: boolean; fresh: boolean; phase: string; profile: string; checkedAt: string; switches: number; rollbacks: number; failures: number; mediaObserved: boolean; checks: { target: string; stage: string; ok: boolean; code: number; ms: number }[] }; youtube: boolean; telegram: boolean; busy: boolean; phase: string; profile: string; quic: string; checkedAt: string; error: string };
 
-export type GameFilterSettings = { adaptive: boolean; mode: string; protocol: string; albion: boolean; ubisoft: boolean; executables: string[]; onDemand: boolean };
+export type GameFilterSettings = { adaptive: boolean; mode: string; protocol: string; executables: string[]; onDemand: boolean };
 export type GameRouteView = { configured: boolean; nodes: number };
 export type GameFilterView = { armed?: boolean; route?: GameRouteView; transport?: { stage: string; connecting: number; tlsWaiting: number; responding: number; noTCPReply: number; noTLSReply: number; tlsClosed: number; tcpClosed: number }; processes?: {family: string; launchers: number; clients: number; helpers: number}[]; adaptive: { stage?: string; watching: number; helping: number; responsive: number }; settings: GameFilterSettings; activeMode: string; activeProtocol: string; pending: boolean; engineRunning: boolean; fresh: boolean; targets: string[]; stats: { tunnel?: boolean; tunnelReceived?: number; tunnelSent?: number; connections: number; udp: number; tcp: number; decoys: number; errors: number; limited: number; tlsApplied?: number; tlsFailed?: number; preparedTLSIPs?: number }; error: string };
 

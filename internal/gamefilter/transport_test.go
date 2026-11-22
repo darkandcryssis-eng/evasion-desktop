@@ -146,3 +146,94 @@ func TestTransportIgnoresForeignSocketsAndExpiresBoundedState(t *testing.T) {
 		t.Fatal("expired state remained", s)
 	}
 }
+
+func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
+	o := Default()
+	o.Mode = "auto"
+	p := New(o, testOwner(true))
+	p.ObserveOnly = true
+	now := time.Now()
+	p.Now = func() time.Time { return now }
+	sink := &testSink{}
+	out := func(flags byte, data []byte, ack uint32) {
+		pkt := transportPacket(t, flags, data, false, 45000)
+		d, _ := packet.Dissect(pkt.Data)
+		h, _ := d.TCP(pkt.Data)
+		h.SetAck(ack)
+		p.Observe(pkt, sink)
+	}
+	out(packet.FlagSYN, nil, 0)
+	out(packet.FlagACK|packet.FlagPSH, []byte{22, 3, 3, 0, 1, 1}, 1000)
+	out(packet.FlagACK, nil, 1008)
+	now = now.Add(13 * time.Second)
+	if s := p.TransportState(); s.NoTLSReply != 1 {
+		t.Fatal("acknowledged alert and FIN counted as a reply", s)
+	}
+	out(packet.FlagACK, nil, 2400)
+	if s := p.TransportState(); s.NoTLSReply != 0 || s.Responding != 1 {
+		t.Fatal("acknowledged server data ignored", s)
+	}
+	// A server FIN after replies that were never captured is not a failed handshake.
+	out(packet.FlagSYN, nil, 0)
+	pkt := transportPacket(t, packet.FlagACK|packet.FlagPSH, []byte{22, 3, 3, 0, 1, 1}, false, 45001)
+	p.Observe(pkt, sink)
+	fin := transportPacket(t, packet.FlagACK|packet.FlagFIN, nil, true, 45001)
+	d, _ := packet.Dissect(fin.Data)
+	fh, _ := d.TCP(fin.Data)
+	ph, _ := func() (packet.TCPHeader, bool) { d, _ := packet.Dissect(pkt.Data); return d.TCP(pkt.Data) }()
+	fh.SetSeq(ph.Ack() + 3000)
+	p.Observe(fin, sink)
+	if s := p.TransportState(); s.TLSClosed != 0 {
+		t.Fatal("server FIN after unobserved replies counted as a closed handshake", s)
+	}
+	// A bare ACK from the game after an uncaptured SYN-ACK proves the connection.
+	q := New(o, testOwner(true))
+	q.Now = func() time.Time { return now }
+	q.Observe(transportPacket(t, packet.FlagSYN, nil, false, 45002), sink)
+	q.Observe(transportPacket(t, packet.FlagACK, nil, false, 45002), sink)
+	now = now.Add(13 * time.Second)
+	if s := q.TransportState(); s.NoTCPReply != 0 {
+		t.Fatal("established connection counted as unanswered", s)
+	}
+	// A server FIN on a connection whose ClientHello was never captured says
+	// nothing about the connection having failed.
+	syn := transportPacket(t, packet.FlagSYN, nil, false, 45003)
+	q.Observe(syn, sink)
+	sd, _ := packet.Dissect(syn.Data)
+	sh, _ := sd.TCP(syn.Data)
+	end := transportPacket(t, packet.FlagACK|packet.FlagFIN, nil, true, 45003)
+	ed, _ := packet.Dissect(end.Data)
+	eh, _ := ed.TCP(end.Data)
+	eh.SetAck(sh.Seq() + 600)
+	q.Observe(end, sink)
+	if s := q.TransportState(); s.TCPClosed != 0 {
+		t.Fatal("close after uncaptured game data counted as a broken connection", s)
+	}
+	// A fully captured connection the server closed still counts, the game's
+	// own FIN and final ACK included.
+	syn = transportPacket(t, packet.FlagSYN, nil, false, 45004)
+	q.Observe(syn, sink)
+	sd, _ = packet.Dissect(syn.Data)
+	sh, _ = sd.TCP(syn.Data)
+	step := func(flags uint8, inbound bool, seq, ack uint32) {
+		pkt := transportPacket(t, flags, nil, inbound, 45004)
+		d, _ := packet.Dissect(pkt.Data)
+		h, _ := d.TCP(pkt.Data)
+		h.SetSeq(seq)
+		h.SetAck(ack)
+		q.Observe(pkt, sink)
+	}
+	step(packet.FlagACK|packet.FlagFIN, true, 9000, sh.Seq()+1)
+	step(packet.FlagACK|packet.FlagFIN, false, sh.Seq()+1, 9001)
+	step(packet.FlagACK, true, 9001, sh.Seq()+2)
+	step(packet.FlagACK, false, sh.Seq()+2, 9001)
+	if s := q.TransportState(); s.TCPClosed != 1 {
+		t.Fatal("captured close lost", s)
+	}
+	// A connection opened before the engine started is not judged by its close.
+	q.Observe(transportPacket(t, packet.FlagACK|packet.FlagPSH, []byte{21, 3, 3, 0, 2, 1, 0}, true, 45005), sink)
+	q.Observe(transportPacket(t, packet.FlagRST, nil, true, 45005), sink)
+	if s := q.TransportState(); s.TCPClosed != 1 {
+		t.Fatal("close of a connection not seen from its start counted as broken", s)
+	}
+}

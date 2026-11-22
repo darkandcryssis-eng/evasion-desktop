@@ -16,6 +16,8 @@ type observation struct {
 	attempts           int
 	helping            bool
 	stage              int
+	ack, end           uint32
+	acking, ended      bool
 }
 type AdaptiveState struct {
 	Stage      string `json:"stage"`
@@ -83,6 +85,14 @@ func (p *Processor) Observe(pkt capture.Packet, sink capture.PacketSink) {
 		return
 	}
 	p.mu.Lock()
+	// A keepalive probe on an idle socket repeats one already sent byte and is
+	// answered by a bare ACK; it is not an attempt to reach the server.
+	if h, ok := d.TCP(pkt.Data); ok && outbound && d.PayloadLen == 1 && h.Flags()&packet.FlagPSH == 0 {
+		if v, found := p.observations[key]; !found || !v.ended || int32(h.Seq()+1-v.end) <= 0 {
+			p.mu.Unlock()
+			return
+		}
+	}
 	now := p.Now()
 	if p.observations == nil {
 		p.observations = map[flowKey]observation{}
@@ -106,13 +116,23 @@ func (p *Processor) Observe(pkt capture.Packet, sink capture.PacketSink) {
 		v = observation{first: now, group: group}
 	}
 	v.last = now
+	acked := false
 	if d.Protocol == packet.ProtoTCP {
 		payload, _ := d.Payload(pkt.Data)
 		if len(payload) >= 3 && (payload[0] == 21 || payload[0] == 22 || payload[0] == 23) && payload[1] == 3 {
 			v.tls = true
 		}
+		// A reply can be missed while the capture filter is rebuilt; the game
+		// acknowledging new server data proves it arrived.
+		if h, ok := d.TCP(pkt.Data); ok && outbound && h.Flags()&packet.FlagACK != 0 {
+			acked = v.acking && int32(h.Ack()-v.ack) > 1
+			v.ack, v.acking = h.Ack(), true
+			if end := h.Seq() + uint32(len(payload)); !v.ended || int32(end-v.end) > 0 {
+				v.end, v.ended = end, true
+			}
+		}
 	}
-	if !outbound {
+	if !outbound || acked {
 		v.reply = now
 		v.first = now
 		v.attempts = 0

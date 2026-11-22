@@ -85,7 +85,6 @@ func TestGameFlagsRejectUnsafeCombinationsBeforeStarting(t *testing.T) {
 		{"--mode", "intercept", "--game-mode", "balanced", "--auto"},
 		{"--mode", "intercept", "--game-mode", "balanced", "--rtc-redirect"},
 		{"--mode", "intercept", "--game-mode", "balanced", "--voice", "probe"},
-		{"--mode", "intercept", "--game-mode", "balanced", "--game-albion=false", "--game-ubisoft=false"},
 	} {
 		if err := runCommand(context.Background(), args); err == nil {
 			t.Fatal("unsafe flags accepted", args)

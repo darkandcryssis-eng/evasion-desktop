@@ -21,7 +21,8 @@ type TransportState struct {
 type transportFlow struct {
 	group                       flowKey
 	first, last, tls, responded time.Time
-	synSeq                      uint32
+	synSeq, helloAck, sent      uint32
+	gap                         bool
 	sawSYN, connected           bool
 	closed, peerClosed, failed  bool
 }
@@ -60,16 +61,50 @@ func (p *Processor) observeTransport(pkt capture.Packet, d packet.Dissection, ke
 	}
 	v.last = now
 	if syn {
-		v.sawSYN, v.synSeq = true, h.Seq()
+		v.sawSYN, v.synSeq, v.sent = true, h.Seq(), h.Seq()+1
+	}
+	// Bytes the game sent that were never captured (the filter did not cover
+	// the port yet): what this flow carried is unknown.
+	if v.sawSYN && !syn && h.Flags()&packet.FlagRST == 0 {
+		if outbound {
+			v.gap = v.gap || int32(h.Seq()-v.sent) > 0
+			end := h.Seq() + uint32(len(payload))
+			if h.Flags()&packet.FlagFIN != 0 {
+				end++
+			}
+			if int32(end-v.sent) > 0 {
+				v.sent = end
+			}
+		} else if h.Flags()&packet.FlagACK != 0 {
+			v.gap = v.gap || int32(h.Ack()-v.sent) > 0
+		}
 	}
 	if !outbound && h.Flags()&(packet.FlagSYN|packet.FlagACK) == packet.FlagSYN|packet.FlagACK {
+		v.connected = true
+	}
+	// The SYN-ACK can be missed the same way; either side only sends a segment
+	// without SYN or RST once the connection is established.
+	if v.sawSYN && h.Flags()&(packet.FlagSYN|packet.FlagRST) == 0 {
 		v.connected = true
 	}
 	if outbound && len(payload) >= 3 && payload[0] == 22 && payload[1] == 3 && v.tls.IsZero() {
 		v.connected = true
 		v.tls = now
+		v.helloAck = h.Ack()
 	}
-	if !outbound && len(payload) > 0 && !alert {
+	// The server's first reply can arrive before the socket's port is in the
+	// capture filter. Sequence numbers still prove it was sent: the game
+	// acknowledges, or the server has advanced by, more than a FIN or a TLS
+	// alert since the ClientHello.
+	acked := false
+	if !v.tls.IsZero() && v.responded.IsZero() && h.Flags()&packet.FlagRST == 0 {
+		if outbound {
+			acked = h.Flags()&packet.FlagACK != 0 && int32(h.Ack()-v.helloAck) > 64
+		} else {
+			acked = int32(h.Seq()-v.helloAck) > 64
+		}
+	}
+	if !outbound && len(payload) > 0 && !alert || acked {
 		v.connected = true
 		firstReply := v.responded.IsZero()
 		v.responded = now
@@ -132,7 +167,8 @@ func (p *Processor) TransportState() TransportState {
 		case v.closed && v.peerClosed:
 			if !v.tls.IsZero() {
 				s.TLSClosed++
-			} else {
+			} else if v.sawSYN && !v.gap {
+				// Only a connection followed from its SYN is known to have carried nothing.
 				s.TCPClosed++
 			}
 		case !v.tls.IsZero():

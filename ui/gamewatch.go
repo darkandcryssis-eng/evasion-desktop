@@ -17,23 +17,10 @@ const (
 	gameLinger    = 20 * time.Second
 )
 
-var albionProcesses = []string{"albion-online.exe", "albion-online_be.exe", "albiononline.exe", "albionlauncher.exe", "albion-online-launcher.exe", "launch_albion_online.exe", "launcher_albion_online.exe"}
-var ubisoftProcesses = []string{"ubisoftconnect.exe", "ubisoftgamelauncher.exe", "ubisoftgamelauncher64.exe", "ubisoftconnectwebcore.exe", "upc.exe", "uplay.exe"}
-
 // gameProcessNames — имена процессов (в нижнем регистре), ради которых фильтр
 // должен работать при данных настройках.
 func gameProcessNames(s GameFilterSettings) map[string]bool {
 	names := map[string]bool{}
-	if s.Albion {
-		for _, n := range albionProcesses {
-			names[n] = true
-		}
-	}
-	if s.Ubisoft {
-		for _, n := range ubisoftProcesses {
-			names[n] = true
-		}
-	}
 	for _, p := range s.Executables {
 		if base := strings.ToLower(filepath.Base(strings.ReplaceAll(p, "\\", "/"))); base != "" && base != "." {
 			names[base] = true
@@ -97,6 +84,12 @@ func (a *App) watchGames(ctx context.Context) {
 			lastSeen = now
 		}
 		phase := a.games.snapshot().Phase
+		// A game started by an added launcher keeps the filter on after the
+		// launcher itself has exited.
+		if !present && phase == phaseRunning && len(a.GetGameFilter().Targets) > 0 {
+			present = true
+			lastSeen = now
+		}
 		if phase == phaseStarting || phase == phaseStopping {
 			continue
 		}

@@ -59,7 +59,7 @@
     <td align="center"><img src="docs/readme/icon-send.svg" width="56" alt=""></td>
     <td><b>Telegram</b><br>Встроенный прокси включается одной кнопкой. Сообщения остаются зашифрованными.</td>
     <td align="center"><img src="docs/readme/icon-game.svg" width="56" alt=""></td>
-    <td><b>Игры</b><br>Обход только для выбранных игр и только пока они запущены: Albion Online, Ubisoft Connect или любой свой <code>.exe</code>.</td>
+    <td><b>Игры</b><br>Обход только для выбранных игр и только пока они запущены: добавьте <code>.exe</code> игры или её лаунчера.</td>
   </tr>
   <tr>
     <td align="center"><img src="docs/readme/icon-shield.svg" width="56" alt=""></td>

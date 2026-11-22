@@ -108,7 +108,7 @@ function CustomIPList({ running }: { running: boolean }) {
 }
 
 /* ═════════════ Игры ═════════════ */
-const gameDefaults: GameFilterSettings = { adaptive: true, mode: "auto", protocol: "both", albion: true, ubisoft: true, executables: [], onDemand: true };
+const gameDefaults: GameFilterSettings = { adaptive: true, mode: "auto", protocol: "both", executables: [], onDemand: true };
 const gameModes = [
   { id: "auto", label: "Авто", hint: "Evasion сам усиливает обработку, если игра не отвечает" },
   { id: "gentle", label: "Мягко", hint: "Минимальное вмешательство" },
@@ -130,8 +130,7 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
   const on = active || armed;
   const status = armed && !active ? "Ждёт запуска игры" : gameStatus(view, busy);
   const note = gameConnectionNote(view);
-  const albion = (view?.processes ?? []).find((p) => p.family === "albion");
-  const anyGame = settings.albion || settings.ubisoft || settings.executables.length > 0;
+  const anyGame = settings.executables.length > 0;
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true); setError("");
@@ -140,7 +139,9 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
     finally { setBusy(false); }
   };
   const persist = (patch: Partial<GameFilterSettings>, apply: boolean) => act(async () => {
-    await api.setGameFilter({ ...settings, ...patch, adaptive: true });
+    const next = { ...settings, ...patch, adaptive: true };
+    if (next.executables.length === 0) next.mode = "off";
+    await api.setGameFilter(next);
     if (apply) await api.applyGameFilter(loadOptions());
   });
   const toggle = () => on ? act(() => api.stopGameFilter()) : persist({}, true);
@@ -164,8 +165,7 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
 
       <Glass className="card">
         <header className="card-head"><span className="kicker">Какие игры обрабатывать</span></header>
-        <Row title="Albion Online" note="Клиент и лаунчер"><Toggle label="Albion Online" checked={settings.albion} disabled={!view || busy} onChange={(v) => void persist({ albion: v }, on)} /></Row>
-        <Row title="Ubisoft Connect" note="Лаунчер и запущенные из него игры"><Toggle label="Ubisoft Connect" checked={settings.ubisoft} disabled={!view || busy} onChange={(v) => void persist({ ubisoft: v }, on)} /></Row>
+        {!anyGame && <Note icon="info">Игр пока нет. Добавьте .exe игры или её лаунчера — игры, запущенные из лаунчера, обрабатываются вместе с ним.</Note>}
         {settings.executables.map((path) => (
           <Row key={path} title={fileName(path)} note={<span className="path">{path}</span>}><Button kind="ghost" icon="trash" aria-label={`Убрать ${fileName(path)}`} disabled={busy} onClick={() => void persist({ executables: settings.executables.filter((p) => p !== path) }, on)} /></Row>
         ))}
@@ -182,7 +182,6 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
       <Glass className="card">
         <header className="card-head"><span className="kicker">Что происходит</span></header>
         {active && note && <Note icon="info">{note}</Note>}
-        {active && albion && !note && <Note icon="info">{albion.clients > 0 ? "Процесс клиента Albion обнаружен. Вход в игру ещё не подтверждён." : "Обнаружен лаунчер Albion; клиент игры пока не запущен."}</Note>}
         <div className="hello">
           <div><strong><Ticker value={view?.stats.connections ?? 0} /></strong><span>{view?.stats.tunnel ? "через маршрут" : "соединений"}</span></div>
           <div><strong><Ticker value={view?.stats.udp ?? 0} /></strong><span>UDP-обработок</span></div>

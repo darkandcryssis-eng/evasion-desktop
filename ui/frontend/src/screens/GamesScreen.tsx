@@ -6,7 +6,7 @@ import { gameStatus, gameConnectionNote } from "../gameStatus";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 
-const defaults: GameFilterSettings = { adaptive: true, mode: "auto", protocol: "both", albion: true, ubisoft: true, executables: [], onDemand: true };
+const defaults: GameFilterSettings = { adaptive: true, mode: "auto", protocol: "both", executables: [], onDemand: true };
 export function GamesScreen({onDiagnosticsRequested}:{onDiagnosticsRequested:()=>void}) {
  const [view,setView]=useState<GameFilterView>();
  const [busy,setBusy]=useState(false);
@@ -16,7 +16,6 @@ export function GamesScreen({onDiagnosticsRequested}:{onDiagnosticsRequested:()=
  const active=Boolean(view?.engineRunning && view.activeMode!=="off");
  const status=gameStatus(view,busy);
  const connectionNote=gameConnectionNote(view);
- const albion=(view?.processes??[]).find(p=>p.family==="albion");
  useEffect(()=>{
   let alive=true;
   const refresh=async()=>{try{const next=await api.getGameFilter();if(alive)setView(next)}catch(e){if(alive)setError(String(e))}};
@@ -26,7 +25,7 @@ export function GamesScreen({onDiagnosticsRequested}:{onDiagnosticsRequested:()=
  const persist=async(patch:Partial<GameFilterSettings>,start:boolean)=>{
   setBusy(true);setError("");
   try {
-   await api.setGameFilter({...settings,...patch,mode:"auto",adaptive:true,albion:true,ubisoft:true});
+   await api.setGameFilter({...settings,...patch,mode:"auto",adaptive:true});
    if(start)await api.applyGameFilter(loadOptions());
    const next=await api.getGameFilter();setView(next);if(next.error)throw new Error(next.error);
   } catch(e){setError(String(e));setView(await api.getGameFilter().catch(()=>undefined))}finally{setBusy(false)}
@@ -59,7 +58,6 @@ export function GamesScreen({onDiagnosticsRequested}:{onDiagnosticsRequested:()=
   <section className="settings-section game-live" aria-label="Активность игрового обхода">
    <div className="game-section-heading"><Activity size={16}/><strong>Что происходит</strong></div>
    {active&&connectionNote&&<p className="local-note" role="status">{connectionNote}</p>}
-   {active&&albion&&!connectionNote&&<p className="local-note" role="status">{albion.clients>0?"Процесс клиента Albion обнаружен. Вход в игру ещё не подтверждён.":"Обнаружен лаунчер Albion; процесс клиента игры пока не обнаружен. Если зависает после «Играть», проверьте запуск клиента и сообщения BattlEye."}</p>}
    <div className="game-live__numbers"><div><strong>{view?.stats.connections??0}</strong><small>{view?.stats.tunnel?"соединений через маршрут":"соединений обработано"}</small></div><div><strong>{view?.stats.udp??0}</strong><small>UDP-обработок</small></div><div><strong>{view?.stats.errors??0}</strong><small>ошибок подключения</small></div></div>
    {view?.stats.tunnel&&<p className="local-note">Получено {((view.stats.tunnelReceived??0)/1024).toLocaleString("ru",{maximumFractionDigits:1})} КБ · Отправлено {((view.stats.tunnelSent??0)/1024).toLocaleString("ru",{maximumFractionDigits:1})} КБ</p>}
    <p className="local-note">{view?.stats.tunnel?"Через сервер идут только выбранные игры и лаунчеры. Вход в игру проверяется в самой игре.":"Сетевой обмен не подтверждает запуск игры или вход в аккаунт. Внешний IP не меняется."}</p>
@@ -69,7 +67,7 @@ export function GamesScreen({onDiagnosticsRequested}:{onDiagnosticsRequested:()=
    {view?.route?.configured&&<div className="setting-row"><div><strong>Сервер выбирается автоматически</strong><small>Серверов в профиле: {view.route.nodes}</small></div><button className="quiet-button" disabled={busy} onClick={()=>void removeRoute()}>Убрать маршрут</button></div>}
    <div className="setting-row"><input className="game-select" type="password" autoComplete="off" spellCheck={false} aria-label="Подписка, VLESS или JSON из Happ" placeholder="Подписка, VLESS или JSON из Happ" value={routeInput} disabled={busy} onChange={e=>setRouteInput(e.target.value)}/><button className="secondary-button" type="button" disabled={busy||!routeInput.trim()} onClick={()=>void importRoute()}>{view?.route?.configured?"Заменить профиль":"Добавить профиль"}</button></div>
   </details>
-  <details className="settings-section game-extra"><summary><Gamepad2 size={16}/>Другие игры</summary><p className="local-note">Albion и Ubisoft добавлять не требуется. Для другой игры выберите её .exe один раз.</p>
+  <details className="settings-section game-extra"><summary><Gamepad2 size={16}/>Другие игры</summary><p className="local-note">Выберите .exe игры или её лаунчера один раз.</p>
    {settings.executables.map(path=><div className="game-executable" key={path}><span><strong>{path.split(/[\\/]/).pop()}</strong><small>{path}</small></span><button className="quiet-button" type="button" disabled={busy} aria-label={`Убрать ${path.split(/[\\/]/).pop()}`} onClick={()=>void persist({executables:settings.executables.filter(item=>item!==path)},active)}><Trash2 size={14}/></button></div>)}
    <button className="secondary-button" type="button" disabled={!view||busy||settings.executables.length>=16} onClick={()=>void add()}><FolderPlus size={14}/>Добавить игру</button>
   </details>

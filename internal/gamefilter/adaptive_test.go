@@ -19,6 +19,11 @@ func reply(t *testing.T, p capture.Packet) capture.Packet {
 	}
 	b[d.L4Off], b[d.L4Off+2] = b[d.L4Off+2], b[d.L4Off]
 	b[d.L4Off+1], b[d.L4Off+3] = b[d.L4Off+3], b[d.L4Off+1]
+	if d.Protocol == packet.ProtoTCP {
+		for i := 0; i < 4; i++ {
+			b[d.L4Off+4+i], b[d.L4Off+8+i] = b[d.L4Off+8+i], b[d.L4Off+4+i]
+		}
+	}
 	d.RecomputeChecksums(b)
 	p.Data = b
 	p.Dir = core.DirectionInbound
@@ -458,5 +463,54 @@ func TestTLSLevelUsesOnlyUnansweredAttemptsForSameProcessAndEndpoint(t *testing.
 	p.Observe(reply(t, pkt), sink)
 	if got := p.TLSLevel(local, remote.String(), port); got != 1 {
 		t.Fatal("answered endpoint kept escalation", got)
+	}
+}
+
+func TestAdaptiveTreatsAcknowledgedServerDataAsReply(t *testing.T) {
+	o := Default()
+	o.Mode = "balanced"
+	p := New(o, testOwner(true))
+	p.Standalone = true
+	p.Adaptive = true
+	now := time.Now()
+	p.Now = func() time.Time { return now }
+	s := &testSink{}
+	for i := range 6 {
+		pkt := testPacket(t, true, false)
+		d, _ := packet.Dissect(pkt.Data)
+		h, _ := d.TCP(pkt.Data)
+		h.SetFlags(packet.FlagACK | packet.FlagPSH)
+		h.SetAck(1000 + uint32(i)*500)
+		p.Observe(pkt, s)
+		now = now.Add(4 * time.Second)
+	}
+	if st := p.AdaptiveState(); len(s.sent) != 0 || st.Helping != 0 || st.Responsive != 1 {
+		t.Fatal("flow with uncaptured replies was helped", len(s.sent), st)
+	}
+}
+
+func TestAdaptiveIgnoresKeepaliveProbes(t *testing.T) {
+	o := Default()
+	o.Mode = "balanced"
+	p := New(o, testOwner(true))
+	p.Standalone = true
+	p.Adaptive = true
+	now := time.Now()
+	p.Now = func() time.Time { return now }
+	s := &testSink{}
+	pkt := testPacket(t, true, false)
+	d, _ := packet.Dissect(pkt.Data)
+	payload, _ := d.Payload(pkt.Data)
+	probe := capture.Packet{Data: append([]byte(nil), pkt.Data[:len(pkt.Data)-len(payload)+1]...), Dir: pkt.Dir}
+	binary.BigEndian.PutUint16(probe.Data[2:4], uint16(len(probe.Data)))
+	pd, _ := packet.Dissect(probe.Data)
+	ph, _ := pd.TCP(probe.Data)
+	ph.SetFlags(packet.FlagACK)
+	for range 8 {
+		p.Observe(probe, s)
+		now = now.Add(15 * time.Second)
+	}
+	if st := p.AdaptiveState(); len(s.sent) != 0 || st.Helping != 0 {
+		t.Fatal("keepalive probes on an idle socket were helped", len(s.sent), st)
 	}
 }

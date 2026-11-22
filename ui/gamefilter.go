@@ -27,8 +27,6 @@ type GameTransportState struct {
 type GameFilterSettings struct {
 	Mode        string   `json:"mode"`
 	Protocol    string   `json:"protocol"`
-	Albion      bool     `json:"albion"`
-	Ubisoft     bool     `json:"ubisoft"`
 	Executables []string `json:"executables"`
 	// OnDemand — поднимать фильтр только пока запущена выбранная игра.
 	OnDemand bool `json:"onDemand"`
@@ -91,7 +89,7 @@ type GameFilterView struct {
 }
 
 func defaultGameSettings() GameFilterSettings {
-	return GameFilterSettings{Mode: "off", Adaptive: true, Protocol: "both", Albion: true, Ubisoft: true, Executables: []string{}, OnDemand: true}
+	return GameFilterSettings{Mode: "off", Adaptive: true, Protocol: "both", Executables: []string{}, OnDemand: true}
 }
 func (s GameFilterSettings) validate() error {
 	if s.Mode != "off" && s.Mode != "auto" && s.Mode != "gentle" && s.Mode != "balanced" && s.Mode != "strong" {
@@ -115,7 +113,7 @@ func (s GameFilterSettings) validate() error {
 			return errors.New("системные программы нельзя добавить как игру")
 		}
 	}
-	if s.Mode != "off" && !s.Albion && !s.Ubisoft && len(s.Executables) == 0 {
+	if s.Mode != "off" && len(s.Executables) == 0 {
 		return errors.New("выберите хотя бы одну игру")
 	}
 	return nil
@@ -135,6 +133,10 @@ func readGameSettings(base string) (GameFilterSettings, error) {
 	if s.Executables == nil {
 		s.Executables = []string{}
 	}
+	// Settings saved before games were added by file had built-in targets only.
+	if len(s.Executables) == 0 && slices.Contains([]string{"auto", "gentle", "balanced", "strong"}, s.Mode) {
+		s.Mode = "off"
+	}
 	if err = s.validate(); err != nil {
 		return defaultGameSettings(), err
 	}
@@ -144,7 +146,7 @@ func gameArgs(s GameFilterSettings) []string {
 	if s.Mode == "off" {
 		return nil
 	}
-	args := []string{"--game-adaptive=" + strconv.FormatBool(s.Adaptive), "--game-mode", s.Mode, "--game-protocol", s.Protocol, "--game-albion=" + strconv.FormatBool(s.Albion), "--game-ubisoft=" + strconv.FormatBool(s.Ubisoft)}
+	args := []string{"--game-adaptive=" + strconv.FormatBool(s.Adaptive), "--game-mode", s.Mode, "--game-protocol", s.Protocol}
 	for _, path := range s.Executables {
 		args = append(args, "--game-exe", path)
 	}

@@ -9,13 +9,11 @@ import (
 type Options struct {
 	Mode        string   `json:"mode"`
 	Protocol    string   `json:"protocol"`
-	Albion      bool     `json:"albion"`
-	Ubisoft     bool     `json:"ubisoft"`
 	Executables []string `json:"executables"`
 }
 
 func Default() Options {
-	return Options{Mode: "off", Protocol: "both", Albion: true, Ubisoft: true, Executables: []string{}}
+	return Options{Mode: "off", Protocol: "both", Executables: []string{}}
 }
 func (o Options) Enabled() bool { return o.Mode != "" && o.Mode != "off" }
 func (o Options) TCP() bool     { return o.Enabled() && (o.Protocol == "tcp" || o.Protocol == "both") }
@@ -46,7 +44,7 @@ func (o Options) Validate() error {
 			return errors.New("выберите исполняемый файл игры (.exe)")
 		}
 	}
-	if o.Enabled() && !o.Albion && !o.Ubisoft && len(o.Executables) == 0 {
+	if o.Enabled() && len(o.Executables) == 0 {
 		return errors.New("выберите хотя бы одну игру")
 	}
 	return nil
@@ -60,7 +58,7 @@ func Protected(name string) bool {
 	return false
 }
 
-// Names are only discovery hints; custom targets must match their full paths.
+// Targets are the user-added executables, matched by full path.
 func (o Options) Match(image string) string {
 	image = strings.ReplaceAll(strings.ToLower(image), "\\", "/")
 	name := image[strings.LastIndex(image, "/")+1:]
@@ -70,18 +68,6 @@ func (o Options) Match(image string) string {
 	for _, p := range o.Executables {
 		if strings.ReplaceAll(strings.ToLower(p), "\\", "/") == image {
 			return "custom"
-		}
-	}
-	if o.Albion {
-		switch name {
-		case "albion-online.exe", "albion-online_be.exe", "albionlauncher.exe", "albion-online-launcher.exe", "albiononline.exe", "launch_albion_online.exe", "launcher_albion_online.exe":
-			return "albion"
-		}
-	}
-	if o.Ubisoft {
-		switch name {
-		case "ubisoftconnect.exe", "ubisoftgamelauncher.exe", "ubisoftgamelauncher64.exe", "ubisoftconnectwebcore.exe", "upc.exe", "uplay.exe":
-			return "ubisoft"
 		}
 	}
 	return ""

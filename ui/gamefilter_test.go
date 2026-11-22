@@ -11,16 +11,21 @@ import (
 func TestGameSettingsDefaultAndCorruptFallback(t *testing.T) {
 	dir := t.TempDir()
 	s, err := readGameSettings(dir)
-	if err != nil || s.Mode != "off" || !s.Albion || !s.Ubisoft || len(gameArgs(s)) != 0 {
+	if err != nil || s.Mode != "off" || len(gameArgs(s)) != 0 {
 		t.Fatal("games changed baseline by default", s, err)
 	}
 	path := filepath.Join(dir, "game-filter.json")
-	for _, text := range []string{`{`, `{"mode":"bad"}`, `{"mode":"balanced","albion":false,"ubisoft":false}`} {
+	for _, text := range []string{`{`, `{"mode":"bad"}`} {
 		os.WriteFile(path, []byte(text), 0600)
 		s, err = readGameSettings(dir)
 		if err == nil || s.Mode != "off" {
 			t.Fatal("invalid settings not isolated", text, s, err)
 		}
+	}
+	os.WriteFile(path, []byte(`{"mode":"auto","albion":true,"ubisoft":true,"executables":[]}`), 0600)
+	s, err = readGameSettings(dir)
+	if err != nil || s.Mode != "off" {
+		t.Fatal("settings with built-in games only must load switched off", s, err)
 	}
 	os.WriteFile(path, []byte(`{"executables":null}`), 0600)
 	s, err = readGameSettings(dir)
@@ -86,6 +91,10 @@ func TestGameAndGeneralManagersAreIndependent(t *testing.T) {
 func TestAutomaticModeSettingsAndArguments(t *testing.T) {
 	s := defaultGameSettings()
 	s.Mode = "auto"
+	if s.validate() == nil {
+		t.Fatal("game mode accepted without an added game")
+	}
+	s.Executables = []string{filepath.Join(t.TempDir(), "game.exe")}
 	if err := s.validate(); err != nil {
 		t.Fatal(err)
 	}

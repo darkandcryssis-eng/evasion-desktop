@@ -289,7 +289,7 @@ func safeGameReport(v GameFilterView) *reportGames {
 	r.Observation = GameAdaptiveState{Stage: allowed(v.Adaptive.Stage, "watching", "gentle", "balanced", "strong"), Watching: max(0, min(8192, v.Adaptive.Watching)), Helping: max(0, min(8192, v.Adaptive.Helping)), Responsive: max(0, min(8192, v.Adaptive.Responsive))}
 	r.Transport = GameTransportState{Stage: allowed(v.Transport.Stage, "idle", "tcp_connecting", "tls_waiting", "exchanging", "tcp_unanswered", "tls_unanswered", "tls_closed", "tcp_closed"), Connecting: max(0, min(8192, v.Transport.Connecting)), TLSWaiting: max(0, min(8192, v.Transport.TLSWaiting)), Responding: max(0, min(8192, v.Transport.Responding)), NoTCPReply: max(0, min(8192, v.Transport.NoTCPReply)), NoTLSReply: max(0, min(8192, v.Transport.NoTLSReply)), TLSClosed: max(0, min(8192, v.Transport.TLSClosed)), TCPClosed: max(0, min(8192, v.Transport.TCPClosed))}
 	for _, p := range v.Processes {
-		if p.Family != "albion" && p.Family != "ubisoft" && p.Family != "custom" {
+		if p.Family != "custom" {
 			continue
 		}
 		r.Processes = append(r.Processes, GameProcessState{Family: p.Family, Launchers: max(0, min(65535, p.Launchers)), Clients: max(0, min(65535, p.Clients)), Helpers: max(0, min(65535, p.Helpers))})
