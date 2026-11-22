@@ -465,3 +465,26 @@ func TestTLSLevelUsesOnlyUnansweredAttemptsForSameProcessAndEndpoint(t *testing.
 		t.Fatal("answered endpoint kept escalation", got)
 	}
 }
+
+func TestAdaptiveTreatsAcknowledgedServerDataAsReply(t *testing.T) {
+	o := Default()
+	o.Mode = "balanced"
+	p := New(o, testOwner(true))
+	p.Standalone = true
+	p.Adaptive = true
+	now := time.Now()
+	p.Now = func() time.Time { return now }
+	s := &testSink{}
+	for i := range 6 {
+		pkt := testPacket(t, true, false)
+		d, _ := packet.Dissect(pkt.Data)
+		h, _ := d.TCP(pkt.Data)
+		h.SetFlags(packet.FlagACK | packet.FlagPSH)
+		h.SetAck(1000 + uint32(i)*500)
+		p.Observe(pkt, s)
+		now = now.Add(4 * time.Second)
+	}
+	if st := p.AdaptiveState(); len(s.sent) != 0 || st.Helping != 0 || st.Responsive != 1 {
+		t.Fatal("flow with uncaptured replies was helped", len(s.sent), st)
+	}
+}
