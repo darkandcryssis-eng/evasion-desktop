@@ -206,7 +206,7 @@ button.cta:hover { background: linear-gradient(150deg, #6650ff, #432cf5 70%); bo
 .connection-notices { display: grid; gap: 8px; }
 .connection-notices:empty { display: none; }
 .dashboard-details { display: grid; gap: var(--gap); }
-.home__foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 6px 6px 2px; color: var(--ink-3); font-size: 11px; }
+.home__foot { padding: 6px 6px 2px; color: var(--ink-3); font-size: 11px; }
 
 /* ── Pages ── */
 .page-body { max-width: 880px; margin: 0 auto; display: grid; gap: var(--gap); }

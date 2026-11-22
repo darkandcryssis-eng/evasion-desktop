@@ -6,7 +6,7 @@ import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
 import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
 import { LogShowcase, LogStream } from "../components/LogShowcase";
-import { Badge, BrandIcon, BrandLogo, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
+import { Badge, BrandIcon, BrandLogo, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
 import type { Page } from "../types";
 
 const voiceOptions = [
@@ -51,7 +51,7 @@ const ytPhase: Record<string, [string, Tone]> = {
 type Props = { motion: boolean; engine: EngineController; onConnect: (o: StartOptions) => void; onNavigate: (p: Page) => void };
 
 export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
-  const { state, busy, error, stop, reconnect, restartDiscord } = engine;
+  const { state, busy, error, stop, reconnect } = engine;
   const [options, update] = useConnectionOptions();
   const [tgMode, setTgMode] = useState<TelegramMode>(telegramMode);
   const phase: EnginePhase = state?.engine.phase ?? "stopped";
@@ -106,7 +106,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
             <span className="power__hint" aria-hidden="true" data-show={invite || undefined}><Icon name="power" size={22} /><span>{phase === "failed" ? <>Нажмите, чтобы<br />повторить</> : <>Нажмите, чтобы<br />включить</>}</span></span>
           </button>
           <div className="hero__foot">
-            {!invite && <span className="hero__action" key={action}>{action}</span>}
+            {!invite && !running && <span className="hero__action" key={action}>{action}</span>}
             {!active && <span className="hero__keys"><kbd>Ctrl</kbd><kbd>Enter</kbd> быстрое подключение</span>}
             {running && <button type="button" className="ghost-chip" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={14} />Переподключить</button>}
           </div>
@@ -174,10 +174,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
           <Feed logs={logs} />
         </Disclosure>
 
-        <footer className="home__foot">
-          <Button kind="ghost" icon="refresh" disabled={busy} onClick={() => void restartDiscord()}>Перезапустить Discord</Button>
-          {state?.engine.discord && <span>{state.engine.discord}</span>}
-        </footer>
+        {state?.engine.discord && <footer className="home__foot">{state.engine.discord}</footer>}
       </section>
     </div>
   );
