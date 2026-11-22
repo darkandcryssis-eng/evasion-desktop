@@ -50,10 +50,7 @@ h1, h2, h3, b, strong { font-weight: 500; }
 .bar { --wails-draggable: drag; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 12px 14px 10px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; letter-spacing: -.02em; }
 /* The mark is an E whose middle bar slips out of the bracket once the bypass runs. */
-.brand__mark { width: 30px; height: 30px; flex: none; border-radius: 9px; background: #000; fill: none; stroke: #f1efff; stroke-width: 3; stroke-linecap: round; overflow: visible; }
-.brand__run { stroke: #8f8f9b; transform: translateX(-2.8px); transition: transform 1s var(--spring), stroke .6s, filter .9s; }
-.shell[data-phase="starting"] .brand__run, .shell[data-phase="stopping"] .brand__run { stroke: #a79dff; transform: translateX(-1.4px); }
-.shell[data-phase="running"] .brand__run { stroke: url(#brand-run); transform: none; filter: drop-shadow(0 0 3px rgba(124, 108, 255, .9)); }
+.brand__mark { display: block; width: 30px; height: 30px; flex: none; }
 
 .nav { position: relative; display: flex; gap: 2px; padding: 4px; border-radius: 999px; background: var(--tile); }
 .nav__marker { position: absolute; top: 4px; left: 0; height: calc(100% - 8px); border-radius: 999px; background: var(--solid); transition: transform .65s var(--glide), width .65s var(--glide); }
