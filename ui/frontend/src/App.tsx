@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EventsOn, WindowCenter, WindowMinimise, WindowSetMinSize, WindowSetSize, WindowToggleMaximise } from "../wailsjs/runtime/runtime";
-import { api, phaseLabel, type StartOptions } from "./api";
+import { api, type StartOptions } from "./api";
 import { useEngine } from "./useEngine";
 import { UpdateBanner, useUpdateAvailable } from "./Update";
 import { loadOptions, readPreference, savePreference } from "./preferences";
@@ -90,12 +90,11 @@ export default function App() {
           </svg><span className="brand__name">evasion</span></div>
         <Navigation page={page} onChange={setPage} />
         <div className="bar__tools">
-          <span className="engine-pill" data-phase={phase}><i />{engine.state ? phaseLabel[phase] : "Получаем состояние"}</span>
-          <button type="button" className="tool" data-tip={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><Icon name={theme === "black" ? "sun" : "moon"} size={15} /></button>
+          <button type="button" className="tool" data-tip={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><Icon name={theme === "black" ? "sun" : "moon"} size={16} /></button>
           <div className="window-actions">
-            <button type="button" className="tool" data-tip="Свернуть" aria-label="Свернуть" onClick={WindowMinimise}><Icon name="minus" size={15} /></button>
-            <button type="button" className="tool" data-tip="Развернуть" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}><Icon name="square" size={12} /></button>
-            <button type="button" className="tool tool--close" data-tip="Закрыть" aria-label="Закрыть" onClick={() => setClosing(true)}><Icon name="x" size={15} /></button>
+            <button type="button" className="tool" data-tip="Свернуть" aria-label="Свернуть" onClick={WindowMinimise}><Icon name="minus" size={16} /></button>
+            <button type="button" className="tool" data-tip="Развернуть" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}><Icon name="square" size={14} /></button>
+            <button type="button" className="tool tool--close" data-tip="Закрыть" aria-label="Закрыть" onClick={() => setClosing(true)}><Icon name="x" size={16} /></button>
           </div>
         </div>
       </header>
@@ -104,7 +103,7 @@ export default function App() {
         <div className="stage__page" key={page}><Boundary resetKey={page}>{renderPage()}</Boundary></div>
       </section>
       {booting && <div className="boot" aria-live="polite"><svg viewBox="0 0 120 120" aria-hidden="true"><circle className="boot__ring" cx="60" cy="60" r="44" pathLength="1" /><circle className="boot__dot" cx="60" cy="60" r="5" /></svg><span>evasion</span></div>}
-      <Dialog open={closing} onClose={() => setClosing(false)} icon="power" title="Остаться на связи?" text="Сверните Evasion в трей, чтобы соединение продолжало работать."><button type="button" className="choice" onClick={() => { setClosing(false); void api.minimiseToTray(); }}><Icon name="tray" size={17} /><span><strong>Свернуть в трей</strong><small>Оставить обход работать в фоне</small></span></button><button type="button" className="choice choice--quit" onClick={() => void api.exitApplication()}><Icon name="power" size={17} /><span><strong>Завершить работу</strong><small>Остановить движок и выйти</small></span></button></Dialog>
+      <Dialog open={closing} onClose={() => setClosing(false)} icon="power" title="Остаться на связи?" text="Сверните Evasion в трей, чтобы соединение продолжало работать."><button type="button" className="choice" onClick={() => { setClosing(false); void api.minimiseToTray(); }}><Icon name="tray" size={20} /><span><strong>Свернуть в трей</strong><small>Оставить обход работать в фоне</small></span></button><button type="button" className="choice choice--quit" onClick={() => void api.exitApplication()}><Icon name="power" size={20} /><span><strong>Завершить работу</strong><small>Остановить движок и выйти</small></span></button></Dialog>
       <Dialog open={pending !== null} onClose={() => setPending(null)} icon="send" title="Telegram — тоже?" text="Включить встроенный прокси вместе с обходом? При первом запуске подтвердите подключение в Telegram."><Button kind="ghost" onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, false); }}>Только обход</Button><Button kind="solid" data-autofocus onClick={() => { const options = pending; setPending(null); if (options) void engine.connect(options, true); }}>Включить Telegram</Button></Dialog>
       <Tips />
     </main>
@@ -132,9 +131,9 @@ function Navigation({ page, onChange }: { page: Page; onChange: (p: Page) => voi
     <nav className="nav" aria-label="Разделы приложения" ref={root}>
       {box && <span className="nav__marker" style={{ transform: `translateX(${box.left}px)`, width: box.width }} aria-hidden="true" />}
       {pages.map((p) => (
-        <button key={p.id} type="button" className="nav__item" aria-label={p.title} data-tip={p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => onChange(p.id)}>
-          <Icon name={p.icon} size={15} /><span className="nav__label">{p.title}</span>
-          {p.id === "settings" && update && <span className="nav__alert" title="Доступно обновление" aria-label="Доступно обновление">!</span>}
+        <button key={p.id} type="button" className="nav__item" aria-label={p.title} data-tip={p.id === "settings" && update ? "Настройки · доступно обновление" : p.title} aria-current={page === p.id ? "page" : undefined} onClick={() => onChange(p.id)}>
+          <Icon name={p.icon} size={18} fill={page === p.id} /><span className="nav__label">{p.title}</span>
+          {p.id === "settings" && update && <span className="nav__alert" aria-label="Доступно обновление">!</span>}
         </button>
       ))}
     </nav>

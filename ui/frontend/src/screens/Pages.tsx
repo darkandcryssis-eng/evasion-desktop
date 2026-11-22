@@ -42,7 +42,7 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
       </Glass>
       {tab === "targets" ? <>
         {targets.error && <Note tone="warn" icon="alert">{targets.error}</Note>}
-        <label className="search"><Icon name="search" size={15} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти группу или домен" /></label>
+        <label className="search"><Icon name="search" size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти группу или домен" /></label>
         <div className="list">
           {filtered.map((g) => (
             <Glass as="article" className="item" key={g.name}>
@@ -61,7 +61,7 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
           <Glass className="stat"><span className="kicker">Активны</span><strong className="stat__num"><Ticker value={holdings.filter((h) => h.status === "active").length} /></strong><small>в работе</small></Glass>
           <Glass className="stat"><span className="kicker">В проверке</span><strong className="stat__num"><Ticker value={holdings.filter((h) => h.status !== "active").length} /></strong><small>кандидаты</small></Glass>
         </div>
-        {holdings.length === 0 ? <Glass className="blank"><Icon name="layers" size={24} /><strong>Портфель пуст</strong><p>Стратегии появятся здесь в режиме автопилота. В обычном режиме Evasion берёт их из конфигурации.</p></Glass> : (
+        {holdings.length === 0 ? <Glass className="blank"><Icon name="layers" size={20} /><strong>Портфель пуст</strong><p>Стратегии появятся здесь в режиме автопилота. В обычном режиме Evasion берёт их из конфигурации.</p></Glass> : (
           <div className="list">{holdings.map((h) => (
             <Glass as="article" className="item" key={h.strategy_id}><div className="item__text"><strong className="mono">{h.strategy_id}</strong><small>{h.observations} наблюдений · {h.targets} целей</small></div>
               <Badge tone={h.status === "active" ? "success" : h.status === "testing" || h.status === "candidate" ? "accent" : "neutral"}>{h.status}</Badge></Glass>
@@ -152,7 +152,7 @@ export function GamesScreen({ onNavigate }: { onNavigate: (p: Page) => void }) {
       <PageHead kicker="Отдельные правила" title="Игры" note="Добавьте игру, чтобы включать обход только для неё, пока она запущена."
         action={<Badge tone={active ? "success" : armed ? "accent" : "neutral"} pulse={on}>{status}</Badge>} />
       <Glass className="launch" aria-busy={busy}>
-        <div className={`launch__pulse${on ? " launch__pulse--on" : ""}`} aria-hidden="true"><i /><i /><i /><Icon name="game" size={22} /></div>
+        <div className={`launch__pulse${on ? " launch__pulse--on" : ""}`} aria-hidden="true"><i /><i /><i /><Icon name="game" size={20} /></div>
         <div className="launch__text"><strong>{on ? (active ? "Игровой обход работает" : "Готов — включится вместе с игрой") : "Игровой обход выключен"}</strong>
           <small>{settings.onDemand ? "Фильтр поднимается при запуске выбранной игры и снимается после выхода" : "Фильтр работает постоянно, пока включён"}</small></div>
         <Button kind={on ? "soft" : "solid"} icon="power" disabled={!view || busy || (!on && !anyGame)} onClick={() => void toggle()}>{busy ? "Подождите…" : on ? "Выключить" : "Включить"}</Button>
@@ -212,8 +212,8 @@ function SpeedGraph({ samples = [], running }: { samples?: SpeedSample[]; runnin
     <Glass className="card speed">
       <header className="card-head"><span className="kicker">Поток данных · 2 минуты</span></header>
       <div className="speed__read">
-        <div><Icon name="down" size={15} /><strong>{traffic(running ? chart.current?.down || 0 : 0)}<small>/с</small></strong><span>получение</span></div>
-        <div><Icon name="up" size={15} /><strong>{traffic(running ? chart.current?.up || 0 : 0)}<small>/с</small></strong><span>отправка</span></div>
+        <div><Icon name="down" size={14} /><strong>{traffic(running ? chart.current?.down || 0 : 0)}<small>/с</small></strong><span>получение</span></div>
+        <div><Icon name="up" size={14} /><strong>{traffic(running ? chart.current?.up || 0 : 0)}<small>/с</small></strong><span>отправка</span></div>
       </div>
       <div className="speed__plot"><span className="speed__scale">{traffic(chart.scale)}/с</span>
         <svg viewBox="0 0 600 112" preserveAspectRatio="none" role="img" aria-label={chart.count ? "График получения и отправки данных Telegram" : "Нет измерений скорости"}>
@@ -398,7 +398,6 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
         <Row title="Папка данных" note={<span className="path">{baseDir || "%LOCALAPPDATA%\\Evasion"}</span>}><Button icon="folder" onClick={() => void api.openDataFolder()}>Открыть</Button></Row>
         {(error || tuning.error) && <Note tone="warn" icon="alert">{error || tuning.error}</Note>}
       </Glass>
-      <p className="colophon">Evasion · движок работает локально на вашем устройстве</p>
     </div>
   );
 }

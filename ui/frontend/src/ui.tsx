@@ -1,30 +1,34 @@
 // Accessible, familiar controls shared by the desktop screens.
 import { Component, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { House, Layers, Gamepad2, Send, Activity, Settings, Power, RefreshCw, ChevronDown, Copy, ExternalLink, Folder, Trash2, Plus, Shield, TriangleAlert, Download, Search, Eye, X, ArrowDownLeft, ArrowUpRight, PanelBottom, Info, Play, Zap, Route, Sun, Moon, Minus, Square } from "lucide-react";
+import { line as outline, solid as bold } from "./icons";
 
-const glyphs = {
-  home: House, layers: Layers, game: Gamepad2, send: Send, pulse: Activity,
-  settings: Settings, power: Power, refresh: RefreshCw, chevron: ChevronDown, copy: Copy,
-  external: ExternalLink, folder: Folder, trash: Trash2, plus: Plus, shield: Shield,
-  alert: TriangleAlert, download: Download, search: Search, eye: Eye, x: X,
-  down: ArrowDownLeft, up: ArrowUpRight, tray: PanelBottom, info: Info, play: Play, bolt: Zap, route: Route, sun: Sun, moon: Moon, minus: Minus, square: Square,
-};
-export type IconName = keyof typeof glyphs;
-/* Service marks, drawn in the interface's own ink instead of brand colours (paths: Simple Icons, CC0). */
+/* Service marks in their own colours (paths: Simple Icons, CC0). */
 const brands = {
-  discord: { box: "0 0 24 24", d: "M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" },
-  youtube: { box: "0 0 24 24", d: "M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" },
-  telegram: { box: "4.47 5.62 14 14", d: "M16.906 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" },
+  discord: { d: "M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" },
+  youtube: { d: "M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" },
+  telegram: { d: "M16.906 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" },
 };
 export type BrandName = keyof typeof brands;
-export function BrandIcon({ name, size = 18 }: { name: BrandName; size?: number }) {
-  const mark = brands[name];
-  return <svg width={size} height={size} viewBox={mark.box} fill="currentColor" aria-hidden="true" focusable="false"><path d={mark.d} /></svg>;
+/* Used on the service tiles and beside the power ring. */
+export function BrandLogo({ name, size = 28 }: { name: BrandName; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      {name === "discord" && <path fill="#5865f2" d={brands.discord.d} />}
+      {name === "youtube" && <><path fill="#fff" d="M9 8h7.5v8H9z" /><path fill="#f03" d={brands.youtube.d} /></>}
+      {name === "telegram" && <><circle cx="12" cy="12" r="12" fill="#26a5e4" /><path fill="#fff" d={brands.telegram.d} /></>}
+    </svg>
+  );
 }
-export function Icon({ name, size = 18, stroke = 1.7, className = "" }: { name: IconName; size?: number; stroke?: number; className?: string }) {
-  const Glyph = glyphs[name];
-  return <Glyph size={size} strokeWidth={stroke} className={className} aria-hidden="true" focusable="false" />;
+/* Telegram's own mark in the interface's ink, sized to the icon grid: a ring with the plane, and the solid disc for the current item. */
+const fit = "translate(12 12) scale(.8333) translate(-12 -12)";
+const line = { ...outline, send: <><circle cx="12" cy="12" r="9.25" fill="none" stroke="currentColor" strokeWidth="1.5" /><path fill="currentColor" transform={fit} d={brands.telegram.d} /></> };
+const solid: Partial<Record<keyof typeof line, ReactNode>> = { ...bold, send: <path fill="currentColor" fillRule="evenodd" transform={fit} d={`M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24z${brands.telegram.d}`} /> };
+export type IconName = keyof typeof line;
+/* One icon family for the whole interface: Solar, 1.5px outline; the bold cut marks the current navigation item.
+   Sizes: 14 inside text and chips, 16 in controls, 18 in the navigation, 20 in icon boxes. */
+export function Icon({ name, size = 20, fill = false, className = "" }: { name: IconName; size?: number; fill?: boolean; className?: string }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden="true" focusable="false">{(fill && solid[name]) || line[name]}</svg>;
 }
 
 /* ───────────── SVG-фильтры: жидкое стекло и «гу» ───────────── */
@@ -72,7 +76,7 @@ export function Toggle({ checked, onChange, label, disabled }: { checked: boolea
 export function Button({ children, icon, kind = "soft", ...rest }: { children?: ReactNode; icon?: IconName; kind?: "soft" | "solid" | "ghost" | "danger" } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button type="button" {...rest} className={`btn btn--${kind} ${rest.className ?? ""}`}>
-      {icon && <Icon name={icon} size={15} />}{children && <span>{children}</span>}
+      {icon && <Icon name={icon} size={16} />}{children && <span>{children}</span>}
     </button>
   );
 }
@@ -114,7 +118,7 @@ export function Disclosure({ icon, title, note, children, defaultOpen = false, c
       <button type="button" className="disclosure__head" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
         <span className="disclosure__icon"><Icon name={icon} /></span>
         <span className="disclosure__text"><strong>{title}</strong>{note && <small>{note}</small>}</span>
-        <Icon name="chevron" size={15} className="disclosure__chev" />
+        <Icon name="chevron" size={14} className="disclosure__chev" />
       </button>
       <div id={id}><Collapse open={open}><div className="disclosure__body">{children}</div></Collapse></div>
     </Glass>
@@ -204,15 +208,18 @@ export function Feed({ logs, limit = 80, empty = "Здесь появятся с
   const shown = logs.slice(-limit);
   useEffect(() => { const el = box.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [shown.length, shown[shown.length - 1]?.at]);
   if (!shown.length) return <p className="feed feed--empty">{empty}</p>;
+  const clock = (at: string) => { const t = Date.parse(at); return Number.isFinite(t) ? new Date(t).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""; };
   return (
     <div className="feed" ref={box} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }} tabIndex={0} aria-label="Журнал событий">
       {shown.map((l, i) => {
-        const t = Date.parse(l.at);
         const lvl = l.level.toUpperCase();
+        const time = clock(l.at);
+        // The time is printed once per second of events, not on every line.
+        const first = i === 0 || clock(shown[i - 1].at) !== time;
         return (
-          <div className={`feed__line feed__line--${lvl === "ERROR" ? "err" : lvl === "WARN" ? "warn" : "info"}`} key={`${l.at}-${i}`} data-tip={l.attrs || undefined}>
-            <time>{Number.isFinite(t) ? new Date(t).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}</time>
-            <span>{l.msg}{l.attrs && <em> {l.attrs}</em>}</span>
+          <div className={`feed__line feed__line--${lvl === "ERROR" ? "err" : lvl === "WARN" ? "warn" : "info"}`} key={`${l.at}-${i}`}>
+            <time>{first ? time : ""}</time>
+            <p><span>{l.msg}</span>{l.attrs && <em>{l.attrs}</em>}</p>
           </div>
         );
       })}

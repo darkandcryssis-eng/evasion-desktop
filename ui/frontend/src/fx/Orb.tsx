@@ -161,7 +161,7 @@ export function Orb({ phase, busy, disabled, label, onPress }: { phase: OrbPhase
       <span className="orb__rings" aria-hidden="true"><i /><i /><i /></span>
       <span className="orb__lens" aria-hidden="true" />
       <canvas ref={canvas} className="orb__fibers" aria-hidden="true" />
-      <span className="orb__glyph" aria-hidden="true"><Icon name="power" size={30} stroke={1.3} /></span>
+      <span className="orb__glyph" aria-hidden="true"><Icon name="power" size={30} /></span>
     </button>
   );
 }
