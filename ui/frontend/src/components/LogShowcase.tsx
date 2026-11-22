@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { LogLine } from "../api";
+import { advance, emptyFlow, resume, STEP } from "../logFlow";
 import { phrases } from "../logPhrases";
 
 const TAB_HEIGHT = 34, TAB_WIDTH = 124, TAB_RADIUS = 16, NOTCH = 18, RADIUS = 22;
@@ -10,30 +11,33 @@ function outline(w: number, h: number): string {
   return `M0 ${t}A${t} ${t} 0 0 1 ${t} 0H${TAB_WIDTH - t}A${t} ${t} 0 0 1 ${TAB_WIDTH} ${t}A${n} ${n} 0 0 0 ${TAB_WIDTH + n} ${TAB_HEIGHT}H${w - r}A${r} ${r} 0 0 1 ${w} ${TAB_HEIGHT + r}V${h - r}A${r} ${r} 0 0 1 ${w - r} ${h}H${r}A${r} ${r} 0 0 1 0 ${h - r}Z`;
 }
 
-const ROW = 26, ROWS = 16;
+const ROW = 26;
+let flow = emptyFlow();
 
 // The journal drifts up behind the glass, one line at a time; while nothing new arrives the recent lines come round again.
-export function LogStream({ logs, live, motion }: { logs: LogLine[]; live: boolean; motion: boolean }) {
-  const source = useRef<string[]>([]);
-  const cursor = useRef(0);
-  const [rows, setRows] = useState<{ id: number; text: string }[]>([]);
-  source.current = phrases(logs, 24);
+export function LogStream({ logs, live, motion, session = "" }: { logs: LogLine[]; live: boolean; motion: boolean; session?: string }) {
+  const lines = phrases(logs, 24);
+  const source = useRef(lines);
+  source.current = lines;
+  // Back on the screen: the run is already where it would have drifted to, and its last line glides in at once.
+  const [rows, setRows] = useState(() => {
+    if (!live || flow.session !== session || !flow.rows.length) return [];
+    flow = resume(flow, session, lines, Date.now());
+    return flow.rows.slice(0, -1);
+  });
+  // Lines that were on screen before the tab switch come back without the fade-in.
+  const kept = useRef(rows[rows.length - 1]?.id ?? -1);
   useEffect(() => {
-    if (!live) { setRows([]); cursor.current = 0; return; }
-    const step = () => {
-      const lines = source.current;
-      if (!lines.length) return;
-      const id = cursor.current++;
-      setRows((shown) => [...shown.slice(-ROWS), { id, text: lines[id % lines.length] }]);
-    };
-    for (let n = 0; n < 6; n++) step();
-    const timer = window.setInterval(step, 1500);
+    if (!live) { flow = emptyFlow(); kept.current = -1; setRows([]); return; }
+    flow = resume(flow, session, source.current, Date.now());
+    setRows(flow.rows);
+    const timer = window.setInterval(() => { flow = advance(flow, source.current, Date.now()); setRows(flow.rows); }, STEP);
     return () => window.clearInterval(timer);
-  }, [live]);
+  }, [live, session]);
   return (
     <div className="stream" aria-hidden="true" data-still={!motion || undefined}>
       <div className="stream__run" style={{ transform: `translateY(${-(rows[rows.length - 1]?.id ?? 0) * ROW}px)` }}>
-        {rows.map((row) => <p key={row.id} style={{ top: row.id * ROW }}>{row.text}</p>)}
+        {rows.map((row) => <p key={row.id} data-kept={row.id <= kept.current || undefined} style={{ top: row.id * ROW }}>{row.text}</p>)}
       </div>
     </div>
   );
