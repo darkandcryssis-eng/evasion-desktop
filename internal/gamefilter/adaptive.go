@@ -16,8 +16,8 @@ type observation struct {
 	attempts           int
 	helping            bool
 	stage              int
-	ack                uint32
-	acking             bool
+	ack, end           uint32
+	acking, ended      bool
 }
 type AdaptiveState struct {
 	Stage      string `json:"stage"`
@@ -85,6 +85,14 @@ func (p *Processor) Observe(pkt capture.Packet, sink capture.PacketSink) {
 		return
 	}
 	p.mu.Lock()
+	// A keepalive probe on an idle socket repeats one already sent byte and is
+	// answered by a bare ACK; it is not an attempt to reach the server.
+	if h, ok := d.TCP(pkt.Data); ok && outbound && d.PayloadLen == 1 && h.Flags()&packet.FlagPSH == 0 {
+		if v, found := p.observations[key]; !found || !v.ended || int32(h.Seq()+1-v.end) <= 0 {
+			p.mu.Unlock()
+			return
+		}
+	}
 	now := p.Now()
 	if p.observations == nil {
 		p.observations = map[flowKey]observation{}
@@ -119,6 +127,9 @@ func (p *Processor) Observe(pkt capture.Packet, sink capture.PacketSink) {
 		if h, ok := d.TCP(pkt.Data); ok && outbound && h.Flags()&packet.FlagACK != 0 {
 			acked = v.acking && int32(h.Ack()-v.ack) > 1
 			v.ack, v.acking = h.Ack(), true
+			if end := h.Seq() + uint32(len(payload)); !v.ended || int32(end-v.end) > 0 {
+				v.end, v.ended = end, true
+			}
 		}
 	}
 	if !outbound || acked {
