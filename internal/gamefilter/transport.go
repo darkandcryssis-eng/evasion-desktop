@@ -68,11 +68,15 @@ func (p *Processor) observeTransport(pkt capture.Packet, d packet.Dissection, ke
 	if v.sawSYN && !syn && h.Flags()&packet.FlagRST == 0 {
 		if outbound {
 			v.gap = v.gap || int32(h.Seq()-v.sent) > 0
-			if end := h.Seq() + uint32(len(payload)); int32(end-v.sent) > 0 {
+			end := h.Seq() + uint32(len(payload))
+			if h.Flags()&packet.FlagFIN != 0 {
+				end++
+			}
+			if int32(end-v.sent) > 0 {
 				v.sent = end
 			}
 		} else if h.Flags()&packet.FlagACK != 0 {
-			v.gap = v.gap || int32(h.Ack()-v.sent) > 1
+			v.gap = v.gap || int32(h.Ack()-v.sent) > 0
 		}
 	}
 	if !outbound && h.Flags()&(packet.FlagSYN|packet.FlagACK) == packet.FlagSYN|packet.FlagACK {

@@ -209,4 +209,25 @@ func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
 	if s := q.TransportState(); s.TCPClosed != 0 {
 		t.Fatal("close after uncaptured game data counted as a broken connection", s)
 	}
+	// A fully captured connection the server closed still counts, the game's
+	// own FIN and final ACK included.
+	syn = transportPacket(t, packet.FlagSYN, nil, false, 45004)
+	q.Observe(syn, sink)
+	sd, _ = packet.Dissect(syn.Data)
+	sh, _ = sd.TCP(syn.Data)
+	step := func(flags uint8, inbound bool, seq, ack uint32) {
+		pkt := transportPacket(t, flags, nil, inbound, 45004)
+		d, _ := packet.Dissect(pkt.Data)
+		h, _ := d.TCP(pkt.Data)
+		h.SetSeq(seq)
+		h.SetAck(ack)
+		q.Observe(pkt, sink)
+	}
+	step(packet.FlagACK|packet.FlagFIN, true, 9000, sh.Seq()+1)
+	step(packet.FlagACK|packet.FlagFIN, false, sh.Seq()+1, 9001)
+	step(packet.FlagACK, true, 9001, sh.Seq()+2)
+	step(packet.FlagACK, false, sh.Seq()+2, 9001)
+	if s := q.TransportState(); s.TCPClosed != 1 {
+		t.Fatal("captured close lost", s)
+	}
 }
