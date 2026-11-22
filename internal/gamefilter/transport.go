@@ -167,7 +167,8 @@ func (p *Processor) TransportState() TransportState {
 		case v.closed && v.peerClosed:
 			if !v.tls.IsZero() {
 				s.TLSClosed++
-			} else if !v.gap {
+			} else if v.sawSYN && !v.gap {
+				// Only a connection followed from its SYN is known to have carried nothing.
 				s.TCPClosed++
 			}
 		case !v.tls.IsZero():

@@ -230,4 +230,10 @@ func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
 	if s := q.TransportState(); s.TCPClosed != 1 {
 		t.Fatal("captured close lost", s)
 	}
+	// A connection opened before the engine started is not judged by its close.
+	q.Observe(transportPacket(t, packet.FlagACK|packet.FlagPSH, []byte{21, 3, 3, 0, 2, 1, 0}, true, 45005), sink)
+	q.Observe(transportPacket(t, packet.FlagRST, nil, true, 45005), sink)
+	if s := q.TransportState(); s.TCPClosed != 1 {
+		t.Fatal("close of a connection not seen from its start counted as broken", s)
+	}
 }
