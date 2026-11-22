@@ -19,6 +19,11 @@ func reply(t *testing.T, p capture.Packet) capture.Packet {
 	}
 	b[d.L4Off], b[d.L4Off+2] = b[d.L4Off+2], b[d.L4Off]
 	b[d.L4Off+1], b[d.L4Off+3] = b[d.L4Off+3], b[d.L4Off+1]
+	if d.Protocol == packet.ProtoTCP {
+		for i := 0; i < 4; i++ {
+			b[d.L4Off+4+i], b[d.L4Off+8+i] = b[d.L4Off+8+i], b[d.L4Off+4+i]
+		}
+	}
 	d.RecomputeChecksums(b)
 	p.Data = b
 	p.Dir = core.DirectionInbound

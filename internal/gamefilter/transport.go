@@ -71,10 +71,17 @@ func (p *Processor) observeTransport(pkt capture.Packet, d packet.Dissection, ke
 		v.helloAck = h.Ack()
 	}
 	// The server's first reply can arrive before the socket's port is in the
-	// capture filter. The game acknowledging more than a FIN or a TLS alert
-	// after its ClientHello proves that reply was received.
-	acked := outbound && !v.tls.IsZero() && v.responded.IsZero() && !v.closed &&
-		h.Flags()&(packet.FlagACK|packet.FlagRST) == packet.FlagACK && int32(h.Ack()-v.helloAck) > 64
+	// capture filter. Sequence numbers still prove it was sent: the game
+	// acknowledges, or the server has advanced by, more than a FIN or a TLS
+	// alert since the ClientHello.
+	acked := false
+	if !v.tls.IsZero() && v.responded.IsZero() && h.Flags()&packet.FlagRST == 0 {
+		if outbound {
+			acked = h.Flags()&packet.FlagACK != 0 && int32(h.Ack()-v.helloAck) > 64
+		} else {
+			acked = int32(h.Seq()-v.helloAck) > 64
+		}
+	}
 	if !outbound && len(payload) > 0 && !alert || acked {
 		v.connected = true
 		firstReply := v.responded.IsZero()

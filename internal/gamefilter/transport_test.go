@@ -173,4 +173,17 @@ func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
 	if s := p.TransportState(); s.NoTLSReply != 0 || s.Responding != 1 {
 		t.Fatal("acknowledged server data ignored", s)
 	}
+	// A server FIN after replies that were never captured is not a failed handshake.
+	out(packet.FlagSYN, nil, 0)
+	pkt := transportPacket(t, packet.FlagACK|packet.FlagPSH, []byte{22, 3, 3, 0, 1, 1}, false, 45001)
+	p.Observe(pkt, sink)
+	fin := transportPacket(t, packet.FlagACK|packet.FlagFIN, nil, true, 45001)
+	d, _ := packet.Dissect(fin.Data)
+	fh, _ := d.TCP(fin.Data)
+	ph, _ := func() (packet.TCPHeader, bool) { d, _ := packet.Dissect(pkt.Data); return d.TCP(pkt.Data) }()
+	fh.SetSeq(ph.Ack() + 3000)
+	p.Observe(fin, sink)
+	if s := p.TransportState(); s.TLSClosed != 0 {
+		t.Fatal("server FIN after unobserved replies counted as a closed handshake", s)
+	}
 }
