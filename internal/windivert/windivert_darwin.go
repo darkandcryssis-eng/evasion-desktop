@@ -36,6 +36,7 @@ import (
 const (
 	pfAnchor  = "com.apple/evasion"
 	tokenFile = "/var/run/evasion-pf.token"
+	lockFile  = "/var/run/evasion-pf.lock"
 	utunLocal = "10.211.77.1"
 	utunPeer  = "10.211.77.2"
 	queueLen  = 4096
@@ -325,6 +326,9 @@ func startHub() (*hub, error) {
 	if os.Geteuid() != 0 {
 		return nil, errors.New("windivert: перехват на macOS требует прав администратора")
 	}
+	if err := lockPF(); err != nil {
+		return nil, err
+	}
 	releasePF()
 	l, err := openLink()
 	if err != nil {
@@ -343,17 +347,46 @@ func startHub() (*hub, error) {
 		hb.close()
 		return nil, err
 	}
-	if out, _ := run("/sbin/pfctl", "-s", "info"); strings.Contains(out, "Status: Disabled") {
-		out, _ := run("/sbin/pfctl", "-E")
-		if _, tok, ok := strings.Cut(out, "Token : "); ok {
-			hb.token = strings.TrimSpace(strings.SplitN(tok, "\n", 2)[0])
-			_ = os.WriteFile(tokenFile, []byte(hb.token), 0o600)
-		}
+	// Своя ссылка на включённый pf нужна всегда: если pf держит чужая программа
+	// и она его отпустит, без нашей ссылки правила перестали бы работать.
+	out, _ := run("/sbin/pfctl", "-E")
+	if _, tok, ok := strings.Cut(out, "Token : "); ok {
+		hb.token = strings.TrimSpace(strings.SplitN(tok, "\n", 2)[0])
+		_ = os.WriteFile(tokenFile, []byte(hb.token), 0o600)
 	}
-	startWatchdog()
+	watchdogOnce.Do(startWatchdog)
 	go hb.readLoop()
 	go hb.watchRoute()
 	return hb, nil
+}
+
+var (
+	pfLock       *os.File
+	watchdogOnce sync.Once
+)
+
+// lockPF делает процесс единственным владельцем якоря pf и файла токена: два
+// движка с общим якорем снимали бы правила друг друга. Блокировку наследует
+// сторожевой процесс, поэтому она держится, пока он не уберёт правила.
+func lockPF() error {
+	if pfLock != nil {
+		return nil
+	}
+	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("windivert: %w", err)
+	}
+	for try := 0; ; try++ {
+		if err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
+			pfLock = f
+			return nil
+		}
+		if try >= 30 {
+			_ = f.Close()
+			return errors.New("windivert: перехват уже занят другим процессом Evasion")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // startWatchdog снимает правила pf, если движок умер, не успев убрать их сам:
@@ -364,6 +397,7 @@ func startWatchdog() {
 if [ -s "$2" ]; then /sbin/pfctl -X "$(cat "$2")" >/dev/null 2>&1; rm -f "$2"; fi`
 	cmd := exec.Command("/bin/sh", "-c", script, strconv.Itoa(os.Getpid()), pfAnchor, tokenFile)
 	cmd.SysProcAttr = &unix.SysProcAttr{Setsid: true}
+	cmd.ExtraFiles = []*os.File{pfLock}
 	if cmd.Start() == nil {
 		go func() { _ = cmd.Wait() }()
 	}
@@ -552,7 +586,11 @@ func (hb *hub) watchRoute() {
 		iface, gateway := defaultRoute()
 		cur := hb.link.Load()
 		if cur != nil && cur.iface == iface && cur.gateway == gateway {
-			continue
+			// Другая сеть с тем же адресом шлюза: меняется только его MAC.
+			mac, ok := gatewayMAC(gateway)
+			if !ok || bytes.Equal(mac, cur.header[0:6]) {
+				continue
+			}
 		}
 		next, _ := openLink()
 		hb.mu.Lock()
