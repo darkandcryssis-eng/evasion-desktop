@@ -189,9 +189,9 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 
 // Wires from the power ring (centre 150,150 in the 344×348 stage) to the three services on its right.
 const links: { name: BrandName; y: number; d: string }[] = [
-  { name: "discord", y: 70, d: "M219 96C243 79 259 70 283 70" },
-  { name: "youtube", y: 150, d: "M238 150H283" },
-  { name: "telegram", y: 230, d: "M219 204C243 221 259 230 283 230" },
+  { name: "discord", y: 70, d: "M214 100C240 80 258 70 283 70" },
+  { name: "youtube", y: 150, d: "M231 150H283" },
+  { name: "telegram", y: 230, d: "M214 200C240 220 258 230 283 230" },
 ];
 
 // The tile carries only the mark and the name; its state is spoken and shown in the hover hint, a dot flags trouble.
