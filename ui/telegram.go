@@ -180,7 +180,7 @@ func (a *App) startTelegramProxyLocked(port int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err = server.Start(ctx, port); err != nil {
+	if err = startOnTelegramPort(port, func() error { return server.Start(ctx, port) }); err != nil {
 		a.telegramErr = err.Error()
 		return err
 	}
