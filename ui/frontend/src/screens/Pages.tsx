@@ -14,6 +14,9 @@ import { usePoll } from "../hooks";
 import { Badge, Button, Collapse, Disclosure, Feed, Glass, Icon, Note, PageHead, Row, Segmented, Ticker, Toggle, fileName, traffic, type Tone } from "../ui";
 import type { Page } from "../types";
 
+// Автозапуск есть только в Windows-версии.
+const isMac = navigator.userAgent.includes("Mac");
+
 /* ═════════════ Сервисы ═════════════ */
 const RU_ZONES = [".ru", ".рф", ".su", ".москва", "yandex", "vk", "mail.ru", "sber", "gosuslugi", "tbank", "ozon", "wildberries", "avito", "rutube", "kinopoisk"];
 
@@ -393,7 +396,7 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
       </Glass>
       <Glass className="card" aria-busy={busy}>
         <header className="card-head"><span className="kicker">Система</span></header>
-        <Row title="Автозапуск с Windows" note="Запускать Evasion после входа и сразу подключаться"><Toggle label="Автозапуск с Windows" checked={auto} disabled={busy} onChange={(v) => void change(async () => { await api.setAutoStart(v, loadOptions()); setAuto(await api.getAutoStart()); })} /></Row>
+        {!isMac && <Row title="Автозапуск с Windows" note="Запускать Evasion после входа и сразу подключаться"><Toggle label="Автозапуск с Windows" checked={auto} disabled={busy} onChange={(v) => void change(async () => { await api.setAutoStart(v, loadOptions()); setAuto(await api.getAutoStart()); })} /></Row>}
         <Row title="Папка данных" note={<span className="path">{baseDir || "%LOCALAPPDATA%\\Evasion"}</span>}><Button icon="folder" onClick={() => void api.openDataFolder()}>Открыть</Button></Row>
         {(error || tuning.error) && <Note tone="warn" icon="alert">{error || tuning.error}</Note>}
       </Glass>

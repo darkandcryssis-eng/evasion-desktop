@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // payloadFS — файлы, которые оболочка несёт внутри себя: собранный движок,
@@ -22,7 +23,6 @@ var payloadFS embed.FS
 const (
 	payloadXray        = "xray.exe"
 	payloadXrayLicense = "Xray-LICENSE.txt"
-	payloadEngine      = "evasion.exe"
 	payloadConfig      = "config.json"
 	payloadDivertDLL   = "WinDivert.dll"
 	payloadDivertSys   = "WinDivert64.sys"
@@ -33,6 +33,9 @@ const (
 	// её через LazyDLL, поиск начинается с каталога бинарника.
 	runtimeDirName = "runtime"
 )
+
+// payloadEngine — имя файла движка в пакете.
+var payloadEngine = map[bool]string{true: "evasion.exe", false: "evasion"}[runtime.GOOS == "windows"]
 
 // payloadFile читает файл встроенного пакета; ok=false, если файла нет.
 func payloadFile(name string) ([]byte, bool) {
@@ -55,7 +58,7 @@ func embeddedPayload() payloadInfo {
 	return payloadInfo{
 		Engine:    has(payloadEngine),
 		Config:    has(payloadConfig),
-		WinDivert: has(payloadDivertDLL) && has(payloadDivertSys),
+		WinDivert: runtime.GOOS != "windows" || has(payloadDivertDLL) && has(payloadDivertSys),
 	}
 }
 
@@ -141,6 +144,9 @@ func extractPayload(l layout) error {
 		if err := writeIfMissing(filepath.Join(l.Runtime, name), data); err != nil {
 			return err
 		}
+	}
+	if runtime.GOOS != "windows" {
+		return nil
 	}
 	for _, name := range []string{payloadDivertDLL, payloadDivertSys} {
 		if _, err := os.Stat(filepath.Join(l.Runtime, name)); err != nil {

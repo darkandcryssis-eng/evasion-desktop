@@ -24,6 +24,8 @@ env:
 jobs:
   release:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         shell: bash
@@ -44,10 +46,12 @@ jobs:
       # Версия: старшие числа из ui/wails.json, последнее — номер запуска,
       # поэтому каждый релиз новее предыдущего.
       - name: Version
+        id: version
         run: |
           base=$(node -p "require('./ui/wails.json').info.productVersion.split('.').slice(0,2).join('.')")
           version="$base.$GITHUB_RUN_NUMBER"
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           node -e "const fs=require('fs'),p='ui/wails.json',j=JSON.parse(fs.readFileSync(p,'utf8'));j.info.productVersion='$version';fs.writeFileSync(p,JSON.stringify(j,null,2))"
 
       - name: Engine and config
@@ -84,3 +88,36 @@ jobs:
         run: |
           gh release create "v$VERSION" ui/build/bin/Evasion.exe ui/build/bin/Evasion.exe.sha256 \
             --target "$GITHUB_SHA" --title "Evasion $VERSION" --generate-notes --latest
+
+  # Сборка для macOS добавляется к уже опубликованному релизу: её сбой не
+  # задерживает Evasion.exe.
+  macos:
+    needs: release
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ui/go.mod
+          cache-dependency-path: |
+            go.sum
+            ui/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build Evasion.app
+        run: |
+          node -e "const fs=require('fs'),p='ui/wails.json',j=JSON.parse(fs.readFileSync(p,'utf8'));j.info.productVersion='$VERSION';fs.writeFileSync(p,JSON.stringify(j,null,2))"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$WAILS_VER"
+          scripts/build-macos.sh "$VERSION"
+
+      - name: Publish macOS build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "v$VERSION" ui/build/bin/Evasion-macOS.zip ui/build/bin/Evasion-macOS.zip.sha256

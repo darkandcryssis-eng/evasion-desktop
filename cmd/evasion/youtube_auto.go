@@ -604,7 +604,7 @@ func (a *youtubeRecovery) emit() {
 			a.state.Route = "vless"
 		}
 	}
-	a.state.PID = os.Getpid()
+	a.state.PID = enginePID()
 	a.state.At = time.Now().UTC()
 	a.publish(a.state)
 }

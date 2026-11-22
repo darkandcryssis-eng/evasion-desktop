@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package main
 
@@ -35,3 +35,5 @@ func dataDir() string {
 func openPath(path string) error {
 	return exec.Command("xdg-open", path).Start()
 }
+
+func prepareEngine(layout) error { return nil }

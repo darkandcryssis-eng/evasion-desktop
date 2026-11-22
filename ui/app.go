@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -225,6 +226,9 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 	if err := extractPayload(l); err != nil {
 		return err
 	}
+	if err := prepareEngine(l); err != nil {
+		return err
+	}
 	unpacked := time.Now()
 	go beforeEngineStart()
 	l = a.adaptiveLayout(l, opts)
@@ -238,7 +242,7 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 	}
 	launched := time.Now()
 	a.rememberLaunchOptions(opts)
-	restart := opts.RestartDiscord && !suppressDiscordRestart
+	restart := opts.RestartDiscord && !suppressDiscordRestart && runtime.GOOS == "windows"
 	go func() {
 		ready := a.engine.waitReady()
 		a.engine.note(startTimings(cleaned.Sub(began), unpacked.Sub(cleaned), launched.Sub(unpacked), time.Since(launched), ready))
