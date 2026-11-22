@@ -33,12 +33,14 @@ func TestTrayPanelShowsState(t *testing.T) {
 	if trayPixel(off, right, tg.Y+tg.H/2) != trayPixel(on, right, tg.Y+tg.H/2) {
 		t.Fatal("Telegram toggle changed with the bypass state")
 	}
-	// The mark's middle bar slips out past the bracket only while the bypass runs.
-	if got := trayPixel(on, 38, 34); got != [3]byte{255, 255, 255} {
-		t.Fatalf("lit mark bar head = %v, want white", got)
-	}
-	if got := trayPixel(off, 38, 34); got != [3]byte{0, 0, 0} {
-		t.Fatalf("idle mark bar head = %v, want black", got)
+	// Connection state must not deform the selected ev ligature.
+	for _, c := range []*trayCanvas{off, on} {
+		if got := trayPixel(c, 23, 33); got != [3]byte{247, 247, 245} {
+			t.Fatalf("ligature = %v, want off-white in both states", got)
+		}
+		if got := trayPixel(c, 23, 32); got != [3]byte{0, 0, 0} {
+			t.Fatalf("ligature aperture = %v, want black", got)
+		}
 	}
 }
 

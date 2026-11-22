@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import appLogo from "../../assets/logo.svg";
 import { EventsOn, WindowCenter, WindowMinimise, WindowSetMinSize, WindowSetSize, WindowToggleMaximise } from "../wailsjs/runtime/runtime";
 import { api, type StartOptions } from "./api";
 import { useEngine } from "./useEngine";
@@ -83,11 +84,7 @@ export default function App() {
   return (
     <main className="shell" data-phase={phase} data-page={page}>
       <header className="bar">
-        <div className="brand" aria-label="Evasion"><svg className="brand__mark" viewBox="0 0 30 30" aria-hidden="true">
-            <defs><linearGradient id="brand-run" gradientUnits="userSpaceOnUse" x1="14" y1="15" x2="23" y2="15"><stop stopColor="#7c6cff" /><stop offset="1" stopColor="#fff" /></linearGradient></defs>
-            <path d="M16.8 9.15H11.55A3.6 3.6 0 0 0 7.95 12.75V17.25A3.6 3.6 0 0 0 11.55 20.85H16.8" />
-            <path className="brand__run" d="M14.85 15H22.65" />
-          </svg><span className="brand__name">evasion</span></div>
+        <div className="brand" aria-label="Evasion"><img className="brand__mark" src={appLogo} width="30" height="30" alt="" aria-hidden="true" /><span className="brand__name">evasion</span></div>
         <Navigation page={page} onChange={setPage} />
         <div className="bar__tools">
           <button type="button" className="tool" data-tip={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><Icon name={theme === "black" ? "sun" : "moon"} size={16} /></button>
