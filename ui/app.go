@@ -105,13 +105,15 @@ func (a *App) shutdown(context.Context) {
 	if a.cancelAutoStart != nil {
 		a.cancelAutoStart()
 	}
-	_ = a.StopGameFilter()
-	_ = a.StopEngine()
+	// Порт Telegram освобождается первым: новая копия после обновления
+	// занимает его, пока эта ещё останавливает движки.
 	a.telegramMu.Lock()
 	if a.telegram != nil {
 		_ = a.telegram.Close()
 	}
 	a.telegramMu.Unlock()
+	_ = a.StopGameFilter()
+	_ = a.StopEngine()
 	a.trayQuit()
 	if a.sessionPath != "" {
 		_ = markSession(a.sessionPath, true)

@@ -37,6 +37,8 @@ const (
 	updateInterval  = 2 * time.Minute
 	updatedFromFlag = "--updated-from="
 	resumeFlag      = "--resume="
+	// Старая копия останавливает игровой фильтр и движок, до stopTimeout каждый.
+	oldCopyExitWait = 2*stopTimeout + 15*time.Second
 )
 
 // UpdateState — что оболочка знает о новых версиях.
@@ -352,7 +354,7 @@ func finishUpdate(args []string) {
 		if !strings.HasPrefix(arg, updatedFromFlag) || err != nil {
 			continue
 		}
-		for deadline := time.Now().Add(30 * time.Second); pidAlive(pid) && time.Now().Before(deadline); {
+		for deadline := time.Now().Add(oldCopyExitWait); pidAlive(pid) && time.Now().Before(deadline); {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
