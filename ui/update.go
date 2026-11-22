@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ var updateReleases = "https://github.com/darkandcryssis-eng/evasion-desktop/rele
 
 const (
 	updateAsset     = "Evasion.exe"
+	updateAssetMac  = "Evasion-macOS.zip"
 	updateInterval  = 2 * time.Minute
 	updatedFromFlag = "--updated-from="
 	resumeFlag      = "--resume="
@@ -413,6 +415,10 @@ func (a *App) resumeAfterUpdate(ctx context.Context, r resumeState) {
 // InstallUpdate ставит найденную версию и перезапускает Evasion. Всё, что
 // было включено (обход, игровой фильтр), новая копия включит снова.
 func (a *App) InstallUpdate() error {
+	if runtime.GOOS == "darwin" {
+		// Приложение на macOS — пакет .app: новую версию ставит пользователь.
+		return openPath(updateReleases + "/latest/download/" + updateAssetMac)
+	}
 	engine := a.engine.snapshot()
 	games := a.games.snapshot().Phase
 	r := resumeState{

@@ -225,6 +225,9 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 	if err := extractPayload(l); err != nil {
 		return err
 	}
+	if err := prepareEngine(l); err != nil {
+		return err
+	}
 	unpacked := time.Now()
 	go beforeEngineStart()
 	l = a.adaptiveLayout(l, opts)

@@ -6,11 +6,19 @@
   <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion.exe">
     <img src="docs/readme/download.svg" alt="Скачать Evasion.exe для Windows" width="420">
   </a>
+  <br>
+  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion-macOS.zip">
+    <img src="docs/readme/download-mac.svg" alt="Скачать Evasion для macOS" width="420">
+  </a>
 </p>
 
 <p align="center">
   <sub>Один файл, установка не нужна · Windows 10 / 11, 64-бит ·
   <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest">все версии и контрольные суммы</a></sub>
+</p>
+
+<p align="center">
+  <sub>macOS 11 и новее, Apple Silicon и Intel · <a href="#macos">как открыть на Mac</a></sub>
 </p>
 
 <p align="center">
@@ -29,6 +37,14 @@
 <p align="center">
   <sub>Одна кнопка, понятные статусы у каждого сервиса, тёмная и светлая тема.</sub>
 </p>
+
+## macOS
+
+1. Скачайте `Evasion-macOS.zip`, распакуйте и перенесите `Evasion.app` в «Программы».
+2. Приложение не подписано сертификатом Apple, поэтому первый запуск macOS заблокирует. Откройте «Системные настройки → Конфиденциальность и безопасность» и нажмите «Всё равно открыть» — или выполните в Терминале `xattr -dr com.apple.quarantine /Applications/Evasion.app`.
+3. При первом включении обхода (и после каждого обновления) Evasion спросит пароль администратора: перехвату трафика нужны права root.
+
+На Mac работает обход для Discord, YouTube и Telegram. Игровой режим, автозапуск, значок в трее и кнопка «Перезапустить Discord» пока есть только в Windows. Обход действует на IPv4 в сети Wi-Fi или Ethernet; при включённом VPN поверх сети он не запустится. Обновление на Mac открывает загрузку нового архива — замените приложение вручную.
 
 ## Что умеет
 

@@ -25,3 +25,6 @@ frontend/.vite/
 # build/appicon.png — исходная иконка приложения (в git). icon.ico Wails
 # генерирует из неё при сборке — его не коммитим.
 /build/windows/icon.ico
+
+# Шаблоны пакета .app Wails создаёт при сборке на macOS.
+/build/darwin/

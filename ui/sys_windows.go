@@ -221,3 +221,5 @@ func openPath(path string) error {
 	_ = exec.Command("explorer", path).Start()
 	return nil
 }
+
+func prepareEngine(layout) error { return nil }
