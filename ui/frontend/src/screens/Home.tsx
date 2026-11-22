@@ -6,7 +6,7 @@ import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
 import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
 import { LogShowcase, LogStream } from "../components/LogShowcase";
-import { Badge, BrandIcon, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
+import { Badge, BrandIcon, BrandLogo, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
 import type { Page } from "../types";
 
 const voiceOptions = [
@@ -85,6 +85,8 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   const lit = intent === "off" && busy ? false : phase === "starting" || running || (busy && intent === "on");
   const orb: OrbMode = lit ? (running ? "on" : "busy") : phase === "failed" ? "failed" : "off";
   const action = transit ? (phase === "starting" ? "Подключаем…" : "Отключаем…") : running ? "Выключить обход" : phase === "failed" ? "Попробовать снова" : "Включить обход";
+  // The ring names itself until it is pressed: the hint goes the moment the bypass starts.
+  const invite = !!state && !locked && !active && !lit;
   const [lead, strong] = headline[phase];
   const [hours, minutes, seconds] = elapsed.split(":");
 
@@ -93,16 +95,19 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
       <div className="bento">
         <section className="tile hero" aria-label="Управление подключением" data-phase={phase} data-lit={lit || undefined}>
           <div className="hero__copy">
-            <span className="eyebrow"><i />{running ? "Обход работает" : transit ? "Меняем состояние" : "Обход выключен"}</span>
             <h1 aria-live="polite" key={phase}>{state ? <><span>{lead}</span> <strong>{strong}</strong></> : <span>Получаем состояние…</span>}</h1>
             <p key={`hint-${phase}`}>{hint[phase]}</p>
           </div>
+          <div className="orbit" aria-hidden="true" data-on={(running && lit) || undefined}>
+            {orbit.map((name) => <span className="orbit__lane" key={name}><span className="orbit__mark" data-brand={name}><BrandLogo name={name} size={name === "discord" ? 30 : 28} /></span></span>)}
+          </div>
           <button type="button" className="power" aria-label={action} aria-pressed={active} aria-disabled={locked} onClick={press}>
             <PowerOrb mode={orb} motion={motion} />
+            <span className="power__hint" aria-hidden="true" data-show={invite || undefined}><Icon name="power" size={22} /><span>{phase === "failed" ? <>Нажмите, чтобы<br />повторить</> : <>Нажмите, чтобы<br />включить</>}</span></span>
           </button>
           <div className="hero__foot">
-            <span className="hero__action" key={action}>{action}</span>
-            <span className="hero__keys">{running ? <>В сети <b>{elapsed}</b></> : <><kbd>Ctrl</kbd><kbd>Enter</kbd> быстрое подключение</>}</span>
+            {!invite && <span className="hero__action" key={action}>{action}</span>}
+            {!active && <span className="hero__keys"><kbd>Ctrl</kbd><kbd>Enter</kbd> быстрое подключение</span>}
             {running && <button type="button" className="ghost-chip" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={14} />Переподключить</button>}
           </div>
         </section>
@@ -125,7 +130,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
         <ServiceTile brand="youtube" name="YouTube" note="Видео · прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
         <ServiceTile brand="telegram" name="Telegram" note="Сообщения · MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
         <button type="button" className="tile cta" onClick={() => onNavigate("diagnostics")}>
-          <span className="cta__arrow" aria-hidden="true"><Icon name="up" size={18} /></span>
+          <span className="cta__arrow" aria-hidden="true"><Icon name="up" size={16} /></span>
           <span className="cta__text"><small>Что-то не работает?</small><strong>Проверить связь</strong></span>
         </button>
       </div>
@@ -171,17 +176,19 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 
         <footer className="home__foot">
           <Button kind="ghost" icon="refresh" disabled={busy} onClick={() => void restartDiscord()}>Перезапустить Discord</Button>
-          <span>{state?.engine.discord || "Evasion работает локально на вашем устройстве"}</span>
+          {state?.engine.discord && <span>{state.engine.discord}</span>}
         </footer>
       </section>
     </div>
   );
 }
 
+const orbit: BrandName[] = ["discord", "youtube", "telegram"];
+
 function ServiceTile({ brand, name, note, tone, label, live, onClick }: { brand: BrandName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
     <button type="button" className={`tile service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
-      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandIcon name={brand} size={brand === "telegram" ? 17 : 19} /></span><span className="service__arrow" aria-hidden="true"><Icon name="up" size={15} /></span></span>
+      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandIcon name={brand} size={brand === "telegram" ? 17 : 19} /></span><span className="service__arrow" aria-hidden="true"><Icon name="up" size={14} /></span></span>
       <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
       <Badge tone={tone} pulse={live}>{label}</Badge>
     </button>

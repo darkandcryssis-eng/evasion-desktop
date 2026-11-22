@@ -1,14 +1,15 @@
 // Accessible, familiar controls shared by the desktop screens.
 import { Component, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { House, Layers, Gamepad2, Send, Activity, Settings, Power, RefreshCw, ChevronDown, Copy, ExternalLink, Folder, Trash2, Plus, Shield, TriangleAlert, Download, Search, Eye, X, ArrowDownLeft, ArrowUpRight, PanelBottom, Info, Play, Zap, Route, Sun, Moon, Minus, Square } from "lucide-react";
+import { House, SquaresFour, GameController, PaperPlaneTilt, Pulse, GearSix, Power, ArrowsClockwise, CaretDown, Copy, ArrowSquareOut, FolderSimple, Trash, Plus, ShieldCheck, Warning, DownloadSimple, MagnifyingGlass, X, ArrowDownLeft, ArrowUpRight, ArrowLineDown, Info, Path, Sun, Moon, Minus, Square } from "@phosphor-icons/react";
 
+/* One icon family for the whole interface: Phosphor, regular weight (1.5px at 24). */
 const glyphs = {
-  home: House, layers: Layers, game: Gamepad2, send: Send, pulse: Activity,
-  settings: Settings, power: Power, refresh: RefreshCw, chevron: ChevronDown, copy: Copy,
-  external: ExternalLink, folder: Folder, trash: Trash2, plus: Plus, shield: Shield,
-  alert: TriangleAlert, download: Download, search: Search, eye: Eye, x: X,
-  down: ArrowDownLeft, up: ArrowUpRight, tray: PanelBottom, info: Info, play: Play, bolt: Zap, route: Route, sun: Sun, moon: Moon, minus: Minus, square: Square,
+  home: House, layers: SquaresFour, game: GameController, send: PaperPlaneTilt, pulse: Pulse,
+  settings: GearSix, power: Power, refresh: ArrowsClockwise, chevron: CaretDown, copy: Copy,
+  external: ArrowSquareOut, folder: FolderSimple, trash: Trash, plus: Plus, shield: ShieldCheck,
+  alert: Warning, download: DownloadSimple, search: MagnifyingGlass, x: X,
+  down: ArrowDownLeft, up: ArrowUpRight, tray: ArrowLineDown, info: Info, route: Path, sun: Sun, moon: Moon, minus: Minus, square: Square,
 };
 export type IconName = keyof typeof glyphs;
 /* Service marks, drawn in the interface's own ink instead of brand colours (paths: Simple Icons, CC0). */
@@ -22,9 +23,20 @@ export function BrandIcon({ name, size = 18 }: { name: BrandName; size?: number 
   const mark = brands[name];
   return <svg width={size} height={size} viewBox={mark.box} fill="currentColor" aria-hidden="true" focusable="false"><path d={mark.d} /></svg>;
 }
-export function Icon({ name, size = 18, stroke = 1.7, className = "" }: { name: IconName; size?: number; stroke?: number; className?: string }) {
+/* The same marks in the services' own colours, for the orbit behind the power ring. */
+export function BrandLogo({ name, size = 28 }: { name: BrandName; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      {name === "discord" && <path fill="#5865f2" d={brands.discord.d} />}
+      {name === "youtube" && <><path fill="#fff" d="M9 8h7.5v8H9z" /><path fill="#f03" d={brands.youtube.d} /></>}
+      {name === "telegram" && <><circle cx="12" cy="12" r="12" fill="#26a5e4" /><path fill="#fff" d={brands.telegram.d} /></>}
+    </svg>
+  );
+}
+/* Sizes: 14 inside text and chips, 16 in controls, 18 in the navigation, 20 in icon boxes. */
+export function Icon({ name, size = 20, fill = false, className = "" }: { name: IconName; size?: number; fill?: boolean; className?: string }) {
   const Glyph = glyphs[name];
-  return <Glyph size={size} strokeWidth={stroke} className={className} aria-hidden="true" focusable="false" />;
+  return <Glyph size={size} weight={fill ? "fill" : "regular"} className={className} aria-hidden="true" focusable="false" />;
 }
 
 /* ───────────── SVG-фильтры: жидкое стекло и «гу» ───────────── */
@@ -72,7 +84,7 @@ export function Toggle({ checked, onChange, label, disabled }: { checked: boolea
 export function Button({ children, icon, kind = "soft", ...rest }: { children?: ReactNode; icon?: IconName; kind?: "soft" | "solid" | "ghost" | "danger" } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button type="button" {...rest} className={`btn btn--${kind} ${rest.className ?? ""}`}>
-      {icon && <Icon name={icon} size={15} />}{children && <span>{children}</span>}
+      {icon && <Icon name={icon} size={16} />}{children && <span>{children}</span>}
     </button>
   );
 }
@@ -114,7 +126,7 @@ export function Disclosure({ icon, title, note, children, defaultOpen = false, c
       <button type="button" className="disclosure__head" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
         <span className="disclosure__icon"><Icon name={icon} /></span>
         <span className="disclosure__text"><strong>{title}</strong>{note && <small>{note}</small>}</span>
-        <Icon name="chevron" size={15} className="disclosure__chev" />
+        <Icon name="chevron" size={14} className="disclosure__chev" />
       </button>
       <div id={id}><Collapse open={open}><div className="disclosure__body">{children}</div></Collapse></div>
     </Glass>
