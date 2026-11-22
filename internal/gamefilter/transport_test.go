@@ -164,10 +164,10 @@ func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
 	}
 	out(packet.FlagSYN, nil, 0)
 	out(packet.FlagACK|packet.FlagPSH, []byte{22, 3, 3, 0, 1, 1}, 1000)
-	out(packet.FlagACK, nil, 1001)
+	out(packet.FlagACK, nil, 1008)
 	now = now.Add(13 * time.Second)
 	if s := p.TransportState(); s.NoTLSReply != 1 {
-		t.Fatal("peer FIN acknowledgement counted as a reply", s)
+		t.Fatal("acknowledged alert and FIN counted as a reply", s)
 	}
 	out(packet.FlagACK, nil, 2400)
 	if s := p.TransportState(); s.NoTLSReply != 0 || s.Responding != 1 {
