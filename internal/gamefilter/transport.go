@@ -65,6 +65,11 @@ func (p *Processor) observeTransport(pkt capture.Packet, d packet.Dissection, ke
 	if !outbound && h.Flags()&(packet.FlagSYN|packet.FlagACK) == packet.FlagSYN|packet.FlagACK {
 		v.connected = true
 	}
+	// The SYN-ACK can be missed the same way; either side only sends a segment
+	// without SYN or RST once the connection is established.
+	if v.sawSYN && h.Flags()&(packet.FlagSYN|packet.FlagRST) == 0 {
+		v.connected = true
+	}
 	if outbound && len(payload) >= 3 && payload[0] == 22 && payload[1] == 3 && v.tls.IsZero() {
 		v.connected = true
 		v.tls = now

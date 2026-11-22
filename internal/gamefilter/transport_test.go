@@ -186,4 +186,13 @@ func TestTransportInfersUnobservedReplyFromGameACK(t *testing.T) {
 	if s := p.TransportState(); s.TLSClosed != 0 {
 		t.Fatal("server FIN after unobserved replies counted as a closed handshake", s)
 	}
+	// A bare ACK from the game after an uncaptured SYN-ACK proves the connection.
+	q := New(o, testOwner(true))
+	q.Now = func() time.Time { return now }
+	q.Observe(transportPacket(t, packet.FlagSYN, nil, false, 45002), sink)
+	q.Observe(transportPacket(t, packet.FlagACK, nil, false, 45002), sink)
+	now = now.Add(13 * time.Second)
+	if s := q.TransportState(); s.NoTCPReply != 0 {
+		t.Fatal("established connection counted as unanswered", s)
+	}
 }
