@@ -20,10 +20,10 @@ export function BrandLogo({ name, size = 28 }: { name: BrandName; size?: number 
     </svg>
   );
 }
-/* Telegram's own mark in the interface's ink, sized to the icon grid: a ring with the plane, and the solid disc for the current item. */
-const fit = "translate(12 12) scale(.8333) translate(-12 -12)";
-const line = { ...outline, send: <><circle cx="12" cy="12" r="9.25" fill="none" stroke="currentColor" strokeWidth="1.5" /><path fill="currentColor" transform={fit} d={brands.telegram.d} /></> };
-const solid: Partial<Record<keyof typeof line, ReactNode>> = { ...bold, send: <path fill="currentColor" fillRule="evenodd" transform={fit} d={`M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24z${brands.telegram.d}`} /> };
+/* Telegram's own plane in the interface's ink, scaled to the icon grid: outlined like the rest of the set, solid for the current item. */
+const fit = "translate(-4.39 -6.03) scale(1.4286)";
+const line = { ...outline, send: <path fill="none" stroke="currentColor" strokeWidth="1.05" strokeLinejoin="round" transform={fit} d={brands.telegram.d} /> };
+const solid: Partial<Record<keyof typeof line, ReactNode>> = { ...bold, send: <path fill="currentColor" transform={fit} d={brands.telegram.d} /> };
 export type IconName = keyof typeof line;
 /* One icon family for the whole interface: Solar, 1.5px outline; the bold cut marks the current navigation item.
    Sizes: 14 inside text and chips, 16 in controls, 18 in the navigation, 20 in icon boxes. */

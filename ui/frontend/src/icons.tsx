@@ -22,6 +22,7 @@ export const line = {
   search: <><g fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5"><circle cx="11.5" cy="11.5" r="9.5"/><path d="M18.2168 18.2178L21.9994 22.0004"/></g></>,
   x: <><g fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5"><path d="M19.0068 5L5.00684 19"/><path d="M19 19L5 5"/></g></>,
   down: <><path fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M18 6L6 18M15 18L6 18V9"/></>,
+  right: <><path fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 12H20M14 18L20 12L14 6"/></>,
   up: <><path fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M6 18L18 6M18 15V6H9"/></>,
   tray: <><g fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5"><path d="M4 12C4 16.4183 7.58172 20 12 20C16.4183 20 20 16.4183 20 12"/><path strokeLinejoin="round" d="M12 4L12 14M9 11L12 14L15 11"/></g></>,
   info: <><g fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 17V11"/><path strokeLinejoin="round" d="M12 8H12.0001"/></g></>,

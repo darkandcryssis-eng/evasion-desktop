@@ -33,6 +33,7 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
     <div className="page-body">
       <PageHead kicker="Прямое подключение" title="Сервисы" note="Обход работает только для этих сервисов. Остальной интернет — как обычно."
         action={<Segmented label="Раздел" value={tab} options={[{ id: "targets", label: "Цели" }, { id: "portfolio", label: "Стратегии" }]} onChange={setTab} />} />
+      {tab === "targets" && <CustomIPList running={state?.engine?.phase === "running" || state?.engine?.phase === "starting"} />}
       <Glass className="guard">
         <span className="guard__mark"><Icon name="shield" size={20} /></span>
         <div><strong>Российские сервисы не затрагиваются</strong>
@@ -53,7 +54,6 @@ export function ServicesScreen({ state }: { state: AppState | null }) {
           ))}
           {!filtered.length && <p className="empty">{targets.value ? "Ничего не найдено" : "Загрузка…"}</p>}
         </div>
-        <CustomIPList running={state?.engine?.phase === "running" || state?.engine?.phase === "starting"} />
       </> : <>
         {portfolio.error && <Note tone="warn" icon="alert">{portfolio.error}</Note>}
         <div className="stats">
@@ -275,8 +275,13 @@ export function TelegramScreen({ state, onRefresh }: { state?: TelegramState; on
         {state?.running && state.phase === "waiting" && <Note>Нажмите «Подключить в Telegram» и подтвердите прокси в клиенте. Статус изменится после реального обмена данными.</Note>}
       </Glass>
       <SpeedGraph samples={state?.speeds} running={!!state?.running} />
-      <Glass className="card">
-        <header className="card-head"><span className="kicker">Маршруты</span><Button kind="ghost" icon="refresh" disabled={checking} onClick={() => void check()}>{checking ? "Проверяем…" : "Проверить резерв"}</Button></header>
+      <Disclosure icon="settings" title="Параметры подключения" note="Обычно менять не требуется">
+        <Row title="Локальный порт" note="Меняется только при выключенном прокси"><input className="field field--num" type="number" min={1024} max={65535} aria-label="Локальный порт" value={port ?? state?.port ?? 17655} disabled={state?.running || busy} onChange={(e) => setPort(e.target.value)} /></Row>
+        <Row title="Резервные узлы сообщества" note="Используются, если прямой маршрут заблокирован"><Toggle label="Резервные узлы сообщества" checked={community ?? state?.community ?? true} disabled={state?.running || busy} onChange={setCommunity} /></Row>
+      </Disclosure>
+      <Disclosure icon="pulse" title="Активность Telegram" note="Подключения, маршруты и ошибки"><Feed logs={state?.logs ?? []} /></Disclosure>
+      <Disclosure icon="route" title="Маршруты" note={list.length ? `Проверено: ${list.filter((r) => r.status === "verified").length} из ${list.length}` : "Прямые и резервные каналы"}>
+        <div className="inline"><Button kind="ghost" icon="refresh" disabled={checking} onClick={() => void check()}>{checking ? "Проверяем…" : "Проверить резерв"}</Button></div>
         {list.length === 0 && <p className="empty">Запустите проверку — здесь появится состояние прямых и резервных каналов.</p>}
         <div className="routes">{list.map((r) => (
           <div className="route" key={r.id}>
@@ -285,12 +290,7 @@ export function TelegramScreen({ state, onRefresh }: { state?: TelegramState; on
             <Badge tone={r.status === "verified" ? "success" : r.status === "failed" || r.status === "cooldown" ? "warning" : "neutral"}>{routeLabels[r.status] || "Не проверен"}</Badge>
           </div>
         ))}</div>
-      </Glass>
-      <Disclosure icon="settings" title="Параметры подключения" note="Обычно менять не требуется">
-        <Row title="Локальный порт" note="Меняется только при выключенном прокси"><input className="field field--num" type="number" min={1024} max={65535} aria-label="Локальный порт" value={port ?? state?.port ?? 17655} disabled={state?.running || busy} onChange={(e) => setPort(e.target.value)} /></Row>
-        <Row title="Резервные узлы сообщества" note="Используются, если прямой маршрут заблокирован"><Toggle label="Резервные узлы сообщества" checked={community ?? state?.community ?? true} disabled={state?.running || busy} onChange={setCommunity} /></Row>
       </Disclosure>
-      <Disclosure icon="pulse" title="Активность Telegram" note="Подключения, маршруты и ошибки"><Feed logs={state?.logs ?? []} /></Disclosure>
     </div>
   );
 }
@@ -376,7 +376,6 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
       <PageHead kicker="Под себя" title="Настройки" note="Оформление, запуск и автоматическое восстановление связи." />
       <Glass className="card">
         <header className="card-head"><span className="kicker">Оформление</span></header>
-        <Row title="Светлая и тёмная тема" note="Переключаются кнопкой вверху окна. Выбранная тема сохраняется и применяется к трею." />
         <Row title="Мягкие анимации" note="Анимация кнопки включения, переходы и живой фон. Системная настройка уменьшения движения имеет приоритет."><Toggle label="Мягкие анимации" checked={motion} onChange={onMotion} /></Row>
         <Row title="Стартовый экран" note="Действует со следующего запуска"><Toggle label="Стартовый экран" checked={startup} onChange={onStartup} /></Row>
       </Glass>

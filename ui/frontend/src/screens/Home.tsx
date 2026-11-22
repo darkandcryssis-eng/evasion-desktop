@@ -102,7 +102,6 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
             <svg width="344" height="348" viewBox="0 0 344 348">
               {links.map((l) => <g key={l.name}><path className="links__wire" d={l.d} /><path className="links__flow" d={l.d} pathLength={1} /></g>)}
             </svg>
-            {links.map((l) => <i className="links__spark" key={l.name} style={{ offsetPath: `path("${l.d}")` }} />)}
             {links.map((l) => <span className="links__mark" key={l.name} data-brand={l.name} style={{ top: l.y }}><BrandLogo name={l.name} size={l.name === "discord" ? 30 : 28} /></span>)}
           </div>
           <button type="button" className="power" aria-label={action} aria-pressed={active} aria-disabled={locked} onClick={press}>
@@ -133,9 +132,9 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
         <ServiceTile brand="discord" name="Discord" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
         <ServiceTile brand="youtube" name="YouTube" tone={ytTone} label={ytLabel} live={active} onClick={() => onNavigate("settings")} />
         <ServiceTile brand="telegram" name="Telegram" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
-        <button type="button" className="tile cta" onClick={() => onNavigate("diagnostics")}>
-          <span className="cta__arrow" aria-hidden="true"><Icon name="up" size={16} /></span>
-          <span className="cta__text"><small>Что-то не работает?</small><strong>Проверить связь</strong></span>
+        <button type="button" className="tile service cta" data-tip="Если что-то не работает" onClick={() => onNavigate("diagnostics")}>
+          <span className="service__icon" aria-hidden="true"><Icon name="pulse" size={30} /></span>
+          <span className="service__text"><strong>Проверить связь</strong><Icon name="right" size={16} className="service__arrow" /></span>
         </button>
       </div>
 
@@ -198,8 +197,8 @@ const links: { name: BrandName; y: number; d: string }[] = [
 function ServiceTile({ brand, name, tone, label, live, onClick }: { brand: BrandName; name: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
     <button type="button" className={`tile service${live ? " service--live" : ""}`} aria-label={`${name}: ${label}`} data-tip={label} onClick={onClick}>
-      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandLogo name={brand} size={brand === "discord" ? 32 : 30} /></span><span className="service__arrow" aria-hidden="true"><Icon name="up" size={14} /></span></span>
-      <span className="service__text"><strong>{name}</strong>{tone === "warning" && <i className="service__flag" aria-hidden="true" />}</span>
+      <span className="service__icon" aria-hidden="true"><BrandLogo name={brand} size={brand === "discord" ? 32 : 30} /></span>
+      <span className="service__text"><strong>{name}</strong>{tone === "warning" && <i className="service__flag" aria-hidden="true" />}<Icon name="right" size={16} className="service__arrow" /></span>
     </button>
   );
 }
