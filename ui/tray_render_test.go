@@ -35,7 +35,7 @@ func TestTrayPanelShowsState(t *testing.T) {
 	}
 	// Connection state must not deform the selected ev ligature.
 	for _, c := range []*trayCanvas{off, on} {
-		if got := trayPixel(c, 38, 34); got != [3]byte{247, 247, 245} {
+		if got := trayPixel(c, 23, 34); got != [3]byte{247, 247, 245} {
 			t.Fatalf("ligature = %v, want off-white in both states", got)
 		}
 		if got := trayPixel(c, 23, 32); got != [3]byte{0, 0, 0} {
