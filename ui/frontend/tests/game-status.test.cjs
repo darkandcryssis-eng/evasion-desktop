@@ -1,6 +1,6 @@
 const assert=require("node:assert/strict");const {readFileSync}=require("node:fs");const path=require("node:path");const test=require("node:test");const vm=require("node:vm");const ts=require("typescript");
 const exportsObject={};const source=readFileSync(path.join(__dirname,"../src/gameStatus.ts"),"utf8");const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;vm.runInNewContext(code,{exports:exportsObject});const {gameStatus,gameConnectionNote}=exportsObject;
-const base={engineRunning:true,activeMode:"balanced",fresh:true,targets:["albion"],error:"",adaptive:{helping:0,responsive:0}};
+const base={engineRunning:true,activeMode:"balanced",fresh:true,targets:["custom"],error:"",adaptive:{helping:0,responsive:0}};
 test("network replies never promise a launched game",()=>assert.equal(gameStatus({...base,adaptive:{helping:0,responsive:8}},false),"Обнаружен сетевой обмен"));
 test("a driver error overrides previous traffic",()=>assert.equal(gameStatus({...base,error:"WinDivert — код 1058",adaptive:{helping:1,responsive:8}},false),"Нужна проверка"));
 test("stale traffic is not reported as current",()=>assert.equal(gameStatus({...base,fresh:false,adaptive:{responsive:8}},false),"Ожидаем движок"));

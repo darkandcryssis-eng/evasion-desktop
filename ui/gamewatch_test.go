@@ -6,14 +6,11 @@ import (
 )
 
 func TestGameProcessNamesFollowSelection(t *testing.T) {
-	s := GameFilterSettings{Albion: true, Executables: []string{`C:\Games\Warframe\Warframe.x64.exe`}}
-	if !anyGameRunning(s, []string{"explorer.exe", "Albion-Online.exe"}) {
-		t.Fatal("клиент Albion должен распознаваться без учёта регистра")
-	}
+	s := GameFilterSettings{Executables: []string{`C:\Games\Warframe\Warframe.x64.exe`}}
 	if !anyGameRunning(s, []string{"WARFRAME.X64.EXE"}) {
 		t.Fatal("добавленная игра должна распознаваться по имени файла")
 	}
-	if anyGameRunning(s, []string{"upc.exe", "cs2.exe", "steam.exe"}) {
+	if anyGameRunning(s, []string{"upc.exe", "cs2.exe", "steam.exe", "albion-online.exe"}) {
 		t.Fatal("невыбранные игры и лаунчеры не должны включать фильтр")
 	}
 	if anyGameRunning(GameFilterSettings{}, []string{"albion-online.exe"}) {

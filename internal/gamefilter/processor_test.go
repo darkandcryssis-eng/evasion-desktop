@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -255,7 +256,7 @@ func TestSendFailureDoesNotMutateOriginal(t *testing.T) {
 
 func TestOwnerAmbiguityAndTableBounds(t *testing.T) {
 	rows := []socketRow{{"udp", 5055, 1}, {"udp", 5055, 2}, {"tcp", 45000, 1}, {"tcp", 45000, 1}}
-	owners := resolveRows(rows, map[uint32]string{1: "albion"})
+	owners := resolveRows(rows, map[uint32]string{1: "custom"})
 	if owners[ownerKey("udp", 5055)].selected || !owners[ownerKey("tcp", 45000)].selected {
 		t.Fatal("ambiguous process accepted")
 	}
@@ -269,11 +270,13 @@ func TestOwnerAmbiguityAndTableBounds(t *testing.T) {
 func TestOptionsAndTargetMatching(t *testing.T) {
 	o := Default()
 	o.Mode = "balanced"
-	for image, want := range map[string]string{`C:\Games\Albion\Albion-Online.exe`: "albion", `C:\Games\Albion\launch_albion_online.exe`: "albion", `C:\Ubisoft\upc.exe`: "ubisoft", `C:\Windows\AlbionLauncher.exe`: "", `C:\Apps\chrome.exe`: "", `C:\Games\not-albion-online.exe`: ""} {
+	o.Executables = []string{`C:\Games\Albion\Albion-Online.exe`, `C:\Windows\AlbionLauncher.exe`, `C:\Apps\chrome.exe`}
+	for image, want := range map[string]string{`c:/games/albion/ALBION-ONLINE.EXE`: "custom", `C:\Other\Albion-Online.exe`: "", `C:\Ubisoft\upc.exe`: "", `C:\Windows\AlbionLauncher.exe`: "", `C:\Apps\chrome.exe`: ""} {
 		if got := o.Match(image); got != want {
 			t.Fatalf("%s=%s want=%s", image, got, want)
 		}
 	}
+	o.Executables = []string{filepath.Join(t.TempDir(), "Game.exe")}
 	for _, mode := range []string{"off", "gentle", "balanced", "strong"} {
 		o.Mode = mode
 		if err := o.Validate(); err != nil {
@@ -286,8 +289,6 @@ func TestOptionsAndTargetMatching(t *testing.T) {
 	}
 	o = Default()
 	o.Mode = "balanced"
-	o.Albion = false
-	o.Ubisoft = false
 	if o.Validate() == nil {
 		t.Fatal("empty target scope accepted")
 	}

@@ -4,9 +4,7 @@ package gamefilter
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +21,8 @@ type Owners struct {
 	targets   []string
 	lastError string
 	processes []ProcessState
+	active    bool
+	kept      map[uint32]string
 }
 
 var ipHelper = windows.NewLazySystemDLL("iphlpapi.dll")
@@ -119,6 +119,7 @@ func (o *Owners) refresh() {
 	o.last = time.Now()
 	o.lastError = ""
 	o.processes = []ProcessState{}
+	o.active = false
 	processes, err := processList()
 	if err != nil {
 		o.ports = map[string]owner{}
@@ -128,11 +129,12 @@ func (o *Owners) refresh() {
 	}
 	selected := map[uint32]string{}
 	images := map[uint32]string{}
+	direct := map[uint32]bool{}
 	for _, p := range processes {
 		if p.pid <= 4 || Protected(p.name) {
 			continue
 		}
-		candidate := o.options.Match(p.name) != ""
+		candidate := false
 		for _, path := range o.options.Executables {
 			if strings.EqualFold(filepath.Base(path), p.name) {
 				candidate = true
@@ -148,14 +150,21 @@ func (o *Owners) refresh() {
 		images[p.pid] = image
 		if target := o.options.Match(image); target != "" {
 			selected[p.pid] = target
+			direct[p.pid] = true
 		}
 	}
-	// Ubisoft launches games through helper processes. Limit descendants to that
-	// family and reject browsers and Windows processes before granting ownership.
+	// A game stays covered after the launcher that started it has exited.
+	for _, p := range processes {
+		if name, ok := o.kept[p.pid]; ok && selected[p.pid] == "" && strings.EqualFold(name, p.name) && !Protected(p.name) {
+			selected[p.pid] = "custom"
+		}
+	}
+	// Launchers start the game as a child process. Descendants of an added
+	// executable are covered too, except browsers and Windows processes.
 	for range 8 {
 		changed := false
 		for _, p := range processes {
-			if selected[p.pid] != "" || (selected[p.parent] != "ubisoft" && selected[p.parent] != "albion") || Protected(p.name) {
+			if selected[p.pid] != "" || p.parent == p.pid || selected[p.parent] == "" || Protected(p.name) {
 				continue
 			}
 			image := images[p.pid]
@@ -173,7 +182,14 @@ func (o *Owners) refresh() {
 			break
 		}
 	}
-	o.processes = summarizeProcesses(selected, images)
+	o.kept = map[uint32]string{}
+	for _, p := range processes {
+		if selected[p.pid] != "" && !direct[p.pid] {
+			o.kept[p.pid] = p.name
+		}
+	}
+	o.processes = summarizeProcesses(selected, direct)
+	o.active = len(selected) > 0
 	if len(selected) == 0 {
 		o.ports = map[string]owner{}
 		o.targets = []string{}
@@ -203,38 +219,25 @@ func (o *Owners) refresh() {
 	}
 }
 
-// Filter captures only unambiguous local ports owned by selected applications.
-func (o *Owners) Filter() string {
+// Capture is the WinDivert filter for the sockets of the selected applications.
+func (o *Owners) Capture() Capture {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if time.Since(o.last) > 100*time.Millisecond {
 		o.refresh()
 	}
-	parts := []string{}
-	for key, v := range o.ports {
-		if !v.selected || v.ambiguous {
-			continue
-		}
-		var protocol string
-		var port int
-		split := strings.Split(key, ":")
-		if len(split) != 2 {
-			continue
-		}
-		protocol = split[0]
-		if protocol == "tcp" && !o.options.TCP() || protocol == "udp" && !o.options.UDP() {
-			continue
-		}
-		if _, err := fmt.Sscan(split[1], &port); err != nil {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("(%s and ((outbound and %s.SrcPort == %d) or (inbound and %s.DstPort == %d)))", protocol, protocol, port, protocol, port))
+	return buildCapture(o.ports, o.options.TCP(), o.options.UDP())
+}
+func (o *Owners) Filter() string { return o.Capture().Filter }
+
+// Active reports whether any selected application is running.
+func (o *Owners) Active() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if time.Since(o.last) > 250*time.Millisecond {
+		o.refresh()
 	}
-	sort.Strings(parts)
-	if len(parts) == 0 || len(parts) > 256 {
-		return ""
-	}
-	return "not impostor and not loopback and (" + strings.Join(parts, " or ") + ")"
+	return o.active
 }
 
 // Identity correlates reconnects of the same process to the same endpoint.
@@ -257,11 +260,18 @@ func (o *Owners) Processes() []ProcessState {
 	return append([]ProcessState{}, o.processes...)
 }
 
-// A just-created TCP socket can be newer than the periodic table snapshot.
+// A just-created socket can be newer than the periodic table snapshot. A port
+// the snapshot already attributes to a process is trusted for a short time, so
+// a burst of new connections from other applications costs one table read.
 func (o *Owners) OwnsCurrent(protocol string, port uint16) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.refresh()
-	v := o.ports[ownerKey(protocol, port)]
+	v, known := o.ports[ownerKey(protocol, port)]
+	if !known || !v.selected || time.Since(o.last) > 100*time.Millisecond {
+		if time.Since(o.last) > 5*time.Millisecond {
+			o.refresh()
+		}
+		v = o.ports[ownerKey(protocol, port)]
+	}
 	return v.selected && !v.ambiguous
 }

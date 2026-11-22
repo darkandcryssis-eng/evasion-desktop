@@ -15,8 +15,6 @@ func TestNativeOwnershipUsesActualSocketPID(t *testing.T) {
 	}
 	o := Default()
 	o.Mode = "balanced"
-	o.Albion = false
-	o.Ubisoft = false
 	o.Executables = []string{self}
 	owners := NewOwners(o)
 	for _, network := range []string{"udp4", "udp6"} {

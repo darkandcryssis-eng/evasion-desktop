@@ -1,49 +1,16 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/gamefilter"
 	"github.com/fitting-1c/evasion/internal/proxy"
 	"github.com/fitting-1c/evasion/internal/strategy"
-	"net/netip"
 	"testing"
-	"time"
 )
 
-func TestGameTLSDNSGuardOnlyUsesPublicAddresses(t *testing.T) {
-	o := gamefilter.Default()
-	o.Mode = "auto"
-	lookup := func(context.Context, string, string) ([]netip.Addr, error) {
-		return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("fd00::1"), netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("::ffff:1.1.1.1")}, nil
-	}
-	ips := prepareGameTLSIPs(context.Background(), o, lookup)
-	if len(ips) != 1 || ips[0].String() != "1.1.1.1" {
-		t.Fatal(ips)
-	}
-	o.Protocol = "udp"
-	if got := prepareGameTLSIPs(context.Background(), o, lookup); len(got) != 0 {
-		t.Fatal("UDP-only enabled TLS", got)
-	}
-	o.Protocol = "both"
-	o.Albion = false
-	if got := prepareGameTLSIPs(context.Background(), o, lookup); len(got) != 0 {
-		t.Fatal("unselected target enabled guard", got)
-	}
-}
-func TestGameTLSDNSFailuresKeepPortFallback(t *testing.T) {
-	o := gamefilter.Default()
-	o.Mode = "auto"
-	ips := prepareGameTLSIPs(context.Background(), o, func(context.Context, string, string) ([]netip.Addr, error) { return nil, errors.New("unavailable") })
-	if len(ips) != 0 || gameCaptureFilter("port-filter", gameTLSGuard(ips)) != "port-filter" {
-		t.Fatal(ips)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	ips = prepareGameTLSIPs(ctx, o, func(ctx context.Context, _, _ string) ([]netip.Addr, error) { <-ctx.Done(); return nil, ctx.Err() })
-	if len(ips) != 0 {
-		t.Fatal(ips)
+func TestGameCaptureFilterCombinesPortsAndGuard(t *testing.T) {
+	if gameCaptureFilter("", gameTLSGuard) != gameTLSGuard || gameCaptureFilter("ports", "") != "ports" || gameCaptureFilter("ports", gameTLSGuard) != "(ports) or ("+gameTLSGuard+")" {
+		t.Fatal("capture filter combined incorrectly")
 	}
 }
 func TestGameTLSProviderPreservesProcessAndProtocolScope(t *testing.T) {

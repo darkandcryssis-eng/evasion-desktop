@@ -83,8 +83,6 @@ func runCommand(ctx context.Context, args []string) error {
 	gameAdaptive := fs.Bool("game-adaptive", true, "enable only after unanswered game traffic")
 	gameModeFlag := fs.String("game-mode", "off", "off|auto|gentle|balanced|strong")
 	gameProtocolFlag := fs.String("game-protocol", "both", "both|tcp|udp")
-	gameAlbionFlag := fs.Bool("game-albion", true, "Albion Online")
-	gameUbisoftFlag := fs.Bool("game-ubisoft", true, "Ubisoft Connect and launched games")
 	var gameExes gameTargets
 	fs.Var(&gameExes, "game-exe", "selected game executable path")
 	var (
@@ -112,7 +110,7 @@ func runCommand(ctx context.Context, args []string) error {
 		return err
 	}
 
-	games := gamefilter.Options{Mode: *gameModeFlag, Protocol: *gameProtocolFlag, Albion: *gameAlbionFlag, Ubisoft: *gameUbisoftFlag, Executables: gameExes}
+	games := gamefilter.Options{Mode: *gameModeFlag, Protocol: *gameProtocolFlag, Executables: gameExes}
 	if err := games.Validate(); err != nil {
 		return err
 	}

@@ -214,7 +214,7 @@ func (g *gameRuntime) stop() {
 	<-g.watch
 }
 
-// Game ports and known launcher destinations are captured at a separate priority.
+// Game ports and new TLS connections are captured at a separate priority.
 // Strategies are selected only for verified game-owned sockets.
 func runGamesOnly(ctx context.Context, o gamefilter.Options, adaptive bool, logger *slog.Logger, jsonOut bool, socksEndpoint ...string) error {
 	// Keep a non-capturing handle throughout idle periods and filter replacement.
@@ -237,12 +237,6 @@ func runGamesOnly(ctx context.Context, o gamefilter.Options, adaptive bool, logg
 	if len(socksEndpoint) > 0 && socksEndpoint[0] != "" {
 		return runGameSOCKS(ctx, o, p, owners, socksEndpoint[0], jsonOut)
 	}
-	tlsIPs := resolveGameTLSIPs(ctx, o)
-	p.PreparedTLSIPs(len(tlsIPs))
-	if ctx.Err() != nil {
-		return nil
-	}
-	resolvedAt := time.Now()
 	flows := flow.NewTable(8192, 5*time.Minute, intercept.TLSHelloDetector)
 	g := &gameRuntime{owners: owners, processor: p}
 	var handle *windivert.Handle
@@ -263,24 +257,8 @@ func runGamesOnly(ctx context.Context, o gamefilter.Options, adaptive bool, logg
 	logger.Info("игровой фильтр запущен отдельно", "adaptive", adaptive)
 	for {
 		filter := owners.Filter()
-		targets, _ := owners.Status()
-		albionActive := false
-		for _, target := range targets {
-			if target == "albion" {
-				albionActive = true
-				break
-			}
-		}
-		if albionActive && time.Since(resolvedAt) > 5*time.Minute {
-			next := resolveGameTLSIPs(ctx, o)
-			if len(next) > 0 {
-				tlsIPs = next
-				p.PreparedTLSIPs(len(tlsIPs))
-			}
-			resolvedAt = time.Now()
-		}
-		if albionActive && o.TCP() {
-			filter = gameCaptureFilter(filter, gameTLSGuard(tlsIPs))
+		if o.TCP() && owners.Active() {
+			filter = gameCaptureFilter(filter, gameTLSGuard)
 		}
 		if filter != current {
 			stop()

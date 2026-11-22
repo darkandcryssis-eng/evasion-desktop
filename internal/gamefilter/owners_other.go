@@ -12,6 +12,10 @@ func (*Owners) Status() ([]string, string) {
 
 func (*Owners) Filter() string { return "" }
 
+func (*Owners) Capture() Capture { return Capture{} }
+
+func (*Owners) Active() bool { return false }
+
 func (*Owners) Identity(string, uint16) uint32 { return 0 }
 
 func (*Owners) Processes() []ProcessState { return []ProcessState{} }
