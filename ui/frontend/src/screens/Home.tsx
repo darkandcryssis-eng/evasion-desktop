@@ -6,7 +6,7 @@ import { telegramBadge } from "../telegramBadge";
 import { useElapsed, usePoll } from "../hooks";
 import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
 import { LogShowcase, LogStream } from "../components/LogShowcase";
-import { Badge, BrandIcon, BrandLogo, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
+import { BrandLogo, Button, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
 import type { Page } from "../types";
 
 const voiceOptions = [
@@ -126,9 +126,9 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
           </LogShowcase>
         </section>
 
-        <ServiceTile brand="discord" name="Discord" note="Голос · чат · медиа" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
-        <ServiceTile brand="youtube" name="YouTube" note="Видео · прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
-        <ServiceTile brand="telegram" name="Telegram" note="Сообщения · MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
+        <ServiceTile brand="discord" name="Discord" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
+        <ServiceTile brand="youtube" name="YouTube" tone={ytTone} label={ytLabel} live={active} onClick={() => onNavigate("settings")} />
+        <ServiceTile brand="telegram" name="Telegram" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
         <button type="button" className="tile cta" onClick={() => onNavigate("diagnostics")}>
           <span className="cta__arrow" aria-hidden="true"><Icon name="up" size={16} /></span>
           <span className="cta__text"><small>Что-то не работает?</small><strong>Проверить связь</strong></span>
@@ -185,12 +185,12 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 
 const orbit: BrandName[] = ["discord", "youtube", "telegram"];
 
-function ServiceTile({ brand, name, note, tone, label, live, onClick }: { brand: BrandName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
+// The tile carries only the mark and the name; its state is spoken and shown in the hover hint, a dot flags trouble.
+function ServiceTile({ brand, name, tone, label, live, onClick }: { brand: BrandName; name: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (
-    <button type="button" className={`tile service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
-      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandIcon name={brand} size={brand === "telegram" ? 17 : 19} /></span><span className="service__arrow" aria-hidden="true"><Icon name="up" size={14} /></span></span>
-      <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
-      <Badge tone={tone} pulse={live}>{label}</Badge>
+    <button type="button" className={`tile service${live ? " service--live" : ""}`} aria-label={`${name}: ${label}`} data-tip={label} onClick={onClick}>
+      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandLogo name={brand} size={brand === "discord" ? 32 : 30} /></span><span className="service__arrow" aria-hidden="true"><Icon name="up" size={14} /></span></span>
+      <span className="service__text"><strong>{name}</strong>{tone === "warning" && <i className="service__flag" aria-hidden="true" />}</span>
     </button>
   );
 }
