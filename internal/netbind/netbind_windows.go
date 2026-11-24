@@ -57,7 +57,14 @@ func listAdapters() ([]Adapter, error) {
 					gateway = ip.Unmap()
 				}
 			}
+			var own netip.Addr
+			if a.FirstUnicastAddress != nil {
+				if ip, ok := netip.AddrFromSlice(a.FirstUnicastAddress.Address.IP()); ok {
+					own = ip.Unmap()
+				}
+			}
 			out = append(out, Adapter{
+				Addr:        own,
 				GatewayIP:   gateway,
 				Index:       a.IfIndex,
 				Name:        windows.UTF16PtrToString(a.FriendlyName),

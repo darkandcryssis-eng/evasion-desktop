@@ -25,7 +25,9 @@ type Adapter struct {
 	Gateway  bool
 	// GatewayIP — IPv4-адрес шлюза адаптера; пуст, если шлюза нет.
 	GatewayIP netip.Addr
-	Metric    uint32
+	// Addr — первый IPv4-адрес самого адаптера; пуст, если его нет.
+	Addr   netip.Addr
+	Metric uint32
 }
 
 // HostRoute — маршрут до одного IPv4-адреса через шлюз физического адаптера.
