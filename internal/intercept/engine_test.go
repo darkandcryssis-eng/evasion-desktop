@@ -1395,3 +1395,42 @@ func TestStallAfterHandshakeReportsFailureOnce(t *testing.T) {
 		t.Fatalf("сегменты с данными должны пройти без изменений: %d из 5", passed)
 	}
 }
+
+// Соединение вне радиуса движок не трогает, но о его зависании после
+// рукопожатия приёмник OnStall узнаёт вместе с именем сайта.
+func TestStallOutsideRadiusReachesOnStall(t *testing.T) {
+	seq := uint32(1000)
+	appData := []byte{0x17, 0x03, 0x03, 0x00, 0x08, 1, 2, 3, 4, 5, 6, 7, 8}
+	dataSeq := seq + uint32(len(helloPayload))
+	packets := []capture.Packet{packetV4Seq(t, helloPayload, core.DirectionOutbound, 50000, seq)}
+	for i := 0; i < 5; i++ {
+		packets = append(packets, packetV4Seq(t, appData, core.DirectionOutbound, 50000, dataSeq))
+	}
+	type stall struct {
+		sni      string
+		desynced bool
+	}
+	var stalls []stall
+	provider := &failureRecordingProvider{StrategyProvider: fakeProvider{matchSNI: "youtube.com"}}
+	engine, err := New(Options{
+		Source:   capture.NewSyntheticSource(packets...),
+		Sink:     &capture.SyntheticSink{},
+		Flows:    flow.NewTable(16, time.Minute, testDetector),
+		Provider: provider,
+		Exec:     packetexec.New(),
+		Parse:    fixedParser("frozen.example.com"),
+		OnStall:  func(sni string, desynced bool) { stalls = append(stalls, stall{sni, desynced}) },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := engine.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(stalls) != 1 || stalls[0] != (stall{"frozen.example.com", false}) {
+		t.Fatalf("OnStall calls = %v", stalls)
+	}
+	if len(provider.failures) != 0 {
+		t.Fatalf("срыв засчитан стратегии, хотя приём не применялся: %v", provider.failures)
+	}
+}

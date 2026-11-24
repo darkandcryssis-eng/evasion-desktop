@@ -92,6 +92,7 @@ func runCommand(ctx context.Context, args []string) error {
 		observe         = fs.Bool("observe", false, "режим наблюдения: не применять стратегии")
 		quicFlag        = fs.String("quic", "", "режим QUIC: block|desync|off (переопределяет конфиг)")
 		groupsFlag      = fs.String("groups", "", "ограничить радиус группами через запятую")
+		siteReserveFlag = fs.Bool("site-reserve", true, "intercept: сайты, замерзающие после рукопожатия, уводить в WARP через системный PAC")
 		radiusFlag      = fs.String("radius", "", "режим радиуса: groups|all (переопределяет конфиг)")
 		stateDir        = fs.String("state-dir", defaultStateDir, "каталог состояния для команд status и portfolio")
 		replanEach      = fs.Duration("replan", time.Minute, "период пересчёта снимка контуром управления")
@@ -226,6 +227,7 @@ func runCommand(ctx context.Context, args []string) error {
 			youtubeProfile:  *youtubeProfile,
 			telegramProfile: *telegramProfile,
 			ipListPath:      *ipListFlag,
+			siteReserve:     *siteReserveFlag,
 		})
 	}
 

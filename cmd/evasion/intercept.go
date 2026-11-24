@@ -256,6 +256,7 @@ type interceptOptions struct {
 	redirect                                    bool
 	ytStartProfile, discordProfile              string
 	youtubeProfile, telegramProfile, ipListPath string
+	siteReserve                                 bool
 }
 
 // runIntercept запускает системный перехват этапа 1 через WinDivert.
@@ -320,7 +321,7 @@ func runIntercept(opts interceptOptions) error {
 		}
 	}
 	if !route.Tunnel && discordListen == "" {
-		dp, err := startDiscordWatchProxy(ctx, defaultDiscordTunnelListen, logger)
+		dp, err := startDiscordWatchProxy(ctx, defaultDiscordTunnelListen, opts.siteReserve, logger)
 		if err != nil {
 			logger.Warn("локальный прокси Discord не поднят, клиент идёт без него", "err", err)
 		} else {
@@ -493,6 +494,7 @@ func runIntercept(opts interceptOptions) error {
 		Exec:                  packetexec.New(),
 		Parse:                 intercept.TLSHelloParser,
 		Logger:                logger,
+		OnStall:               reportSiteStall,
 		// Трекер SNI, хук QUIC-only и детектор дёрганья голоса — все слушают
 		// один поток ClientHello.
 		OnClientHello: composeHooks(composeHooks(sniTrack.Observe, quicClientHelloHook(quicTracker)), churn.Observe),
@@ -922,6 +924,7 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 		Exec:          packetexec.New(),
 		Parse:         intercept.TLSHelloParser,
 		Logger:        logger,
+		OnStall:       reportSiteStall,
 		OnClientHello: composeHooks(sniTrack.Observe, quicClientHelloHook(quicTracker)),
 		// Пассивный сигнал срыва (5.10): повтор ClientHello на живом трафике —
 		// бесплатный признак, что стратегия на этой цели загибается. Вешается
