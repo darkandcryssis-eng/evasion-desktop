@@ -73,6 +73,10 @@ type Options struct {
 	// трафике песочницы к живому сигналу отношения не имеет (её исход и так
 	// меряется пробой).
 	OnPassive func(PassiveEvent)
+	// OnStall — необязательный приёмник зависаний после рукопожатия: имя
+	// сервера и применялся ли к соединению приём. Вызывается и для
+	// соединений вне радиуса, которые движок не трогал.
+	OnStall func(sni string, desynced bool)
 	// Observer — расширенный наблюдатель жизненного цикла соединения.
 	// Получает коррелированные события каждого соединения:
 	// увиденный ClientHello, применённая/непримененная стратегия, пассивный
@@ -150,6 +154,8 @@ type Engine struct {
 	now                   func() time.Time
 	onCH                  func(sni string)
 	onPsv                 func(PassiveEvent)
+	onStall               func(sni string, desynced bool)
+	plainFlows            map[desyncKey]string
 	obs                   Observer
 	block                 Blocklist
 	failureMu             sync.Mutex
@@ -291,6 +297,7 @@ func New(opts Options) (*Engine, error) {
 		now:                   opts.Now,
 		onCH:                  opts.OnClientHello,
 		onPsv:                 opts.OnPassive,
+		onStall:               opts.OnStall,
 		obs:                   opts.Observer,
 		block:                 opts.Blocklist,
 	}
@@ -941,6 +948,7 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 		// задержать перехват и выглядеть как «движок ломает VK/YouTube»,
 		// хотя пакеты не меняются. Для диагностики достаточно периодических
 		// сводок snitracker («SNI радиуса топ=...»).
+		e.rememberPlain(tmpl, sni)
 		return true
 	}
 
@@ -1156,9 +1164,41 @@ func (e *Engine) takeDesync(key desyncKey, now time.Time, window time.Duration) 
 	return record, true
 }
 
+// rememberPlain запоминает имя соединения вне радиуса: если оно зависнет после
+// рукопожатия, приёмник OnStall узнает, какой это сайт. Без приёмника не
+// делает ничего. Переполненная таблица сбрасывается целиком: записи нужны
+// только первые секунды жизни соединения.
+func (e *Engine) rememberPlain(pkt capture.Packet, sni string) {
+	if e.onStall == nil || sni == "" {
+		return
+	}
+	key, ok := desyncKeyForPacket(pkt)
+	if !ok {
+		return
+	}
+	e.failureMu.Lock()
+	if e.plainFlows == nil || len(e.plainFlows) >= recentDesyncCapacity {
+		e.plainFlows = make(map[desyncKey]string)
+	}
+	e.plainFlows[key] = sni
+	e.failureMu.Unlock()
+}
+
 // observeStall сообщает провайдеру о зависании после рукопожатия на соединении,
 // к которому недавно применялся приём.
 func (e *Engine) observeStall(pkt capture.Packet) {
+	if e.onStall != nil {
+		if key, ok := desyncKeyForPacket(pkt); ok {
+			e.failureMu.Lock()
+			sni, plain := e.plainFlows[key]
+			delete(e.plainFlows, key)
+			e.failureMu.Unlock()
+			if plain {
+				e.onStall(sni, false)
+				return
+			}
+		}
+	}
 	reporter, ok := e.prov.(FailureReporter)
 	if !ok {
 		return
@@ -1170,6 +1210,9 @@ func (e *Engine) observeStall(pkt capture.Packet) {
 	record, ok := e.takeDesync(key, e.now(), stallDesyncWindow)
 	if !ok {
 		return
+	}
+	if e.onStall != nil {
+		e.onStall(record.sni, true)
 	}
 	reporter.ReportFailure(record.sni, record.strategyID)
 	if e.log != nil {

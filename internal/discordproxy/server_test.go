@@ -628,3 +628,25 @@ func TestResponseFrozenMidRecordIsDropped(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 	}
 }
+
+func TestServesPAC(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &Server{PAC: func() string { return "function FindProxyForURL(url, host) { return \"DIRECT\"; }" }}
+	go func() { _ = s.Serve(ctx, ln) }()
+	c, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = io.WriteString(c, "GET /proxy.pac?v=3 HTTP/1.1\r\nHost: "+ln.Addr().String()+"\r\n\r\n")
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	body, _ := io.ReadAll(c)
+	if !strings.Contains(string(body), "200 OK") || !strings.Contains(string(body), "application/x-ns-proxy-autoconfig") || !strings.Contains(string(body), "FindProxyForURL") {
+		t.Fatalf("ответ на запрос сценария: %q", body)
+	}
+}

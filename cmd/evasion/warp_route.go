@@ -94,6 +94,21 @@ func (r *warpRoute) Dial(ctx context.Context, network, addr string) (net.Conn, e
 	return nil, err
 }
 
+// Force переводит узел в туннель сразу, без накопления срывов.
+func (r *warpRoute) Force(ctx context.Context, host string) {
+	r.mu.Lock()
+	r.host(host).until = r.now().Add(warpHostTTL)
+	r.mu.Unlock()
+	r.ensure(ctx)
+}
+
+// Ready сообщает, что туннель поднят и проверен.
+func (r *warpRoute) Ready() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tunnel != nil
+}
+
 // Stall засчитывает узлу соединение, оборванное из-за молчания.
 func (r *warpRoute) Stall(ctx context.Context, host string) {
 	r.mu.Lock()

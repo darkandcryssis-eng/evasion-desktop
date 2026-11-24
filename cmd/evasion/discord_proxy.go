@@ -151,7 +151,7 @@ func startDiscordDirectProxy(parent context.Context, route netbind.Route, listen
 // Маршрут он не меняет: соединения идут обычным путём под десинк. Нужен он,
 // чтобы журнал показывал, на каком узле застрял клиент, и чтобы соединение без
 // ответа обрывалось сразу — клиент повторяет его уже со следующей стратегией.
-func startDiscordWatchProxy(parent context.Context, listen string, logger *slog.Logger) (*discordDirectProxy, error) {
+func startDiscordWatchProxy(parent context.Context, listen string, sites bool, logger *slog.Logger) (*discordDirectProxy, error) {
 	ln, err := net.Listen("tcp4", listen)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось открыть локальный прокси Discord: %w", err)
@@ -162,14 +162,28 @@ func startDiscordWatchProxy(parent context.Context, listen string, logger *slog.
 	// Узел Discord, который не открывается напрямую ни на одной стратегии,
 	// уходит в туннель WARP; сторонние узлы остаются на прямом пути.
 	reserve := newWARPRoute(defaultStateDir, dial, logger)
-	server := &discordproxy.Server{Dial: reserve.Dial, Passthrough: dial, NoReply: discordNoReply, Logger: logger, OnStall: func(host string) {
+	// Через тот же прокси и тот же туннель идут сайты, которые браузер
+	// приводит сюда по PAC: их соединения замерзали на прямом пути.
+	var siteList *siteReserve
+	passthrough := discordproxy.DialContextFunc(dial)
+	if sites {
+		siteList = newSiteReserve(ctx, reserve, windowsPACSettings{}, p.Listen, logger)
+		passthrough = reserve.Dial
+	}
+	server := &discordproxy.Server{Dial: reserve.Dial, Passthrough: passthrough, NoReply: discordNoReply, Logger: logger, OnStall: func(host string) {
 		if report := discordStallReport.Load(); report != nil {
 			(*report)(host)
 		}
 		reserve.Stall(ctx, host)
 	}}
+	if siteList != nil {
+		server.PAC = siteList.PAC
+	}
 	go func() {
 		_ = server.Serve(ctx, ln)
+		if siteList != nil {
+			siteList.Close()
+		}
 		reserve.Close()
 		close(p.done)
 	}()

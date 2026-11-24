@@ -36,8 +36,11 @@ type Server struct {
 	NoReply time.Duration
 	// OnStall вызывается для каждого соединения, оборванного по NoReply.
 	OnStall func(host string)
-	Logger  *slog.Logger
-	wg      sync.WaitGroup
+	// PAC, если задан, отдаётся по GET /proxy.pac: сценарий автонастройки
+	// прокси, по которому браузер приводит сюда выбранные сайты.
+	PAC    func() string
+	Logger *slog.Logger
+	wg     sync.WaitGroup
 
 	connMu sync.Mutex
 	conns  map[net.Conn]activeConn
@@ -247,6 +250,11 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	req, err := http.ReadRequest(reader)
 	if err != nil {
 		writeError(client, http.StatusBadRequest)
+		return
+	}
+	if req.Method == http.MethodGet && req.URL.Path == "/proxy.pac" && s.PAC != nil {
+		body := s.PAC()
+		_, _ = fmt.Fprintf(client, "HTTP/1.1 200 OK\r\nContent-Type: application/x-ns-proxy-autoconfig\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
 		return
 	}
 	if req.Method != http.MethodConnect {
