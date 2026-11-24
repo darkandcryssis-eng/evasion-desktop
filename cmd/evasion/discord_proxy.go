@@ -207,36 +207,63 @@ func startDiscordSelfCheck(ctx context.Context, route netbind.Route, logger *slo
 		if !route.Tunnel {
 			return
 		}
-		// При стороннем VPN прямой путь перепроверяется всё время работы:
-		// провайдер меняет правила на ходу, и маршрут Discord должен следовать
-		// за фактом, а не за проверкой при запуске.
+		// При стороннем VPN Discord идёт через VPN, пока тот отвечает: на
+		// прямом пути провайдер то пропускает соединения, то замораживает их
+		// после рукопожатия, и разовая удачная проверка этого не ловит. Прямой
+		// путь — резерв: на него Discord уходит, только когда путь через VPN
+		// дважды подряд не прошёл обмен, а прямой дважды подряд прошёл.
+		// Проверка идёт всё время работы и возвращает Discord в VPN, как только
+		// тот оживает.
 		direct := netbind.Dialer(route.Physical.Index)
+		viaVPN := (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 		var gate discordDirectGate
+		vpnFails, bothDown := 0, false
 		for {
-			err := discordGatewayExchange(ctx, direct)
-			reason := ""
-			if err != nil {
-				reason = "обмен с gateway: " + err.Error()
-			} else if download, ok := discordDownloadCheck(ctx, direct); !ok {
-				reason = "загрузка: " + download
-			}
+			vpnErr := discordGatewayExchange(ctx, viaVPN)
 			if ctx.Err() != nil {
 				return
 			}
-			proven, changed := gate.observe(reason == "")
-			discordDirectProven.Store(proven)
-			switch {
-			case changed && proven:
-				logger.Info("Discord: прямой путь мимо VPN прошёл полный обмен, новые соединения идут напрямую")
-			case changed:
-				logger.Warn("Discord: прямой путь мимо VPN перестал работать, соединения идут через VPN", "причина", reason)
-			case !proven && reason != "" && !gate.reported:
-				gate.reported = true
-				logger.Warn("Discord: прямой путь мимо VPN не проходит полный обмен, Discord идёт через VPN", "причина", reason)
+			if vpnErr == nil {
+				vpnFails = 0
+			} else {
+				vpnFails++
 			}
+			useDirect, reason := false, ""
+			if vpnFails >= 2 {
+				if err := discordGatewayExchange(ctx, direct); err != nil {
+					reason = "обмен с gateway: " + err.Error()
+				} else if download, ok := discordDownloadCheck(ctx, direct); !ok {
+					reason = "загрузка: " + download
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				useDirect, _ = gate.observe(reason == "")
+			} else {
+				gate = discordDirectGate{}
+			}
+			was := discordDirectProven.Swap(useDirect)
+			switch {
+			case useDirect && !was:
+				logger.Warn("Discord: путь через VPN не отвечает, прямой прошёл полный обмен — новые соединения идут напрямую", "vpn", vpnErr)
+			case !useDirect && was && vpnFails == 0:
+				logger.Info("Discord: путь через VPN снова отвечает, новые соединения идут через VPN")
+			case !useDirect && was:
+				logger.Warn("Discord: прямой путь перестал работать, соединения идут через VPN", "причина", reason)
+			}
+			down := vpnFails >= 2 && reason != ""
+			if down && !bothDown {
+				logger.Warn("Discord не отвечает ни через VPN, ни напрямую", "vpn", vpnErr, "напрямую", reason)
+			}
+			bothDown = down
 			wait := 2 * time.Minute
-			if reason == "" && !proven {
+			switch {
+			case vpnFails == 1:
+				wait = 10 * time.Second
+			case vpnFails >= 2 && reason == "" && !useDirect:
 				wait = 5 * time.Second
+			case vpnFails >= 2:
+				wait = 30 * time.Second
 			}
 			select {
 			case <-ctx.Done():

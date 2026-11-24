@@ -20,18 +20,14 @@ import (
 
 const discordGatewayHost = "gateway.discord.gg"
 
-// discordDirectProven — прямой путь (физический адаптер под обходом) прошёл
-// полный обмен с Discord. Пока это не доказано, локальный прокси ведёт Discord
-// по маршруту по умолчанию: клиент стартует сразу по заведомо рабочему пути и
-// не ждёт, пока сорвётся непроверенный.
+// discordDirectProven — Discord ведётся прямым путём (физический адаптер под
+// обходом): путь через сторонний VPN не отвечает, а прямой прошёл полный
+// обмен. Пока это не так, локальный прокси ведёт Discord через VPN.
 var discordDirectProven atomic.Bool
 
 // discordDirectGate переводит Discord на прямой путь после двух проверок
 // подряд и снимает с него после первого же срыва.
-type discordDirectGate struct {
-	passes   int
-	reported bool
-}
+type discordDirectGate struct{ passes int }
 
 func (g *discordDirectGate) observe(ok bool) (proven, changed bool) {
 	was := g.passes >= 2

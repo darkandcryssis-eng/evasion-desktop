@@ -315,7 +315,7 @@ func runIntercept(opts interceptOptions) error {
 		} else {
 			discordListen, discordForce = dp.Listen, true
 			defer dp.Close()
-			logger.Info("Discord идёт через VPN, пока прямой путь не пройдёт полный обмен", "listen", discordListen, "адаптер", route.Physical.Name)
+			logger.Info("Discord идёт через VPN; прямой путь — резерв на случай отказа VPN", "listen", discordListen, "адаптер", route.Physical.Name)
 		}
 	}
 	if telegramProfile != "" {
