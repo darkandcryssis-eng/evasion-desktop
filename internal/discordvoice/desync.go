@@ -90,3 +90,51 @@ func BuildDecoy(raw []byte, fool Fooling, ttl uint8, replacePayload []byte) ([]b
 
 	return out, nil
 }
+
+// BuildCover собирает из шаблона raw UDP-датаграмму к тому же адресату с
+// другой нагрузкой payload (любой длины) и TTL ttl. Суммы верные: пакет
+// проходит весь путь до сервера. Нужен для подделки, которую DPI должен
+// принять за настоящее начало постороннего потока, — в отличие от BuildDecoy,
+// чьи пакеты до сервера не доживают, а DPI с проверкой сумм может не учесть.
+func BuildCover(raw, payload []byte, ttl uint8) ([]byte, error) {
+	d, err := packet.Dissect(raw)
+	if err != nil {
+		return nil, err
+	}
+	old, ok := d.Payload(raw)
+	if _, isUDP := d.UDP(raw); !ok || !isUDP {
+		return nil, errors.New("discordvoice: шаблон подделки не UDP")
+	}
+	headers := len(raw) - len(old)
+	if headers < 28 || len(payload) == 0 || headers+len(payload) > 1400 {
+		return nil, errors.New("discordvoice: подделка не помещается в пакет")
+	}
+	out := make([]byte, headers+len(payload))
+	copy(out, raw[:headers])
+	copy(out[headers:], payload)
+	udpStart := headers - 8
+	udpLen := 8 + len(payload)
+	out[udpStart+4], out[udpStart+5] = byte(udpLen>>8), byte(udpLen)
+	switch d.Version {
+	case packet.Version4:
+		out[2], out[3] = byte(len(out)>>8), byte(len(out))
+	case packet.Version6:
+		ipPayload := len(out) - 40
+		out[4], out[5] = byte(ipPayload>>8), byte(ipPayload)
+	default:
+		return nil, errors.New("discordvoice: неизвестная версия IP")
+	}
+	nd, err := packet.Dissect(out)
+	if err != nil {
+		return nil, err
+	}
+	if h, ok := nd.IPv4(out); ok {
+		h.SetTTL(ttl)
+	} else if h, ok := nd.IPv6(out); ok {
+		h.SetHopLimit(ttl)
+	}
+	if !nd.RecomputeChecksums(out) {
+		return nil, errors.New("discordvoice: не удалось пересчитать суммы подделки")
+	}
+	return out, nil
+}

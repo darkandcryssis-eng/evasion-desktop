@@ -52,3 +52,44 @@ func TestVoiceSessionsSwitchPathAfterRepeatedFailures(t *testing.T) {
 		t.Fatalf("keepTunnel: %v", got)
 	}
 }
+
+func TestVoiceSessionStalledInPlace(t *testing.T) {
+	var s voiceSessions
+	server := netip.MustParseAddr("104.29.157.172")
+	s.begin(server, true)
+	for i := 0; i < voiceDeadOutbound-1; i++ {
+		s.count(server, false)
+	}
+	if s.stalled() != nil {
+		t.Fatal("рано: исходящих пакетов ещё мало")
+	}
+	s.count(server, false)
+	verdict := s.stalled()
+	if verdict == nil || verdict.alive || verdict.switched {
+		t.Fatalf("первый срыв на месте: %+v", verdict)
+	}
+	if s.stalled() != nil {
+		t.Fatal("сеанс засчитывается один раз")
+	}
+	// Следующий сеанс не пересчитывает уже засчитанный и тоже срывается —
+	// даже если клиент вернулся на тот же сервер.
+	other := server
+	if _, v := s.begin(other, true); v != nil {
+		t.Fatalf("сорванный сеанс засчитан повторно: %+v", v)
+	}
+	for i := 0; i < voiceDeadOutbound; i++ {
+		s.count(other, false)
+	}
+	if verdict = s.stalled(); verdict == nil || !verdict.switched || verdict.next != voiceTunnel {
+		t.Fatalf("второй срыв должен перевести голос в туннель: %+v", verdict)
+	}
+	// Сеанс с ответами сервера сорванным не считается.
+	s.begin(server, true)
+	s.count(server, true)
+	for i := 0; i < voiceDeadOutbound; i++ {
+		s.count(server, false)
+	}
+	if s.stalled() != nil {
+		t.Fatal("сеанс с ответами сервера засчитан как сорванный")
+	}
+}
