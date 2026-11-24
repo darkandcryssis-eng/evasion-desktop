@@ -5,6 +5,10 @@ package netbind
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"net/netip"
+	"os/exec"
+	"strconv"
 	"syscall"
 	"unsafe"
 
@@ -47,7 +51,14 @@ func listAdapters() ([]Adapter, error) {
 		}
 		var out []Adapter
 		for a := first; a != nil; a = a.Next {
+			var gateway netip.Addr
+			if a.FirstGatewayAddress != nil {
+				if ip, ok := netip.AddrFromSlice(a.FirstGatewayAddress.Address.IP()); ok {
+					gateway = ip.Unmap()
+				}
+			}
 			out = append(out, Adapter{
+				GatewayIP:   gateway,
 				Index:       a.IfIndex,
 				Name:        windows.UTF16PtrToString(a.FriendlyName),
 				Description: windows.UTF16PtrToString(a.Description),
@@ -78,4 +89,75 @@ func bindControl(index uint32) func(network, address string, c syscall.RawConn) 
 		}
 		return sockErr
 	}
+}
+
+var (
+	iphlpapi                 = windows.NewLazySystemDLL("iphlpapi.dll")
+	procCreateIpForwardEntry = iphlpapi.NewProc("CreateIpForwardEntry")
+	procDeleteIpForwardEntry = iphlpapi.NewProc("DeleteIpForwardEntry")
+)
+
+// mibIPForwardRow — MIB_IPFORWARDROW. Адреса лежат в сетевом порядке байт.
+type mibIPForwardRow struct {
+	Dest, Mask, Policy, NextHop, IfIndex uint32
+	Type, Proto, Age, NextHopAS          uint32
+	Metric1, Metric2, Metric3            uint32
+	Metric4, Metric5                     uint32
+}
+
+const (
+	mibIPRouteTypeIndirect = 4
+	mibIPProtoNetMgmt      = 3
+	metricUnused           = 0xFFFFFFFF
+)
+
+func rawIPv4(addr netip.Addr) uint32 {
+	raw := addr.As4()
+	return *(*uint32)(unsafe.Pointer(&raw[0]))
+}
+
+func (r HostRoute) row() mibIPForwardRow {
+	return mibIPForwardRow{
+		Dest: rawIPv4(r.Dest), Mask: 0xFFFFFFFF, NextHop: rawIPv4(r.Gateway), IfIndex: r.IfIndex,
+		Type: mibIPRouteTypeIndirect, Proto: mibIPProtoNetMgmt,
+		// Метрика не меньше метрики интерфейса, иначе Windows отвергает строку.
+		Metric1: r.Metric, Metric2: metricUnused, Metric3: metricUnused, Metric4: metricUnused, Metric5: metricUnused,
+	}
+}
+
+// Add ставит маршрут. Уже существующий маршрут ошибкой не считается. Если
+// системный вызов отвергнут, маршрут ставится через route.exe.
+func (r HostRoute) Add() error {
+	row := r.row()
+	code, _, _ := procCreateIpForwardEntry.Call(uintptr(unsafe.Pointer(&row)))
+	if code == 0 || windows.Errno(code) == windows.ERROR_OBJECT_ALREADY_EXISTS {
+		return nil
+	}
+	if out, err := r.routeExe("ADD", "METRIC", "1"); err != nil {
+		return fmt.Errorf("CreateIpForwardEntry: %w; route.exe: %v (%s)", windows.Errno(code), err, out)
+	}
+	return nil
+}
+
+// Delete снимает маршрут; отсутствующий маршрут ошибкой не считается.
+func (r HostRoute) Delete() error {
+	row := r.row()
+	code, _, _ := procDeleteIpForwardEntry.Call(uintptr(unsafe.Pointer(&row)))
+	if code == 0 || windows.Errno(code) == windows.ERROR_NOT_FOUND {
+		return nil
+	}
+	if out, err := r.routeExe("DELETE"); err != nil {
+		return fmt.Errorf("DeleteIpForwardEntry: %w; route.exe: %v (%s)", windows.Errno(code), err, out)
+	}
+	return nil
+}
+
+func (r HostRoute) routeExe(verb string, extra ...string) (string, error) {
+	args := []string{verb, r.Dest.String(), "MASK", "255.255.255.255", r.Gateway.String()}
+	args = append(args, extra...)
+	args = append(args, "IF", strconv.FormatUint(uint64(r.IfIndex), 10))
+	cmd := exec.Command("route.exe", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }

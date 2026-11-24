@@ -7,7 +7,9 @@ package netbind
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -21,7 +23,28 @@ type Adapter struct {
 	Hardware bool
 	Up       bool
 	Gateway  bool
-	Metric   uint32
+	// GatewayIP — IPv4-адрес шлюза адаптера; пуст, если шлюза нет.
+	GatewayIP netip.Addr
+	Metric    uint32
+}
+
+// HostRoute — маршрут до одного IPv4-адреса через шлюз физического адаптера.
+// Он точнее маршрута по умолчанию, поэтому весь трафик к этому адресу идёт
+// мимо стороннего VPN, какой бы сокет его ни отправлял.
+type HostRoute struct {
+	Dest    netip.Addr
+	Gateway netip.Addr
+	IfIndex uint32
+	Metric  uint32
+}
+
+// NewHostRoute собирает маршрут до dest через адаптер a.
+func NewHostRoute(a Adapter, dest netip.Addr) (HostRoute, error) {
+	dest = dest.Unmap()
+	if !dest.Is4() || !a.GatewayIP.Is4() || a.Index == 0 {
+		return HostRoute{}, errors.New("маршрут в обход VPN: нужен IPv4-адрес и адаптер со шлюзом")
+	}
+	return HostRoute{Dest: dest, Gateway: a.GatewayIP, IfIndex: a.Index, Metric: a.Metric}, nil
 }
 
 // Route описывает, куда сейчас уходит трафик по умолчанию.
