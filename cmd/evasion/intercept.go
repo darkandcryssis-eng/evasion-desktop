@@ -306,7 +306,9 @@ func runIntercept(opts interceptOptions) error {
 		}
 	}
 	discordForce := false
-	if route := detectBypassRoute(logger); route.Tunnel && discordListen == "" {
+	route := detectBypassRoute(logger)
+	startDiscordSelfCheck(ctx, route, logger)
+	if route.Tunnel && discordListen == "" {
 		dp, err := startDiscordDirectProxy(ctx, route.Physical.Index, defaultDiscordTunnelListen, logger)
 		if err != nil {
 			logger.Error("прямой маршрут Discord мимо VPN недоступен", "err", err)
