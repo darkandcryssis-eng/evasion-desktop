@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/fitting-1c/evasion/internal/discordproxy"
 	"github.com/fitting-1c/evasion/internal/gameproxy"
@@ -133,16 +135,70 @@ func (p *discordDirectProxy) Close() {
 func detectBypassRoute(logger *slog.Logger) netbind.Route {
 	route, err := netbind.Detect()
 	if err != nil {
-		logger.Debug("маршрут по умолчанию не определён", "err", err)
+		logger.Warn("маршрут по умолчанию не определён, VPN не распознаётся", "err", err)
 		return netbind.Route{}
 	}
 	if !route.Tunnel {
+		logger.Info("маршрут по умолчанию: стороннего VPN нет",
+			"по_умолчанию", route.Default.Name, "физический", route.Physical.Name)
 		return route
 	}
 	windivert.SetExcludedInterface(route.Default.Index)
 	logger.Warn("обнаружен сторонний VPN: его интерфейс исключён из обхода",
 		"vpn", route.Default.Name, "адаптер", route.Physical.Name)
 	return route
+}
+
+// discordSelfCheckHosts — узлы, без которых клиент Discord не проходит запуск.
+var discordSelfCheckHosts = []string{"updates.discord.com", "discord.com", "gateway.discord.gg", "cdn.discordapp.com"}
+
+// startDiscordSelfCheck через несколько секунд после старта перехвата сам
+// проверяет TCP и TLS до узлов Discord и пишет итог в журнал: по маршруту по
+// умолчанию и, если он занят VPN, отдельно через физический адаптер. Журнал
+// тогда сам отвечает, где рвётся соединение, без ручных команд.
+func startDiscordSelfCheck(ctx context.Context, route netbind.Route, logger *slog.Logger) {
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+		paths := []struct {
+			name string
+			dial netbind.DialContextFunc
+		}{{"по умолчанию", (&net.Dialer{}).DialContext}}
+		if route.Tunnel {
+			paths = append(paths, struct {
+				name string
+				dial netbind.DialContextFunc
+			}{"мимо VPN", netbind.Dialer(route.Physical.Index)})
+		}
+		for _, path := range paths {
+			for _, host := range discordSelfCheckHosts {
+				logger.Info("самопроверка Discord", "узел", host, "маршрут", path.name, "итог", discordSelfCheck(ctx, path.dial, host))
+			}
+		}
+	}()
+}
+
+func discordSelfCheck(ctx context.Context, dial netbind.DialContextFunc, host string) string {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	start := time.Now()
+	conn, err := dial(ctx, "tcp4", net.JoinHostPort(host, "443"))
+	if err != nil {
+		return "TCP не установлен: " + err.Error()
+	}
+	defer conn.Close()
+	remote := conn.RemoteAddr().String()
+	tcpTime := time.Since(start).Milliseconds()
+	deadline, _ := ctx.Deadline()
+	_ = conn.SetDeadline(deadline)
+	tlsConn := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		return fmt.Sprintf("TLS сорван (%s, TCP %d мс): %v", remote, tcpTime, err)
+	}
+	return fmt.Sprintf("ok (%s, TCP %d мс, TLS %d мс)", remote, tcpTime, time.Since(start).Milliseconds())
 }
 
 func (t *discordTunnel) Close() {
