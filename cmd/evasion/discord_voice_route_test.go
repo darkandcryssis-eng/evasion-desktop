@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -9,23 +8,25 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fitting-1c/evasion/internal/capture"
-	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/netbind"
-	"github.com/fitting-1c/evasion/internal/packet"
-	"github.com/fitting-1c/evasion/internal/windivert"
 )
 
-func TestVoiceRouterAddsOnceSkipsFakeAndCleansUp(t *testing.T) {
+func TestVoiceRouterRoutesNetworkOnceLearnsAndCleansUp(t *testing.T) {
 	adapter := netbind.Adapter{Index: 7, Name: "Ethernet", GatewayIP: netip.MustParseAddr("192.168.0.1"), Metric: 25}
-	router := newVoiceRouter(adapter, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	router.journal = filepath.Join(t.TempDir(), "voice-routes.txt")
-	var added, removed []netbind.HostRoute
-	router.add = func(r netbind.HostRoute) error { added = append(added, r); return nil }
-	router.remove = func(r netbind.HostRoute) error { removed = append(removed, r); return nil }
+	dir := t.TempDir()
+	newRouter := func() (*voiceRouter, *[]netbind.HostRoute, *[]netbind.HostRoute) {
+		router := newVoiceRouter(adapter, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		router.journal = filepath.Join(dir, "voice-routes.txt")
+		router.learned = filepath.Join(dir, "voice-networks.txt")
+		var added, removed []netbind.HostRoute
+		router.add = func(r netbind.HostRoute) error { added = append(added, r); return nil }
+		router.remove = func(r netbind.HostRoute) error { removed = append(removed, r); return nil }
+		return router, &added, &removed
+	}
+	router, added, removed := newRouter()
 
-	server := netip.MustParseAddr("66.22.197.10")
-	if !router.Route(server) || !router.Route(server) {
+	// Два сервера одной сети — один маршрут на всю /24.
+	if !router.Route(netip.MustParseAddr("104.29.136.176")) || !router.Route(netip.MustParseAddr("104.29.136.216")) {
 		t.Fatal("маршрут до голосового сервера должен стоять")
 	}
 	for _, bad := range []string{"198.18.0.42", "10.0.0.5", "127.0.0.1"} {
@@ -33,24 +34,34 @@ func TestVoiceRouterAddsOnceSkipsFakeAndCleansUp(t *testing.T) {
 			t.Fatalf("маршрут на служебный адрес %s", bad)
 		}
 	}
-	want := netbind.HostRoute{Dest: server, Gateway: adapter.GatewayIP, IfIndex: 7, Metric: 25}
-	if len(added) != 1 || added[0] != want {
-		t.Fatalf("поставлено %v, ожидался один маршрут %v", added, want)
+	want := netbind.HostRoute{Dest: netip.MustParsePrefix("104.29.136.0/24"), Gateway: adapter.GatewayIP, IfIndex: 7, Metric: 25}
+	if len(*added) != 1 || (*added)[0] != want {
+		t.Fatalf("поставлено %v, ожидался один маршрут %v", *added, want)
 	}
-	// Движок убит: следующий запуск снимает маршрут по журналу.
-	removed = nil
-	router.removeStale()
-	if len(removed) != 1 || removed[0] != want {
-		t.Fatalf("по журналу снято %v", removed)
+	if got := want.Mask().String(); got != "255.255.255.0" {
+		t.Fatalf("маска %s", got)
 	}
-	if _, err := os.Stat(router.journal); !os.IsNotExist(err) {
+
+	// Движок убит: следующий запуск снимает маршрут по журналу, а известную
+	// сеть ставит заранее, до первого пакета голоса.
+	next, nextAdded, nextRemoved := newRouter()
+	next.removeStale()
+	if len(*nextRemoved) != 1 || (*nextRemoved)[0] != want {
+		t.Fatalf("по журналу снято %v", *nextRemoved)
+	}
+	next.Preload()
+	if len(*nextAdded) != 1 || (*nextAdded)[0] != want {
+		t.Fatalf("заранее поставлено %v", *nextAdded)
+	}
+	*nextRemoved = nil
+	next.Close()
+	if len(*nextRemoved) != 1 || (*nextRemoved)[0] != want {
+		t.Fatalf("при остановке снято %v", *nextRemoved)
+	}
+	if _, err := os.Stat(next.journal); !os.IsNotExist(err) {
 		t.Fatalf("журнал маршрутов должен быть удалён: %v", err)
 	}
-	removed = nil
-	router.Close()
-	if len(removed) != 1 || removed[0] != want {
-		t.Fatalf("снято %v", removed)
-	}
+	_ = removed
 }
 
 func TestParseVoiceDiscovery(t *testing.T) {
@@ -98,40 +109,5 @@ func TestIsDiscordVoiceHost(t *testing.T) {
 		if got := isDiscordVoiceHost(host); got != want {
 			t.Errorf("%s: %v", host, got)
 		}
-	}
-}
-
-func TestRedirectVoiceDiscoveryRewritesSourceAndKeepsRequestLast(t *testing.T) {
-	payload := make([]byte, 74)
-	payload[1], payload[3] = 1, 70
-	raw := udpPacketV4(netip.MustParseAddrPort("172.19.0.1:50555"), netip.MustParseAddrPort("104.29.153.203:19304"), payload)
-	d, err := packet.Dissect(raw)
-	if err != nil || !d.RecomputeChecksums(raw) {
-		t.Fatalf("шаблон: %v", err)
-	}
-	var tunnel windivert.Address
-	tunnel = tunnel.WithInterface(31)
-	physical := netbind.Adapter{Index: 7, Addr: netip.MustParseAddr("192.168.0.180")}
-	out := redirectVoiceDiscovery(capture.Packet{Data: raw, Dir: core.DirectionOutbound, Reinject: tunnel}, physical)
-	if len(out) != 3*voiceDecoyRepeats+1 {
-		t.Fatalf("пакетов %d, ожидалось %d", len(out), 3*voiceDecoyRepeats+1)
-	}
-	last := out[len(out)-1]
-	event, ok := parseVoiceDiscovery(last.Data)
-	if !ok || event.response || event.src.String() != "192.168.0.180:50555" || event.dst.String() != "104.29.153.203:19304" {
-		t.Fatalf("настоящий запрос должен идти последним от адреса адаптера: %+v ok=%v", event, ok)
-	}
-	fixed := append([]byte(nil), last.Data...)
-	ld, _ := packet.Dissect(last.Data)
-	if !ld.RecomputeChecksums(fixed) || !bytes.Equal(fixed, last.Data) {
-		t.Fatal("суммы перенаправленного запроса неверны")
-	}
-	for i, p := range out {
-		if addr := p.Reinject.(windivert.Address); addr.IfIdx() != 7 {
-			t.Fatalf("пакет %d уйдёт не через физический адаптер: ifIdx=%d", i, addr.IfIdx())
-		}
-	}
-	if got := redirectVoiceDiscovery(capture.Packet{Data: raw, Dir: core.DirectionOutbound, Reinject: tunnel}, netbind.Adapter{Index: 7}); got != nil {
-		t.Fatal("без адреса адаптера перенаправлять нельзя")
 	}
 }

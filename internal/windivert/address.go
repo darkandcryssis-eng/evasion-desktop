@@ -30,14 +30,6 @@ const (
 // пропустить (входящие).
 func (a Address) Outbound() bool { return a[flagsOffset]&flagOutbound != 0 }
 
-// WithInterface возвращает адрес с другим сетевым интерфейсом (подынтерфейс 0):
-// пакет, отправленный с таким адресом, уходит через заданный интерфейс.
-func (a Address) WithInterface(ifIdx uint32) Address {
-	a[16], a[17], a[18], a[19] = byte(ifIdx), byte(ifIdx>>8), byte(ifIdx>>16), byte(ifIdx>>24)
-	a[20], a[21], a[22], a[23] = 0, 0, 0, 0
-	return a
-}
-
 // IfIdx — индекс сетевого интерфейса пакета (слой Network: первое поле
 // объединения данных, сразу за 16-байтовым заголовком адреса).
 func (a Address) IfIdx() uint32 {

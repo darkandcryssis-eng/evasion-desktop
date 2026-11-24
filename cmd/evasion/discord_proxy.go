@@ -129,6 +129,7 @@ func startDiscordDirectProxy(parent context.Context, route netbind.Route, listen
 		Logger:  logger,
 	}
 	voice := newVoiceRouter(route.Physical, logger)
+	voice.Preload()
 	stopVoice := startVoiceObserver(ctx, route, voice, func() int {
 		return server.Drop(isDiscordVoiceHost)
 	}, logger)

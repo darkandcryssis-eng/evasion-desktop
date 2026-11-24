@@ -25,28 +25,36 @@ type Adapter struct {
 	Gateway  bool
 	// GatewayIP — IPv4-адрес шлюза адаптера; пуст, если шлюза нет.
 	GatewayIP netip.Addr
-	// Addr — первый IPv4-адрес самого адаптера; пуст, если его нет.
-	Addr   netip.Addr
-	Metric uint32
+	Metric    uint32
 }
 
-// HostRoute — маршрут до одного IPv4-адреса через шлюз физического адаптера.
-// Он точнее маршрута по умолчанию, поэтому весь трафик к этому адресу идёт
+// HostRoute — маршрут до IPv4-адреса или небольшой сети через шлюз физического
+// адаптера. Он точнее маршрута по умолчанию, поэтому весь трафик туда идёт
 // мимо стороннего VPN, какой бы сокет его ни отправлял.
 type HostRoute struct {
-	Dest    netip.Addr
+	// Dest — адрес или сеть назначения (IPv4).
+	Dest    netip.Prefix
 	Gateway netip.Addr
 	IfIndex uint32
 	Metric  uint32
 }
 
 // NewHostRoute собирает маршрут до dest через адаптер a.
-func NewHostRoute(a Adapter, dest netip.Addr) (HostRoute, error) {
-	dest = dest.Unmap()
-	if !dest.Is4() || !a.GatewayIP.Is4() || a.Index == 0 {
-		return HostRoute{}, errors.New("маршрут в обход VPN: нужен IPv4-адрес и адаптер со шлюзом")
+func NewHostRoute(a Adapter, dest netip.Prefix) (HostRoute, error) {
+	dest = dest.Masked()
+	if !dest.IsValid() || !dest.Addr().Is4() || dest.Bits() < 16 || !a.GatewayIP.Is4() || a.Index == 0 {
+		return HostRoute{}, errors.New("маршрут в обход VPN: нужна IPv4-сеть не шире /16 и адаптер со шлюзом")
 	}
 	return HostRoute{Dest: dest, Gateway: a.GatewayIP, IfIndex: a.Index, Metric: a.Metric}, nil
+}
+
+// Mask — маска сети назначения в виде адреса (255.255.255.0 для /24).
+func (r HostRoute) Mask() netip.Addr {
+	var mask [4]byte
+	for i := 0; i < r.Dest.Bits() && i < 32; i++ {
+		mask[i/8] |= 0x80 >> (i % 8)
+	}
+	return netip.AddrFrom4(mask)
 }
 
 // Route описывает, куда сейчас уходит трафик по умолчанию.
