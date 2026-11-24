@@ -120,8 +120,9 @@ func sameEngineImage(actual, expected string) bool {
 }
 
 // restartDiscord закрывает Discord и запускает последнюю установленную версию
-// с выключенным DoH. Резервный прокси используется только при нерабочем прямом API.
-func restartDiscord(proxyAddress string) (discordStartResult, error) {
+// с выключенным DoH. Прокси используется при нерабочем прямом API либо всегда,
+// если force: маршрут по умолчанию занят сторонним VPN, прокси ведёт мимо него.
+func restartDiscord(proxyAddress string, force bool) (discordStartResult, error) {
 	root := filepath.Join(os.Getenv("LOCALAPPDATA"), "Discord")
 	dirs, _ := filepath.Glob(filepath.Join(root, "app-*"))
 	var candidates []string
@@ -137,7 +138,7 @@ func restartDiscord(proxyAddress string) (discordStartResult, error) {
 		return versionLess(filepath.Base(candidates[j]), filepath.Base(candidates[i]))
 	})
 	dir := candidates[0]
-	useTunnel := proxyAddress != "" && !discordDirectHealthy()
+	useTunnel := proxyAddress != "" && (force || !discordDirectHealthy())
 	args := []string{"--disable-features=DnsOverHttps"}
 	if useTunnel {
 		args = append(args, "--proxy-server=http://"+proxyAddress)

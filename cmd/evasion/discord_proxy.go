@@ -15,6 +15,8 @@ import (
 
 	"github.com/fitting-1c/evasion/internal/discordproxy"
 	"github.com/fitting-1c/evasion/internal/gameproxy"
+	"github.com/fitting-1c/evasion/internal/netbind"
+	"github.com/fitting-1c/evasion/internal/windivert"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -92,6 +94,55 @@ func startDiscordTunnel(parent context.Context, profile, xray, listen string, lo
 		}
 	}()
 	return t, nil
+}
+
+// discordDirectProxy — loopback CONNECT-прокси Discord, чьи исходящие
+// соединения привязаны к физическому адаптеру. Поднимается, когда маршрут по
+// умолчанию занят сторонним VPN: Discord идёт мимо туннеля и под десинк.
+type discordDirectProxy struct {
+	Listen string
+	cancel context.CancelFunc
+	done   chan struct{}
+	once   sync.Once
+}
+
+func startDiscordDirectProxy(parent context.Context, ifIndex uint32, listen string, logger *slog.Logger) (*discordDirectProxy, error) {
+	ln, err := net.Listen("tcp4", listen)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось открыть локальный прокси Discord: %w", err)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	p := &discordDirectProxy{Listen: ln.Addr().String(), cancel: cancel, done: make(chan struct{})}
+	server := &discordproxy.Server{Dial: discordproxy.DialContextFunc(netbind.Dialer(ifIndex)), Logger: logger}
+	go func() {
+		_ = server.Serve(ctx, ln)
+		close(p.done)
+	}()
+	return p, nil
+}
+
+func (p *discordDirectProxy) Close() {
+	p.once.Do(func() {
+		p.cancel()
+		<-p.done
+	})
+}
+
+// detectBypassRoute ищет сторонний VPN на маршруте по умолчанию и выводит его
+// интерфейс из-под перехвата: внутри туннеля десинк бесполезен и вреден.
+func detectBypassRoute(logger *slog.Logger) netbind.Route {
+	route, err := netbind.Detect()
+	if err != nil {
+		logger.Debug("маршрут по умолчанию не определён", "err", err)
+		return netbind.Route{}
+	}
+	if !route.Tunnel {
+		return route
+	}
+	windivert.SetExcludedInterface(route.Default.Index)
+	logger.Warn("обнаружен сторонний VPN: его интерфейс исключён из обхода",
+		"vpn", route.Default.Name, "адаптер", route.Physical.Name)
+	return route
 }
 
 func (t *discordTunnel) Close() {
