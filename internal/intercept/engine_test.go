@@ -1338,3 +1338,34 @@ func TestRunWaitsForDelayedWorkerOnCancellation(t *testing.T) {
 		t.Fatal("Run returned before worker completion")
 	}
 }
+
+func TestStallAfterHandshakeReportsFailureOnce(t *testing.T) {
+	seq := uint32(1000)
+	appData := []byte{0x17, 0x03, 0x03, 0x00, 0x08, 1, 2, 3, 4, 5, 6, 7, 8}
+	dataSeq := seq + uint32(len(helloPayload))
+	packets := []capture.Packet{packetV4Seq(t, helloPayload, core.DirectionOutbound, 50000, seq)}
+	for i := 0; i < 5; i++ {
+		packets = append(packets, packetV4Seq(t, appData, core.DirectionOutbound, 50000, dataSeq))
+	}
+	sink := &capture.SyntheticSink{}
+	provider := &failureRecordingProvider{StrategyProvider: fakeProvider{
+		matchSNI: "youtube.com",
+		sel:      proxy.Selection{Strategy: fragStrategy(5), ID: core.StrategyID("sid1"), Target: "youtube.com"},
+	}}
+	engine := buildEngine(t, capture.NewSyntheticSource(packets...), sink, fixedParser("youtube.com"), provider)
+	if err := engine.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(provider.failures) != 1 || provider.failures[0] != (reportedFailure{sni: "youtube.com", id: "sid1"}) {
+		t.Fatalf("ReportFailure calls = %v", provider.failures)
+	}
+	passed := 0
+	for _, sent := range sink.Sent() {
+		if bytes.Equal(sent.Data, packets[1].Data) {
+			passed++
+		}
+	}
+	if passed != 5 {
+		t.Fatalf("сегменты с данными должны пройти без изменений: %d из 5", passed)
+	}
+}
