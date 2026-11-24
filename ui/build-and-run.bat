@@ -93,9 +93,17 @@ powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '%WD_URL%' -OutFile
 if errorlevel 1 (echo [ошибка] не удалось скачать WinDivert & exit /b 1)
 powershell -NoProfile -Command "Expand-Archive -Force '%WD_ZIP%' '%WD_DIR%'"
 if errorlevel 1 (echo [ошибка] не удалось распаковать WinDivert & exit /b 1)
-REM В архиве файлы лежат во вложенной папке WinDivert-<версия>-A.
+REM В архиве файлы лежат во вложенной папке WinDivert-2.2.2-A.
 if not exist "%WD_DIR%\x64\WinDivert.dll" set "WD_DIR=%WD_DIR%\WinDivert-%WINDIVERT_VER%-A"
-call :check_sha
+call :check_sha "%WD_DIR%\x64\WinDivert.dll"   "%WINDIVERT_DLL_SHA%" || exit /b 1
+call :check_sha "%WD_DIR%\x64\WinDivert64.sys" "%WINDIVERT_SYS_SHA%" || exit /b 1
+copy /y "%WD_DIR%\x64\WinDivert.dll"   "%PAYLOAD%\WinDivert.dll"   >nul
+copy /y "%WD_DIR%\x64\WinDivert64.sys" "%PAYLOAD%\WinDivert64.sys" >nul
+if exist "%WD_DIR%\LICENSE" copy /y "%WD_DIR%\LICENSE" "%PAYLOAD%\WinDivert-LICENSE.txt" >nul
+echo     WinDivert проверен и скопирован.
+exit /b 0
+
+:check_sha
 if not exist "%~1" (echo [ошибка] не найден файл %~1 & exit /b 1)
 set "GOT="
 for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath '%~1').Hash"`) do set "GOT=%%H"
