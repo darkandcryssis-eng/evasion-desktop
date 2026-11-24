@@ -122,3 +122,49 @@ func echoServer(t *testing.T) string {
 	t.Cleanup(func() { ln.Close() })
 	return strings.TrimSpace(ln.Addr().String())
 }
+
+func TestPassthroughForOtherServices(t *testing.T) {
+	echo := echoServer(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var direct, through string
+	server := &Server{
+		Dial: func(_ context.Context, _, address string) (net.Conn, error) {
+			direct = address
+			return net.Dial("tcp", echo)
+		},
+		Passthrough: func(_ context.Context, _, address string) (net.Conn, error) {
+			through = address
+			return net.Dial("tcp", echo)
+		},
+	}
+	go func() { _ = server.Serve(ctx, ln) }()
+
+	status := func(target string) int {
+		conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		return response.StatusCode
+	}
+	if got := status("hcaptcha.com:443"); got != http.StatusOK || through != "hcaptcha.com:443" || direct != "" {
+		t.Fatalf("сторонний узел: status=%d through=%q direct=%q", got, through, direct)
+	}
+	if got := status("example.com:25"); got != http.StatusForbidden {
+		t.Fatalf("чужой порт пропущен: %d", got)
+	}
+	if got := status("discord.com:443"); got != http.StatusOK || direct != "discord.com:443" {
+		t.Fatalf("узел Discord: status=%d direct=%q", got, direct)
+	}
+}

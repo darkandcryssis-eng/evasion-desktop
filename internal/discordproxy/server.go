@@ -18,9 +18,14 @@ import (
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 
 type Server struct {
-	Dial   DialContextFunc
-	Logger *slog.Logger
-	wg     sync.WaitGroup
+	Dial DialContextFunc
+	// Passthrough, если задан, обслуживает адреса вне Discord (порт 443)
+	// вместо отказа. Нужен, когда клиент Discord целиком заведён на прокси:
+	// сторонние узлы (капча, вложения, встраиваемые плееры) идут обычным
+	// маршрутом, а не обрываются.
+	Passthrough DialContextFunc
+	Logger      *slog.Logger
+	wg          sync.WaitGroup
 }
 
 func AllowedHost(host string) bool {
@@ -96,17 +101,23 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		writeError(client, http.StatusMethodNotAllowed)
 		return
 	}
-	target, err := allowedTarget(req.Host)
-	if err != nil {
-		writeError(client, http.StatusForbidden)
-		return
-	}
 	dial := s.Dial
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext
 	}
+	target, err := allowedTarget(req.Host)
+	if err != nil {
+		target, err = passthroughTarget(req.Host)
+		if err != nil || s.Passthrough == nil {
+			s.warn("прокси Discord: адрес отклонён", "адрес", req.Host)
+			writeError(client, http.StatusForbidden)
+			return
+		}
+		dial = s.Passthrough
+	}
 	upstream, err := dial(ctx, "tcp", target)
 	if err != nil {
+		s.warn("прокси Discord: соединение не установлено", "адрес", target, "err", err)
 		writeError(client, http.StatusBadGateway)
 		return
 	}
@@ -130,6 +141,21 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
+}
+
+func (s *Server) warn(msg string, args ...any) {
+	if s.Logger != nil {
+		s.Logger.Warn(msg, args...)
+	}
+}
+
+// passthroughTarget допускает любой узел, но только по HTTPS-порту.
+func passthroughTarget(address string) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host == "" || port != "443" {
+		return "", fmt.Errorf("адрес не подходит для сквозного соединения")
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 func writeError(w io.Writer, status int) {
