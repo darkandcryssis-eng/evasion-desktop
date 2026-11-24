@@ -29,6 +29,11 @@ type Server struct {
 	// Reroute, если задан и вернул true, ведёт узел Discord через Passthrough:
 	// так вызывающий переводит узел на другой маршрут, когда прямой не работает.
 	Reroute func(host string) bool
+	// NoReply, если больше нуля, обрывает соединение, на которое клиент уже
+	// отправил данные, а узел за это время не ответил ни байтом. Клиент
+	// подключается заново сразу, а не через свой долгий тайм-аут, и движок
+	// успевает сменить стратегию.
+	NoReply time.Duration
 	Logger  *slog.Logger
 	wg      sync.WaitGroup
 
@@ -284,6 +289,17 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 			}
 		})
 	}()
+
+	if s.NoReply > 0 {
+		watch := time.AfterFunc(s.NoReply, func() {
+			if up.Load() > 0 && down.Load() == 0 {
+				s.warn("прокси Discord: узел не ответил, соединение оборвано для повтора", "узел", host, "ждали_мс", s.NoReply.Milliseconds())
+				_ = upstream.Close()
+				_ = client.Close()
+			}
+		})
+		defer watch.Stop()
+	}
 
 	done := make(chan struct{})
 	go func() {

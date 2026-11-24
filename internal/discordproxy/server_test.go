@@ -248,3 +248,46 @@ func TestRerouteSendsDiscordHostThroughPassthrough(t *testing.T) {
 		t.Fatalf("through=%q direct=%q", through, direct)
 	}
 }
+
+func TestNoReplyDropsSilentUpstream(t *testing.T) {
+	upstream, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		for {
+			c, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(io.Discard, c) }()
+		}
+	}()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &Server{NoReply: 100 * time.Millisecond, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Addr().String())
+	}}
+	go func() { _ = s.Serve(ctx, ln) }()
+	c, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = io.WriteString(c, "CONNECT discord.com:443 HTTP/1.1\r\nHost: discord.com:443\r\n\r\n")
+	buf := make([]byte, 64)
+	if _, err = c.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Write([]byte("hello"))
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	start := time.Now()
+	if _, err = c.Read(buf); err == nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("silent upstream not dropped: err=%v after %v", err, time.Since(start))
+	}
+}
