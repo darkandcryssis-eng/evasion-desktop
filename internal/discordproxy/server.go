@@ -292,13 +292,13 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		})
 	}()
 
-	var flight atomic.Int64 // сколько узел прислал к первому ответному слову клиента; -1 — клиент ещё не отвечал
-	flight.Store(-1)
-	var lastUp atomic.Int64
+	var lastUp, connDown, discard atomic.Int64
+	var finished atomic.Bool // клиент отправил первую запись с данными приложения
+	records := &tlsRecords{done: &finished}
 	if s.NoReply > 0 {
 		watchCtx, stopWatch := context.WithCancel(ctx)
 		defer stopWatch()
-		go s.watch(watchCtx, host, &up, &down, &flight, &lastUp, func() {
+		go s.watch(watchCtx, host, &up, &down, &lastUp, &connDown, &finished, func() {
 			_ = upstream.Close()
 			_ = client.Close()
 		})
@@ -306,28 +306,64 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(clientReply{countingWriter{upstream, &up, &stats.up, &lastUp}, &down, &flight}, reader)
+		_, _ = io.Copy(clientReply{countingWriter{upstream, &up, &stats.up, &lastUp}, records}, reader)
 		_ = upstream.Close()
 		_ = client.Close()
 		close(done)
 	}()
-	_, _ = io.Copy(countingWriter{client, &down, &stats.down, &stats.lastDown}, upstream)
+	_, _ = io.Copy(countingWriter{countingWriter{client, &down, &stats.down, &stats.lastDown}, &discard, &discard, &connDown}, upstream)
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
 }
 
-// clientReply запоминает, сколько узел успел прислать к моменту, когда клиент
-// впервые ответил на его данные: это размер серверной части рукопожатия.
+// tlsRecords следит за границами записей TLS в потоке клиента и отмечает
+// первую запись с данными приложения (тип 23). В TLS 1.3 ею уходит уже
+// зашифрованное завершение рукопожатия, в TLS 1.2 — первый запрос: в обоих
+// случаях рукопожатие со стороны клиента пройдено.
+type tlsRecords struct {
+	done   *atomic.Bool
+	header [5]byte
+	have   int
+	skip   int
+	broken bool
+}
+
+func (t *tlsRecords) feed(p []byte) {
+	for len(p) > 0 && !t.broken && !t.done.Load() {
+		if t.skip > 0 {
+			n := min(t.skip, len(p))
+			t.skip -= n
+			p = p[n:]
+			continue
+		}
+		n := copy(t.header[t.have:], p)
+		t.have += n
+		p = p[n:]
+		if t.have < len(t.header) {
+			return
+		}
+		t.have = 0
+		switch t.header[0] {
+		case 23:
+			t.done.Store(true)
+		case 20, 21, 22:
+			t.skip = int(t.header[3])<<8 | int(t.header[4])
+		default:
+			// Не TLS: судить о рукопожатии не по чему, наблюдение снимается.
+			t.broken = true
+			t.done.Store(true)
+		}
+	}
+}
+
 type clientReply struct {
 	countingWriter
-	down, flight *atomic.Int64
+	records *tlsRecords
 }
 
 func (c clientReply) Write(p []byte) (int, error) {
-	if got := c.down.Load(); got > 0 {
-		c.flight.CompareAndSwap(-1, got)
-	}
+	c.records.feed(p)
 	return c.countingWriter.Write(p)
 }
 
@@ -335,12 +371,11 @@ func (c clientReply) Write(p []byte) (int, error) {
 // обмена либо проходит за это время, либо уже не пройдёт.
 const stallChecks = 6
 
-// watch обрывает соединение, застрявшее в начале обмена: узел не ответил на
-// первый пакет клиента либо прислал свою часть рукопожатия и после ответа
-// клиента на неё не прислал больше ничего. Живой узел на завершение
-// рукопожатия отвечает сразу (билеты сеанса, настройки, ответ на запрос),
-// поэтому такая тишина означает ответ, замороженный по дороге.
-func (s *Server) watch(ctx context.Context, host string, up, down, flight, lastUp *atomic.Int64, drop func()) {
+// watch обрывает соединение, застрявшее в рукопожатии TLS: узел не ответил на
+// приветствие клиента либо начал отвечать и замолчал, так и не дав клиенту
+// завершить рукопожатие. Так выглядит ответ, замороженный по дороге: живой
+// узел отправляет всю свою часть рукопожатия разом.
+func (s *Server) watch(ctx context.Context, host string, up, down, lastUp, lastDown *atomic.Int64, finished *atomic.Bool, drop func()) {
 	ticker := time.NewTicker(s.NoReply / 2)
 	defer ticker.Stop()
 	for range stallChecks * 2 {
@@ -349,16 +384,20 @@ func (s *Server) watch(ctx context.Context, host string, up, down, flight, lastU
 			return
 		case <-ticker.C:
 		}
-		sent, got, replied := up.Load(), down.Load(), flight.Load()
-		if replied >= 0 && got > replied {
+		if finished.Load() {
 			return
 		}
-		if sent == 0 || (got > 0 && replied < 0) || time.Since(time.Unix(0, lastUp.Load())) < s.NoReply {
+		sent, got := up.Load(), down.Load()
+		reason := ""
+		switch {
+		case sent == 0:
 			continue
-		}
-		reason := "узел не ответил"
-		if got > 0 {
-			reason = "узел замолчал после рукопожатия"
+		case got == 0 && time.Since(time.Unix(0, lastUp.Load())) >= s.NoReply:
+			reason = "узел не ответил"
+		case got > 0 && time.Since(time.Unix(0, lastDown.Load())) >= s.NoReply:
+			reason = "ответ узла оборвался посреди рукопожатия"
+		default:
+			continue
 		}
 		s.warn("прокси Discord: соединение оборвано для повтора", "узел", host, "причина", reason, "отправлено", sent, "получено", got)
 		if s.OnStall != nil {

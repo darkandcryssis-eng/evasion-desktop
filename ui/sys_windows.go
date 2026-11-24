@@ -152,6 +152,11 @@ func restartDiscord(proxyAddress string, force bool) (discordStartResult, error)
 
 	cmd := exec.Command(filepath.Join(dir, "Discord.exe"), args...)
 	cmd.Dir = dir
+	if useTunnel {
+		// Модуль обновления Discord ходит в сеть своим стеком и ключ
+		// --proxy-server не видит; прокси ему передаётся через окружение.
+		cmd.Env = append(os.Environ(), "HTTPS_PROXY=http://"+proxyAddress, "https_proxy=http://"+proxyAddress)
+	}
 	if err := cmd.Start(); err != nil {
 		return discordStartResult{}, fmt.Errorf("не удалось запустить Discord: %w", err)
 	}
