@@ -524,3 +524,107 @@ func TestUnansweredRequestIsDropped(t *testing.T) {
 		t.Fatal("unanswered request not reported")
 	}
 }
+
+func TestRecordCutMarksPartialRecord(t *testing.T) {
+	var partial atomic.Bool
+	cut := &recordCut{partial: &partial}
+	cut.feed([]byte("\x17\x03\x03\x00\x04ab"))
+	if !partial.Load() {
+		t.Fatal("запись получена не целиком, а поток не помечен")
+	}
+	cut.feed([]byte("cd"))
+	if partial.Load() {
+		t.Fatal("запись получена целиком, а поток помечен")
+	}
+	cut.feed([]byte("\x17\x03"))
+	if !partial.Load() {
+		t.Fatal("заголовок записи оборван, а поток не помечен")
+	}
+	cut.feed([]byte("\x03\x00\x01x"))
+	if partial.Load() {
+		t.Fatal("после целой записи поток помечен")
+	}
+	cut.feed([]byte("plain text"))
+	if partial.Load() {
+		t.Fatal("поток не TLS должен сниматься с наблюдения")
+	}
+}
+
+// Узел завершает обмен как положено, а затем присылает начало большой записи
+// и замолкает: соединение обязано быть оборвано, сколько бы оно ни прожило.
+func TestResponseFrozenMidRecordIsDropped(t *testing.T) {
+	upstream, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		for {
+			c, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				buf := make([]byte, 64)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("\x17\x03\x03\x00\x02ok"))
+				_, _ = c.Read(buf)
+				if string(buf[:4]) == "cut!" {
+					_, _ = c.Write([]byte("\x17\x03\x03\x40\x00start of a long record"))
+				} else {
+					_, _ = c.Write([]byte("\x17\x03\x03\x00\x04done"))
+				}
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stalled := make(chan string, 2)
+	s := &Server{NoReply: 100 * time.Millisecond, OnStall: func(host string) { stalled <- host }, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Addr().String())
+	}}
+	go func() { _ = s.Serve(ctx, ln) }()
+	open := func(second string) net.Conn {
+		c, err := net.Dial("tcp4", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(c, "CONNECT gateway.discord.gg:443 HTTP/1.1\r\nHost: gateway.discord.gg:443\r\n\r\n")
+		buf := make([]byte, 64)
+		if _, err = io.ReadFull(c, buf[:39]); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write([]byte("\x17\x03\x03\x00\x05hello"))
+		if _, err = io.ReadFull(c, buf[:7]); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write([]byte(second))
+		return c
+	}
+	healthy := open("fine")
+	defer healthy.Close()
+	frozen := open("cut!")
+	defer frozen.Close()
+	select {
+	case host := <-stalled:
+		if host != "gateway.discord.gg" {
+			t.Fatalf("оборван узел %q", host)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("соединение с ответом, замершим посреди записи, не оборвано")
+	}
+	_ = frozen.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.Copy(io.Discard, frozen); err != nil {
+		t.Fatalf("замёрзшее соединение не закрыто: %v", err)
+	}
+	select {
+	case host := <-stalled:
+		t.Fatalf("оборвано и живое соединение %q", host)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
