@@ -294,11 +294,12 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 
 	var lastUp, connDown, discard atomic.Int64
 	var finished atomic.Bool // клиент отправил первую запись с данными приложения
-	records := &tlsRecords{done: &finished}
+	var flight atomic.Int64  // сколько узел прислал к моменту, когда клиент завершил рукопожатие
+	records := &tlsRecords{done: &finished, down: &down, flight: &flight}
 	if s.NoReply > 0 {
 		watchCtx, stopWatch := context.WithCancel(ctx)
 		defer stopWatch()
-		go s.watch(watchCtx, host, &up, &down, &lastUp, &connDown, &finished, func() {
+		go s.watch(watchCtx, host, &up, &down, &lastUp, &connDown, &flight, &finished, func() {
 			_ = upstream.Close()
 			_ = client.Close()
 		})
@@ -323,6 +324,8 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 // случаях рукопожатие со стороны клиента пройдено.
 type tlsRecords struct {
 	done   *atomic.Bool
+	down   *atomic.Int64
+	flight *atomic.Int64
 	header [5]byte
 	have   int
 	skip   int
@@ -346,13 +349,13 @@ func (t *tlsRecords) feed(p []byte) {
 		t.have = 0
 		switch t.header[0] {
 		case 23:
+			t.flight.Store(t.down.Load())
 			t.done.Store(true)
 		case 20, 21, 22:
 			t.skip = int(t.header[3])<<8 | int(t.header[4])
 		default:
 			// Не TLS: судить о рукопожатии не по чему, наблюдение снимается.
 			t.broken = true
-			t.done.Store(true)
 		}
 	}
 }
@@ -371,11 +374,15 @@ func (c clientReply) Write(p []byte) (int, error) {
 // обмена либо проходит за это время, либо уже не пройдёт.
 const stallChecks = 6
 
-// watch обрывает соединение, застрявшее в рукопожатии TLS: узел не ответил на
-// приветствие клиента либо начал отвечать и замолчал, так и не дав клиенту
-// завершить рукопожатие. Так выглядит ответ, замороженный по дороге: живой
-// узел отправляет всю свою часть рукопожатия разом.
-func (s *Server) watch(ctx context.Context, host string, up, down, lastUp, lastDown *atomic.Int64, finished *atomic.Bool, drop func()) {
+// watch обрывает соединение, застрявшее в начале обмена TLS:
+//   - узел не ответил на приветствие клиента;
+//   - узел начал отвечать и замолчал, не дав клиенту завершить рукопожатие;
+//   - клиент завершил рукопожатие, а узел после этого не прислал ни байта.
+//
+// Живой узел присылает свою часть рукопожатия разом, а на его завершение
+// сразу отвечает билетами сеанса и настройками HTTP/2, поэтому тишина в любой
+// из этих точек означает обмен, замороженный по дороге.
+func (s *Server) watch(ctx context.Context, host string, up, down, lastUp, lastDown, flight *atomic.Int64, finished *atomic.Bool, drop func()) {
 	ticker := time.NewTicker(s.NoReply / 2)
 	defer ticker.Stop()
 	for range stallChecks * 2 {
@@ -384,17 +391,20 @@ func (s *Server) watch(ctx context.Context, host string, up, down, lastUp, lastD
 			return
 		case <-ticker.C:
 		}
-		if finished.Load() {
-			return
-		}
 		sent, got := up.Load(), down.Load()
+		if sent == 0 || time.Since(time.Unix(0, lastUp.Load())) < s.NoReply {
+			continue
+		}
 		reason := ""
 		switch {
-		case sent == 0:
-			continue
-		case got == 0 && time.Since(time.Unix(0, lastUp.Load())) >= s.NoReply:
+		case got == 0:
 			reason = "узел не ответил"
-		case got > 0 && time.Since(time.Unix(0, lastDown.Load())) >= s.NoReply:
+		case finished.Load():
+			if got > flight.Load() {
+				return
+			}
+			reason = "узел молчит после рукопожатия"
+		case time.Since(time.Unix(0, lastDown.Load())) >= s.NoReply:
 			reason = "ответ узла оборвался посреди рукопожатия"
 		default:
 			continue
