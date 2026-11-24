@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"sync"
@@ -98,8 +99,56 @@ func startVoiceObserver(ctx context.Context, route netbind.Route, router *voiceR
 				logged++
 				logger.Info("голос Discord: IP discovery", "что", kind, "интерфейс", via, "откуда", event.src, "куда", event.dst)
 			}
-			if !event.response && addr.Outbound() && ifIndex == route.Default.Index {
-				router.Route(event.dst.Addr())
+		}
+	}()
+	stopGate := startVoiceGate(ctx, route, router, logger)
+	return func() {
+		stopGate()
+		stopWatch()
+		closeHandle()
+		<-done
+	}
+}
+
+// voiceGatePriority ставит заслон раньше остальных обработчиков движка.
+const voiceGatePriority = 1000
+
+// startVoiceGate перехватывает запросы IP discovery, уходящие в туннель VPN.
+// На адрес голосового сервера ставится маршрут мимо VPN, а сам запрос
+// отбрасывается: ответ через туннель сообщил бы клиенту внешний адрес
+// VPN-сервера, и голос, который дальше пойдёт уже мимо туннеля, пришёл бы к
+// серверу с другого адреса и был бы отвергнут. Клиент повторяет запрос, и
+// повтор уходит через физический адаптер — весь сеанс идёт одним путём.
+// Если маршрут поставить не удалось, запрос пропускается как есть.
+func startVoiceGate(ctx context.Context, route netbind.Route, router *voiceRouter, logger *slog.Logger) func() {
+	filter := fmt.Sprintf("outbound and udp and ifIdx == %d and udp.PayloadLength == 74 and "+
+		"udp.Payload16[0] == 0x0001 and udp.Payload16[1] == 70 and not impostor", route.Default.Index)
+	handle, err := windivert.OpenPriority(filter, voiceGatePriority)
+	if err != nil {
+		logger.Warn("голос Discord: заслон в туннеле недоступен, голос останется в VPN", "err", err)
+		return func() {}
+	}
+	var once sync.Once
+	closeHandle := func() { once.Do(func() { _ = handle.Close() }) }
+	stopWatch := context.AfterFunc(ctx, closeHandle)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		held := 0
+		for {
+			pkt, err := handle.Recv()
+			if err != nil {
+				return
+			}
+			if event, ok := parseVoiceDiscovery(pkt.Data); ok && !event.response && router.Route(event.dst.Addr()) {
+				held++
+				if held <= voiceObserveLogLimit {
+					logger.Info("голос Discord: запрос в туннель отброшен, повтор уйдёт мимо VPN", "куда", event.dst)
+				}
+				continue
+			}
+			if err := handle.Send(pkt); err != nil {
+				logger.Warn("голос Discord: пакет не пропущен", "err", err)
 			}
 		}
 	}()
