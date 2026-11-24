@@ -37,10 +37,11 @@ type Server struct {
 // hostStats — что реально происходило с соединениями клиента к одному узлу.
 type hostStats struct {
 	opened, active, silent int
-	up, down               int64
+	up, down               atomic.Int64
+	lastDown               atomic.Int64 // UnixNano последнего входящего блока
 }
 
-func (s *Server) track(host string, fn func(*hostStats)) {
+func (s *Server) track(host string, fn func(*hostStats)) *hostStats {
 	s.statsMu.Lock()
 	defer s.statsMu.Unlock()
 	if s.stats == nil {
@@ -49,13 +50,14 @@ func (s *Server) track(host string, fn func(*hostStats)) {
 	st := s.stats[host]
 	if st == nil {
 		if len(s.stats) >= 256 {
-			return
+			return &hostStats{}
 		}
 		st = &hostStats{}
 		s.stats[host] = st
 	}
 	fn(st)
 	s.dirty = true
+	return st
 }
 
 // Summary возвращает сводку по узлам и сбрасывает признак изменений.
@@ -63,10 +65,15 @@ func (s *Server) track(host string, fn func(*hostStats)) {
 func (s *Server) Summary() string {
 	s.statsMu.Lock()
 	defer s.statsMu.Unlock()
-	if !s.dirty {
+	active := false
+	for _, st := range s.stats {
+		active = active || st.active > 0
+	}
+	if !s.dirty && !active {
 		return ""
 	}
 	s.dirty = false
+	now := time.Now()
 	hosts := make([]string, 0, len(s.stats))
 	for host := range s.stats {
 		hosts = append(hosts, host)
@@ -75,8 +82,12 @@ func (s *Server) Summary() string {
 	var b strings.Builder
 	for _, host := range hosts {
 		st := s.stats[host]
-		fmt.Fprintf(&b, "%s: соединений %d, открыто %d, без ответа %d, отправлено %d Б, получено %d Б\n",
-			host, st.opened, st.active, st.silent, st.up, st.down)
+		fmt.Fprintf(&b, "%s: соединений %d, открыто %d, без ответа %d, отправлено %d Б, получено %d Б",
+			host, st.opened, st.active, st.silent, st.up.Load(), st.down.Load())
+		if last := st.lastDown.Load(); last != 0 && st.active > 0 {
+			fmt.Fprintf(&b, ", тишина %d с", int(now.Sub(time.Unix(0, last)).Seconds()))
+		}
+		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -97,13 +108,19 @@ func (s *Server) reportLoop(ctx context.Context) {
 }
 
 type countingWriter struct {
-	w io.Writer
-	n *atomic.Int64
+	w     io.Writer
+	n     *atomic.Int64 // по соединению
+	total *atomic.Int64 // по узлу
+	stamp *atomic.Int64
 }
 
 func (c countingWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.n.Add(int64(n))
+	c.total.Add(int64(n))
+	if c.stamp != nil && n > 0 {
+		c.stamp.Store(time.Now().UnixNano())
+	}
 	return n, err
 }
 
@@ -212,12 +229,10 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 
 	host, _, _ := net.SplitHostPort(target)
 	var up, down atomic.Int64
-	s.track(host, func(st *hostStats) { st.opened++; st.active++ })
+	stats := s.track(host, func(st *hostStats) { st.opened++; st.active++ })
 	defer func() {
 		s.track(host, func(st *hostStats) {
 			st.active--
-			st.up += up.Load()
-			st.down += down.Load()
 			if up.Load() > 0 && down.Load() == 0 {
 				st.silent++
 			}
@@ -226,12 +241,12 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(countingWriter{upstream, &up}, reader)
+		_, _ = io.Copy(countingWriter{upstream, &up, &stats.up, nil}, reader)
 		_ = upstream.Close()
 		_ = client.Close()
 		close(done)
 	}()
-	_, _ = io.Copy(countingWriter{client, &down}, upstream)
+	_, _ = io.Copy(countingWriter{client, &down, &stats.down, &stats.lastDown}, upstream)
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
