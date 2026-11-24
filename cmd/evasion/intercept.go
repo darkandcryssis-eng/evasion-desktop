@@ -380,6 +380,12 @@ func runIntercept(opts interceptOptions) error {
 		})
 	}
 
+	if rotationProvider != nil {
+		report := newDiscordStallReport(provider, rotationProvider)
+		discordStallReport.Store(&report)
+		defer discordStallReport.Store(nil)
+	}
+
 	var youtube *youtubeMux
 	if !cfg.Observe && domainSet.Matches("www.youtube.com", "www.youtube.com") && youtubetune.ValidateVideoGroup(cfg) == nil {
 		youtube, err = newYouTubeMux(provider, domainSet)

@@ -34,6 +34,8 @@ type Server struct {
 	// подключается заново сразу, а не через свой долгий тайм-аут, и движок
 	// успевает сменить стратегию.
 	NoReply time.Duration
+	// OnStall вызывается для каждого соединения, оборванного по NoReply.
+	OnStall func(host string)
 	Logger  *slog.Logger
 	wg      sync.WaitGroup
 
@@ -290,15 +292,16 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		})
 	}()
 
+	var firstUp atomic.Int64 // сколько клиент отправил к первому байту ответа; -1 — ответа ещё не было
+	firstUp.Store(-1)
+	var lastDown atomic.Int64
 	if s.NoReply > 0 {
-		watch := time.AfterFunc(s.NoReply, func() {
-			if up.Load() > 0 && down.Load() == 0 {
-				s.warn("прокси Discord: узел не ответил, соединение оборвано для повтора", "узел", host, "ждали_мс", s.NoReply.Milliseconds())
-				_ = upstream.Close()
-				_ = client.Close()
-			}
+		watchCtx, stopWatch := context.WithCancel(ctx)
+		defer stopWatch()
+		go s.watch(watchCtx, host, &up, &down, &firstUp, &lastDown, func() {
+			_ = upstream.Close()
+			_ = client.Close()
 		})
-		defer watch.Stop()
 	}
 
 	done := make(chan struct{})
@@ -308,10 +311,67 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		_ = client.Close()
 		close(done)
 	}()
-	_, _ = io.Copy(countingWriter{client, &down, &stats.down, &stats.lastDown}, upstream)
+	_, _ = io.Copy(firstReply{countingWriter{client, &down, &stats.down, &stats.lastDown}, &up, &firstUp, &lastDown}, upstream)
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
+}
+
+// firstReply запоминает, сколько клиент успел отправить к первому байту ответа
+// узла, и время последнего ответа по этому соединению.
+type firstReply struct {
+	countingWriter
+	up, firstUp, last *atomic.Int64
+}
+
+func (f firstReply) Write(p []byte) (int, error) {
+	f.firstUp.CompareAndSwap(-1, f.up.Load())
+	f.last.Store(time.Now().UnixNano())
+	return f.countingWriter.Write(p)
+}
+
+// stallChecks — сколько интервалов NoReply соединение наблюдается: рукопожатие
+// либо завершается за это время, либо уже не завершится.
+const stallChecks = 4
+
+// handshakeBytes — ответ узла крупнее этого означает, что рукопожатие давно
+// позади и молчание клиента — обычный простой.
+const handshakeBytes = 32 << 10
+
+// watch обрывает соединение, застрявшее в начале: узел не ответил вовсе либо
+// начал отвечать и замолчал, а клиент после первого байта ответа не отправил
+// ничего. В живом TLS клиент обязан ответить на рукопожатие сервера, так что
+// второе означает ответ, замороженный посреди рукопожатия.
+func (s *Server) watch(ctx context.Context, host string, up, down, firstUp, lastDown *atomic.Int64, drop func()) {
+	ticker := time.NewTicker(s.NoReply)
+	defer ticker.Stop()
+	for range stallChecks {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		sent, got := up.Load(), down.Load()
+		reason := ""
+		switch {
+		case sent == 0 || got > handshakeBytes:
+			continue
+		case got == 0:
+			reason = "узел не ответил"
+		case sent != firstUp.Load():
+			return
+		case time.Since(time.Unix(0, lastDown.Load())) >= s.NoReply:
+			reason = "ответ узла оборвался посреди рукопожатия"
+		default:
+			continue
+		}
+		s.warn("прокси Discord: соединение оборвано для повтора", "узел", host, "причина", reason, "отправлено", sent, "получено", got)
+		if s.OnStall != nil {
+			s.OnStall(host)
+		}
+		drop()
+		return
+	}
 }
 
 func (s *Server) warn(msg string, args ...any) {

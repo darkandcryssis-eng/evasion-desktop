@@ -291,3 +291,80 @@ func TestNoReplyDropsSilentUpstream(t *testing.T) {
 		t.Fatalf("silent upstream not dropped: err=%v after %v", err, time.Since(start))
 	}
 }
+
+func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
+	upstream, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		for {
+			c, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				buf := make([]byte, 16)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("partial server flight"))
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stalled := make(chan string, 1)
+	s := &Server{NoReply: 100 * time.Millisecond, OnStall: func(host string) { stalled <- host }, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Addr().String())
+	}}
+	go func() { _ = s.Serve(ctx, ln) }()
+	open := func() net.Conn {
+		c, err := net.Dial("tcp4", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(c, "CONNECT discord.com:443 HTTP/1.1\r\nHost: discord.com:443\r\n\r\n")
+		buf := make([]byte, 39)
+		if _, err = io.ReadFull(c, buf); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write([]byte("hello"))
+		return c
+	}
+	// Клиент ответил на рукопожатие сервера — соединение живое, его не трогают.
+	alive := open()
+	defer alive.Close()
+	buf := make([]byte, 64)
+	if _, err = alive.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = alive.Write([]byte("finished"))
+	// Клиент после ответа сервера молчит — рукопожатие застряло.
+	stuck := open()
+	defer stuck.Close()
+	if _, err = stuck.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case host := <-stalled:
+		if host != "discord.com" {
+			t.Fatalf("host = %q", host)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stalled handshake not reported")
+	}
+	_ = alive.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+	if _, err = alive.Read(buf); err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("live connection was dropped: %v", err)
+	}
+	select {
+	case <-stalled:
+		t.Fatal("live connection reported as stalled")
+	default:
+	}
+}
