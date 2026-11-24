@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fitting-1c/evasion/internal/capture"
+	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/enginelock"
 	"github.com/fitting-1c/evasion/internal/flow"
 	"github.com/fitting-1c/evasion/internal/gamefilter"
@@ -79,9 +80,9 @@ func (p gameProvider) Select(meta proxy.ConnMeta) proxy.Selection {
 	return p.selection
 }
 
-func (p gameProvider) ReportFailure(sni string) {
-	if reporter, ok := p.base.(interface{ ReportFailure(string) }); ok {
-		reporter.ReportFailure(sni)
+func (p gameProvider) ReportFailure(sni string, failed core.StrategyID) {
+	if reporter, ok := p.base.(intercept.FailureReporter); ok {
+		reporter.ReportFailure(sni, failed)
 	}
 }
 

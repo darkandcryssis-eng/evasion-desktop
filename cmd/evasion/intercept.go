@@ -320,6 +320,13 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 	if err != nil {
 		return err
 	}
+	var rotationProvider *proxy.MultiGroupProvider
+	if multi, ok := provider.(proxy.MultiGroupProvider); ok && !cfg.Observe {
+		rotationProvider = &multi
+		rotationProvider.SetOnExhausted(func(group string) {
+			logger.Warn("все стратегии группы сорвались", "группа", group)
+		})
+	}
 
 	var youtube *youtubeMux
 	if !cfg.Observe && domainSet.Matches("www.youtube.com", "www.youtube.com") && youtubetune.ValidateVideoGroup(cfg) == nil {
@@ -429,6 +436,16 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 	})
 	if err != nil {
 		return err
+	}
+	if rotationProvider != nil {
+		stopRotationPersistence := startRotationPersistence(*rotationProvider, logger)
+		defer stopRotationPersistence()
+		active := rotationProvider.ActiveStrategies()
+		for i := range overrideInfos {
+			if id, ok := active[overrideInfos[i].Group]; ok {
+				overrideInfos[i].StrategyID = id.String()
+			}
+		}
 	}
 	stopInbound := startInboundObserver(ctx, engine, logger)
 	defer stopInbound()

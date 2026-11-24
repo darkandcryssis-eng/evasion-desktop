@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/fitting-1c/evasion/internal/config"
+	"github.com/fitting-1c/evasion/internal/core"
+	"github.com/fitting-1c/evasion/internal/intercept"
 	"github.com/fitting-1c/evasion/internal/proxy"
 	"github.com/fitting-1c/evasion/internal/strategy"
 	"github.com/fitting-1c/evasion/internal/vantage"
@@ -153,9 +155,9 @@ func (p *youtubeMux) Select(m proxy.ConnMeta) proxy.Selection {
 	return p.choices[name]
 }
 
-func (p *youtubeMux) ReportFailure(sni string) {
-	if reporter, ok := p.base.(interface{ ReportFailure(string) }); ok {
-		reporter.ReportFailure(sni)
+func (p *youtubeMux) ReportFailure(sni string, failed core.StrategyID) {
+	if reporter, ok := p.base.(intercept.FailureReporter); ok {
+		reporter.ReportFailure(sni, failed)
 	}
 }
 

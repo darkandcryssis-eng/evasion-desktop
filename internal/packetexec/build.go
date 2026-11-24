@@ -93,15 +93,14 @@ func applyEdit(d packet.Dissection, buf []byte, e strategy.TamperParams) error {
 	switch e.Field {
 	// --- IPv4 ---
 	case strategy.FieldIPv4TTL:
+		if e.Mode == strategy.TamperAutoTTL {
+			return applyAutoTTL(d, buf, e)
+		}
 		h, ok := d.IPv4(buf)
 		if !ok {
 			return fieldUnavailable(e.Field)
 		}
-		if e.Mode == strategy.TamperAutoTTL {
-			h.SetTTL(hops.Default.FakeTTL(netip.AddrFrom4([4]byte(h.Dst())), int(e.Value), hops.FallbackTTL))
-		} else {
-			h.SetTTL(uint8(applyValue(e, uint64(h.TTL()))))
-		}
+		h.SetTTL(uint8(applyValue(e, uint64(h.TTL()))))
 	case strategy.FieldIPv4ID:
 		h, ok := d.IPv4(buf)
 		if !ok {
@@ -135,15 +134,14 @@ func applyEdit(d packet.Dissection, buf []byte, e strategy.TamperParams) error {
 
 	// --- IPv6 ---
 	case strategy.FieldIPv6HopLimit:
+		if e.Mode == strategy.TamperAutoTTL {
+			return applyAutoTTL(d, buf, e)
+		}
 		h, ok := d.IPv6(buf)
 		if !ok {
 			return fieldUnavailable(e.Field)
 		}
-		if e.Mode == strategy.TamperAutoTTL {
-			h.SetHopLimit(hops.Default.FakeTTL(netip.AddrFrom16([16]byte(h.Dst())), int(e.Value), hops.FallbackTTL))
-		} else {
-			h.SetHopLimit(uint8(applyValue(e, uint64(h.HopLimit()))))
-		}
+		h.SetHopLimit(uint8(applyValue(e, uint64(h.HopLimit()))))
 	case strategy.FieldIPv6FlowLabel:
 		h, ok := d.IPv6(buf)
 		if !ok {
@@ -222,6 +220,28 @@ func applyEdit(d packet.Dissection, buf []byte, e strategy.TamperParams) error {
 	default:
 		// FieldPayload и неизвестные поля: править наугад нельзя.
 		return fmt.Errorf("packetexec: правка поля %s не поддержана в заголовке", e.Field)
+	}
+	return nil
+}
+
+func applyAutoTTL(d packet.Dissection, buf []byte, e strategy.TamperParams) error {
+	switch d.Version {
+	case packet.Version4:
+		h, ok := d.IPv4(buf)
+		if !ok {
+			return fieldUnavailable(e.Field)
+		}
+		dst := netip.AddrFrom4([4]byte(h.Dst()))
+		h.SetTTL(hops.Default.FakeTTL(dst, int(e.Value), hops.FallbackTTL))
+	case packet.Version6:
+		h, ok := d.IPv6(buf)
+		if !ok {
+			return fieldUnavailable(e.Field)
+		}
+		dst := netip.AddrFrom16([16]byte(h.Dst()))
+		h.SetHopLimit(hops.Default.FakeTTL(dst, int(e.Value), hops.FallbackTTL))
+	default:
+		return fieldUnavailable(e.Field)
 	}
 	return nil
 }

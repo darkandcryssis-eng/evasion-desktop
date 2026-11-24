@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"testing"
+	"time"
 
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/strategy"
@@ -60,9 +61,8 @@ func distinctStrategies(n int) []*strategy.Strategy {
 	return out
 }
 
-// Ротация: разные соединения получают разные стратегии (хотя бы 2 разных ID
-// за 20 проб с разными портами).
-func TestMultiGroupProviderRotation(t *testing.T) {
+// Sticky: каждое соединение группы получает одну активную стратегию.
+func TestMultiGroupProviderStickySelection(t *testing.T) {
 	strats := distinctStrategies(4)
 	matcher := suffixMatcher{sfx: ".discord.media"}
 	p, err := NewMultiGroupProvider(
@@ -78,25 +78,19 @@ func TestMultiGroupProviderRotation(t *testing.T) {
 		t.Fatalf("NewMultiGroupProvider: %v", err)
 	}
 
-	seen := make(map[core.StrategyID]bool)
+	first := p.Select(ConnMeta{SNI: "c-arn07.discord.media", LocalPort: 1000, IsClientHello: true})
+	if first.Strategy == nil {
+		t.Fatal("Select вернул nil")
+	}
 	for port := uint16(1000); port < 1020; port++ {
 		sel := p.Select(ConnMeta{SNI: "c-arn07.discord.media", LocalPort: port, IsClientHello: true})
-		if sel.Strategy == nil {
-			t.Fatalf("Select вернул nil на порту %d", port)
+		if sel.ID != first.ID {
+			t.Fatalf("порт %d получил %s, ожидалась активная стратегия %s", port, sel.ID, first.ID)
 		}
-		seen[sel.ID] = true
-	}
-	// Должны увидеть минимум 2 разные стратегии за 20 попыток с разными
-	// портами — вероятность пропустить все 4 за 20 попыток ничтожна при
-	// честном hash-разбросе.
-	if len(seen) < 2 {
-		t.Fatalf("ротация не работает: за 20 проб видно всего %d стратегий", len(seen))
 	}
 }
 
-// Стабильность: один и тот же (SNI, LocalPort) всегда даёт одну стратегию.
-// Это критично для TCP-ретрансмитов — повторный ClientHello должен попасть
-// в ту же стратегию.
+// Active selection is stable across metadata for the same group.
 func TestMultiGroupProviderRotationStable(t *testing.T) {
 	strats := distinctStrategies(4)
 	matcher := suffixMatcher{sfx: ".discord.media"}
@@ -157,41 +151,113 @@ func TestMultiGroupProviderStrategiesPreferredOverStrategy(t *testing.T) {
 	}
 }
 
-func TestMultiGroupProviderReportFailureShiftsOnlySNI(t *testing.T) {
-	matcher := suffixMatcher{sfx: ".discord.media"}
+func TestMultiGroupProviderReportFailureAdvancesOnlyMatchingGroupAndID(t *testing.T) {
+	voiceMatcher := suffixMatcher{sfx: ".discord.media"}
+	updatesMatcher := suffixMatcher{sfx: ".updates.example"}
 	p, err := NewMultiGroupProvider(
-		[]GroupRule{{Name: "voice", Matcher: matcher, Strategies: distinctStrategies(4)}},
+		[]GroupRule{
+			{Name: "voice", Matcher: voiceMatcher, Strategies: distinctStrategies(4)},
+			{Name: "updates", Matcher: updatesMatcher, Strategies: distinctStrategies(2)},
+		},
 		nil,
-		matcher,
+		voiceMatcher,
 	)
 	if err != nil {
 		t.Fatalf("NewMultiGroupProvider: %v", err)
 	}
 	meta := ConnMeta{SNI: "one.discord.media", LocalPort: 12345}
 	before := p.Select(meta).ID
-	otherMeta := ConnMeta{SNI: "two.discord.media", LocalPort: 12345}
+	otherMeta := ConnMeta{SNI: "api.updates.example", LocalPort: 12345}
 	otherBefore := p.Select(otherMeta).ID
-	_ = before
-	p.ReportFailure(meta.SNI)
+	p.ReportFailure(meta.SNI, before)
 	first := p.Select(meta).ID
+	if first == before {
+		t.Fatalf("failure did not advance strategy from %s", before)
+	}
 	for port := uint16(1000); port < 1020; port++ {
 		if got := p.Select(ConnMeta{SNI: meta.SNI, LocalPort: port}).ID; got != first {
-			t.Fatalf("after failure port %d got %s, want %s for every port", port, got, first)
+			t.Fatalf("after failure port %d got %s, want sticky %s", port, got, first)
 		}
 	}
-	p.ReportFailure(meta.SNI)
-	if second := p.Select(meta).ID; second == first {
-		t.Fatalf("second failure did not shift strategy for %s: %s", meta.SNI, second)
+	// A late report from a connection using the old strategy is ignored.
+	p.ReportFailure(meta.SNI, before)
+	if got := p.Select(meta).ID; got != first {
+		t.Fatalf("stale failure changed active strategy to %s, want %s", got, first)
+	}
+	p.ReportFailure(meta.SNI, first)
+	second := p.Select(meta).ID
+	if second == first {
+		t.Fatalf("current failure did not advance strategy for %s", meta.SNI)
 	}
 	if after := p.Select(otherMeta).ID; after != otherBefore {
-		t.Fatalf("failure for %s shifted %s from %s to %s", meta.SNI, otherMeta.SNI, otherBefore, after)
+		t.Fatalf("failure in voice shifted updates from %s to %s", otherBefore, after)
 	}
-	p.ReportFailure("unknown.example")
+	p.ReportFailure("unknown.example", first)
+}
+
+func TestMultiGroupProviderActiveStrategiesAndSetActive(t *testing.T) {
+	matcher := suffixMatcher{sfx: ".discord.media"}
+	p, err := NewMultiGroupProvider(
+		[]GroupRule{{Name: "voice", Matcher: matcher, Strategies: distinctStrategies(3)}},
+		nil, matcher,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := p.Rules()[0].StrategyIDs
+	if got := p.ActiveStrategies()["voice"]; got != ids[0] {
+		t.Fatalf("initial active = %s, want %s", got, ids[0])
+	}
+	if !p.SetActive("voice", ids[2]) {
+		t.Fatal("SetActive rejected known strategy")
+	}
+	if got := p.Select(ConnMeta{SNI: "x.discord.media"}).ID; got != ids[2] {
+		t.Fatalf("selected %s after SetActive, want %s", got, ids[2])
+	}
+	if got := p.ActiveStrategies()["voice"]; got != ids[2] {
+		t.Fatalf("ActiveStrategies = %s, want %s", got, ids[2])
+	}
+	if p.SetActive("voice", "unknown") || p.SetActive("missing", ids[0]) {
+		t.Fatal("SetActive accepted an unknown group or ID")
+	}
+}
+
+func TestMultiGroupProviderExhaustionHookAndContinuedAdvancement(t *testing.T) {
+	matcher := suffixMatcher{sfx: ".discord.media"}
+	p, err := NewMultiGroupProvider(
+		[]GroupRule{{Name: "voice", Matcher: matcher, Strategies: distinctStrategies(3)}},
+		nil, matcher,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p.rotation.now = func() time.Time { return now }
+	var exhausted []string
+	p.SetOnExhausted(func(group string) { exhausted = append(exhausted, group) })
+	meta := ConnMeta{SNI: "x.discord.media"}
+	for i := 0; i < 3; i++ {
+		p.ReportFailure(meta.SNI, p.Select(meta).ID)
+	}
+	if len(exhausted) != 1 || exhausted[0] != "voice" {
+		t.Fatalf("exhaustion hook calls = %v", exhausted)
+	}
+	want := p.Rules()[0].StrategyIDs[0]
+	if got := p.Select(meta).ID; got != want {
+		t.Fatalf("after full cycle selected %s, want %s", got, want)
+	}
+	p.ReportFailure(meta.SNI, p.Select(meta).ID)
+	if got := p.Select(meta).ID; got == want {
+		t.Fatal("provider froze advancement while group was exhausted")
+	}
+	if len(exhausted) != 1 {
+		t.Fatalf("exhaustion hook repeated while active: %v", exhausted)
+	}
 }
 
 func TestZeroValueMultiGroupProviderFailureIsSafe(t *testing.T) {
 	var p MultiGroupProvider
-	p.ReportFailure("example.com")
+	p.ReportFailure("example.com", "strategy")
 	if got := p.Select(ConnMeta{}); got.Strategy != nil {
 		t.Fatalf("zero-value provider selected a strategy: %+v", got)
 	}

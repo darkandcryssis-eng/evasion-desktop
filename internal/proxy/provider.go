@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/strategy"
@@ -152,14 +154,11 @@ func (p GroupProvider) Select(meta ConnMeta) Selection {
 // чтобы конструктор принимал один аргумент-срез, а порядок — определялся
 // вызывающим.
 //
-// Поддерживает ОДНУ стратегию (Strategy) ИЛИ РОТАЦИЮ нескольких (Strategies).
-// Ротация даёт DPI разные формы фейка на разных соединениях одной группы —
-// без неё однообразный паттерн (например, одинаковый google-ClientHello на
-// каждом соединении голоса) сам становится маркером обхода.
+// Поддерживает одну стратегию (Strategy) или ротацию (Strategies). Для группы
+// используется одна активная стратегия; следующая включается после отказа
+// текущей.
 type GroupRule struct {
-	// Name — имя группы для диагностики. Не используется при выборе; выводится
-	// в журнале запуска, чтобы владелец видел, какая стратегия к какой группе
-	// привязана.
+	// Name — имя группы для диагностики и ключа активной стратегии.
 	Name string
 	// Matcher — матчер подгруппы. nil равносилен «ни одно соединение в неё
 	// не попадает»: правило игнорируется.
@@ -168,10 +167,8 @@ type GroupRule struct {
 	// пуст. nil равносилен «ничего не применять» — такое правило отбрасывается.
 	// Для обратной совместимости с конфигом, где у группы одна стратегия.
 	Strategy *strategy.Strategy
-	// Strategies — ротация. Если непустой срез, Select чередует стратегии
-	// между соединениями подгруппы по хешу (SNI + LocalPort) — та же пара
-	// получает тот же выбор (стабильность рукопожатия), разные соединения
-	// получают разное (размывание сигнатуры).
+	// Strategies — список стратегий группы. Все соединения получают текущую
+	// активную стратегию; после подтверждённого отказа она переключается.
 	Strategies []*strategy.Strategy
 }
 
@@ -199,19 +196,27 @@ type MultiGroupProvider struct {
 }
 
 type rotationState struct {
-	mu     sync.Mutex
-	offset map[string]uint32
+	mu          sync.Mutex
+	active      map[string]int
+	advances    map[string][]time.Time
+	exhausted   map[string]time.Time
+	onExhausted func(string)
+	now         func() time.Time
 }
 
-const maxRotationOffsets = 4096
+const (
+	exhaustionWindow = 2 * time.Minute
+	exhaustionPeriod = 2 * time.Minute
+)
 
 // groupRuleResolved — правило с уже посчитанными идентификаторами стратегий.
-// Хранится срез Selection (1+ элемент) — для ротации в Select по хешу.
+// Хранится срез Selection (1+ элемент) для выбора активной стратегии.
 // Пустой срез недопустим: правило без стратегий отбрасывается конструктором.
 type groupRuleResolved struct {
-	matcher HostMatcher
-	sels    []Selection
-	name    string
+	matcher  HostMatcher
+	sels     []Selection
+	name     string
+	stateKey string
 }
 
 // NewMultiGroupProvider собирает провайдер из подгрупповых правил и
@@ -225,7 +230,12 @@ type groupRuleResolved struct {
 // то за пределами подгрупп обход не нужен. Если fallback.matcher nil — ошибка,
 // как и в NewGroupProvider: радиус неявно считать «всем» нельзя (1.6).
 func NewMultiGroupProvider(rules []GroupRule, fallbackStrategy *strategy.Strategy, fallbackMatcher HostMatcher) (MultiGroupProvider, error) {
-	out := MultiGroupProvider{rotation: &rotationState{offset: make(map[string]uint32)}}
+	out := MultiGroupProvider{rotation: &rotationState{
+		active:    make(map[string]int),
+		advances:  make(map[string][]time.Time),
+		exhausted: make(map[string]time.Time),
+		now:       time.Now,
+	}}
 	for _, r := range rules {
 		if r.Matcher == nil {
 			continue
@@ -255,9 +265,10 @@ func NewMultiGroupProvider(rules []GroupRule, fallbackStrategy *strategy.Strateg
 			sels = append(sels, Selection{Strategy: s, ID: id})
 		}
 		out.rules = append(out.rules, groupRuleResolved{
-			matcher: r.Matcher,
-			sels:    sels,
-			name:    r.Name,
+			matcher:  r.Matcher,
+			sels:     sels,
+			name:     r.Name,
+			stateKey: ruleStateKey(r.Name, len(out.rules)),
 		})
 	}
 	// Запасной. Матчер обязан быть, даже если стратегии нет: отсутствие
@@ -274,32 +285,24 @@ func NewMultiGroupProvider(rules []GroupRule, fallbackStrategy *strategy.Strateg
 	return out, nil
 }
 
+func ruleStateKey(name string, index int) string {
+	if name != "" {
+		return name
+	}
+	return fmt.Sprintf("#%d", index)
+}
+
 // Select идёт по подгрупповым правилам в их порядке; при промахе — к запасному.
-//
-// Если у подгруппы ротация (len(sels) > 1), выбор стратегии стабилен по паре
-// (SNI, LocalPort): один и тот же сервер+локальный порт получит одну и ту же
-// стратегию (нужно для стабильности TCP-ретрансмитов), разные пары получат
-// разное распределение (размывание DPI-сигнатуры).
+// Для группы всегда возвращается её текущая активная стратегия.
 func (p MultiGroupProvider) Select(meta ConnMeta) Selection {
 	for _, r := range p.rules {
 		if r.matcher.Matches(meta.Host, meta.SNI) {
-			if len(r.sels) == 1 {
-				return r.sels[0]
-			}
-			offset := uint32(0)
-			if p.rotation != nil && meta.SNI != "" {
+			index := 0
+			if p.rotation != nil {
 				p.rotation.mu.Lock()
-				offset = p.rotation.offset[meta.SNI]
+				index = p.rotation.active[r.stateKey] % len(r.sels)
 				p.rotation.mu.Unlock()
 			}
-			base := rotationIndex(meta, len(r.sels))
-			if offset > 0 {
-				// После срыва выбор перестаёт зависеть от локального порта:
-				// все новые соединения к имени получают следующую стратегию,
-				// а не случайную из ротации (иначе могли бы попасть на ту же).
-				base = rotationIndex(ConnMeta{SNI: meta.SNI}, len(r.sels))
-			}
-			index := (base + int(offset%uint32(len(r.sels)))) % len(r.sels)
 			return r.sels[index]
 		}
 	}
@@ -309,8 +312,8 @@ func (p MultiGroupProvider) Select(meta ConnMeta) Selection {
 	return Selection{}
 }
 
-func (p MultiGroupProvider) ReportFailure(sni string) {
-	if p.rotation == nil || sni == "" {
+func (p MultiGroupProvider) ReportFailure(sni string, failed core.StrategyID) {
+	if p.rotation == nil || sni == "" || failed == "" {
 		return
 	}
 	for _, r := range p.rules {
@@ -321,44 +324,92 @@ func (p MultiGroupProvider) ReportFailure(sni string) {
 			return
 		}
 		p.rotation.mu.Lock()
-		if len(p.rotation.offset) >= maxRotationOffsets {
-			clear(p.rotation.offset)
+		index := p.rotation.active[r.stateKey] % len(r.sels)
+		if r.sels[index].ID != failed {
+			p.rotation.mu.Unlock()
+			return
 		}
-		p.rotation.offset[sni]++
+		p.rotation.active[r.stateKey] = (index + 1) % len(r.sels)
+		now := p.rotation.now()
+		advances := p.rotation.advances[r.stateKey]
+		cutoff := now.Add(-exhaustionWindow)
+		first := 0
+		for first < len(advances) && advances[first].Before(cutoff) {
+			first++
+		}
+		advances = append(advances[:0], advances[first:]...)
+		advances = append(advances, now)
+		p.rotation.advances[r.stateKey] = advances
+		var exhaustedHook func(string)
+		if len(advances) >= len(r.sels) && !now.Before(p.rotation.exhausted[r.stateKey]) {
+			p.rotation.exhausted[r.stateKey] = now.Add(exhaustionPeriod)
+			exhaustedHook = p.rotation.onExhausted
+		}
 		p.rotation.mu.Unlock()
+		if exhaustedHook != nil {
+			exhaustedHook(r.name)
+		}
 		return
 	}
 }
 
-// rotationIndex даёт стабильный индекс в [0, n) по метаданным соединения.
-// FNV-1a 32-битный хеш от строки «SNI|port» — быстро, без аллокаций вне
-// нужных для построения ключа. При len == 1 вызывающий короткозамкнёт.
-func rotationIndex(meta ConnMeta, n int) int {
-	if n <= 1 {
-		return 0
+// SetOnExhausted устанавливает необязательный callback. Он вызывается вне
+// внутренней блокировки после полного цикла подтверждённых отказов.
+func (p MultiGroupProvider) SetOnExhausted(fn func(group string)) {
+	if p.rotation == nil {
+		return
 	}
-	const (
-		offset32 uint32 = 2166136261
-		prime32  uint32 = 16777619
-	)
-	h := offset32
-	for i := 0; i < len(meta.SNI); i++ {
-		h ^= uint32(meta.SNI[i])
-		h *= prime32
+	p.rotation.mu.Lock()
+	p.rotation.onExhausted = fn
+	p.rotation.mu.Unlock()
+}
+
+// ActiveStrategies возвращает копию активных идентификаторов по имени группы.
+func (p MultiGroupProvider) ActiveStrategies() map[string]core.StrategyID {
+	out := make(map[string]core.StrategyID, len(p.rules))
+	if p.rotation == nil {
+		return out
 	}
-	h ^= uint32(meta.LocalPort >> 8)
-	h *= prime32
-	h ^= uint32(meta.LocalPort & 0xff)
-	h *= prime32
-	return int(h % uint32(n))
+	p.rotation.mu.Lock()
+	defer p.rotation.mu.Unlock()
+	for _, r := range p.rules {
+		if r.name == "" {
+			continue
+		}
+		out[r.name] = r.sels[p.rotation.active[r.stateKey]%len(r.sels)].ID
+	}
+	return out
+}
+
+// SetActive назначает известную стратегию группе; при неизвестной группе или
+// ID возвращает false.
+func (p MultiGroupProvider) SetActive(group string, id core.StrategyID) bool {
+	if p.rotation == nil || group == "" || id == "" {
+		return false
+	}
+	for _, r := range p.rules {
+		if r.name != group {
+			continue
+		}
+		for i, sel := range r.sels {
+			if sel.ID != id {
+				continue
+			}
+			p.rotation.mu.Lock()
+			p.rotation.active[r.stateKey] = i
+			p.rotation.mu.Unlock()
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // Rules возвращает имена подгрупповых правил и их идентификаторы стратегий в
 // порядке применения — для вывода в status/doctor и диагностики.
 //
 // Копия, чтобы потребитель не изменил внутреннее состояние. При ротации
-// StrategyID содержит id первой стратегии (как «главной»), а StrategyIDs —
-// полный список для вывода.
+// StrategyID содержит id активной стратегии, а StrategyIDs — полный список.
 func (p MultiGroupProvider) Rules() []GroupRuleInfo {
 	if len(p.rules) == 0 {
 		return nil
@@ -369,9 +420,15 @@ func (p MultiGroupProvider) Rules() []GroupRuleInfo {
 		for _, s := range r.sels {
 			ids = append(ids, s.ID)
 		}
+		active := 0
+		if p.rotation != nil {
+			p.rotation.mu.Lock()
+			active = p.rotation.active[r.stateKey] % len(r.sels)
+			p.rotation.mu.Unlock()
+		}
 		out = append(out, GroupRuleInfo{
 			Name:        r.name,
-			StrategyID:  ids[0],
+			StrategyID:  ids[active],
 			StrategyIDs: ids,
 		})
 	}
@@ -380,8 +437,8 @@ func (p MultiGroupProvider) Rules() []GroupRuleInfo {
 
 // GroupRuleInfo — диагностический срез одного правила MultiGroupProvider.
 //
-// StrategyID — главная стратегия (первая в ротации). StrategyIDs — полный
-// список при ротации, len == 1 если ротации нет.
+// StrategyID — активная стратегия. StrategyIDs — все стратегии группы,
+// len == 1 если группа не имеет вариантов отказоустойчивости.
 type GroupRuleInfo struct {
 	Name        string
 	StrategyID  core.StrategyID

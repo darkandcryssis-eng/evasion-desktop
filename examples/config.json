@@ -57,57 +57,883 @@
     ]
   },
   "strategies": {
-    "discord_web": {"rules": [{"direction": "outbound", "trigger": {"match": "client_hello"}, "action": {"kind": "tcp_overlap", "params": {"preset": "tls_cover_681"}}}]},
-    "discord_gateway": {"rules": [{"direction": "outbound", "trigger": {"match": "client_hello"}, "action": {"kind": "tcp_overlap", "params": {"preset": "tls_cover_681"}}}]},
-    "discord_updates": {
-      "rules": [
+    "discord_web": {
+      "rotation": [
         {
-          "direction": "outbound",
-          "trigger": { "match": "client_hello" },
-          "action": {
-            "kind": "fragment",
-            "params": { "proto": "tcp", "at": "inside_sni", "order": "reverse" },
-            "left": { "kind": "send" },
-            "right": { "kind": "send" }
-          }
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "ipv4_ttl",
+                    "mode": "auto_ttl",
+                    "value": 1
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_checksum",
+                    "mode": "corrupt"
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_apple"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_apple"
+                }
+              }
+            }
+          ]
         }
       ]
     },
-    "discord_voice": {
-      "rules": [
+    "discord_gateway": {
+      "rotation": [
         {
-          "direction": "outbound",
-          "trigger": { "match": "client_hello" },
-          "action": {
-            "kind": "duplicate",
-            "left": {
-              "kind": "tamper",
-              "params": { "field": "tcp_seq", "mode": "add", "value": 4294957296 },
-              "left": {
-                "kind": "tamper",
-                "params": { "field": "payload", "mode": "replace", "preset": "tls_clienthello_apple" },
-                "left": { "kind": "send" }
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681"
+                }
               }
-            },
-            "right": {
-              "kind": "fragment",
-              "params": { "proto": "tcp", "at": "inside_sni", "order": "forward" },
-              "left": { "kind": "send" },
-              "right": { "kind": "send" }
             }
-          }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "ipv4_ttl",
+                    "mode": "auto_ttl",
+                    "value": 1
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_checksum",
+                    "mode": "corrupt"
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_apple"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_apple"
+                }
+              }
+            }
+          ]
         }
       ]
     },
     "discord_cdn": {
-      "rules": [
+      "rotation": [
         {
-          "direction": "outbound",
-          "trigger": { "match": "client_hello" },
-          "action": {
-            "kind": "tcp_overlap",
-            "params": { "preset": "tls_cover_681" }
-          }
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "ipv4_ttl",
+                    "mode": "auto_ttl",
+                    "value": 1
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_checksum",
+                    "mode": "corrupt"
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_apple"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_apple"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "discord_updates": {
+      "rotation": [
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "fragment",
+                "params": {
+                  "proto": "tcp",
+                  "at": "inside_sni",
+                  "order": "reverse"
+                },
+                "left": {
+                  "kind": "send"
+                },
+                "right": {
+                  "kind": "send"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_checksum",
+                    "mode": "corrupt"
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "ipv4_ttl",
+                    "mode": "auto_ttl",
+                    "value": 1
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "discord_voice": {
+      "rotation": [
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_apple"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "ipv4_ttl",
+                    "mode": "auto_ttl",
+                    "value": 1
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "video": {
+      "rotation": [
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_checksum",
+                    "mode": "corrupt"
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "length": 200
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "send"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "ipv4_ttl",
+                    "mode": "auto_ttl",
+                    "value": 1
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sld",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sld",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
         }
       ]
     }
