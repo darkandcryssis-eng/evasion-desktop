@@ -142,6 +142,30 @@ func startDiscordDirectProxy(parent context.Context, route netbind.Route, listen
 	return p, nil
 }
 
+// startDiscordWatchProxy — тот же loopback-прокси для сети без стороннего VPN.
+// Маршрут он не меняет: соединения идут обычным путём под десинк. Нужен он,
+// чтобы журнал показывал, на каком узле застрял клиент, и чтобы соединение без
+// ответа обрывалось сразу — клиент повторяет его уже со следующей стратегией.
+func startDiscordWatchProxy(parent context.Context, listen string, logger *slog.Logger) (*discordDirectProxy, error) {
+	ln, err := net.Listen("tcp4", listen)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось открыть локальный прокси Discord: %w", err)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	p := &discordDirectProxy{Listen: ln.Addr().String(), cancel: cancel, done: make(chan struct{})}
+	dial := (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	server := &discordproxy.Server{Dial: dial, Passthrough: dial, NoReply: discordNoReply, Logger: logger}
+	go func() {
+		_ = server.Serve(ctx, ln)
+		close(p.done)
+	}()
+	return p, nil
+}
+
+// discordNoReply — сколько ждать первого байта ответа узла Discord. Рукопожатие
+// у живого соединения укладывается в сотни миллисекунд.
+const discordNoReply = 5 * time.Second
+
 func (p *discordDirectProxy) Close() {
 	p.once.Do(func() {
 		p.cancel()

@@ -319,6 +319,16 @@ func runIntercept(opts interceptOptions) error {
 			logger.Info("Discord идёт через VPN; прямой путь — резерв на случай отказа VPN", "listen", discordListen, "адаптер", route.Physical.Name)
 		}
 	}
+	if !route.Tunnel && discordListen == "" {
+		dp, err := startDiscordWatchProxy(ctx, defaultDiscordTunnelListen, logger)
+		if err != nil {
+			logger.Warn("локальный прокси Discord не поднят, клиент идёт без него", "err", err)
+		} else {
+			discordListen, discordForce = dp.Listen, true
+			defer dp.Close()
+			logger.Info("Discord идёт через локальный прокси под обход: соединения без ответа обрываются для повтора", "listen", discordListen)
+		}
+	}
 	if telegramProfile != "" {
 		tt, err := startTelegramTunnel(ctx, telegramProfile, "", defaultTelegramTunnelListen)
 		if err != nil {
