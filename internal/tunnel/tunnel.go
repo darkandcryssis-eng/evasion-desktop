@@ -46,10 +46,14 @@ var DefaultDNS = []netip.Addr{
 // не ждёт активных Dial — закрывается устройство, активные соединения
 // получат ошибку чтения/записи.
 type Tunnel struct {
-	device *device.Device
-	stack  *netstack.Net
-	logger *slog.Logger
+	device   *device.Device
+	stack    *netstack.Net
+	logger   *slog.Logger
+	endpoint string
 }
+
+// Endpoint возвращает адрес пира ("IP:порт"), с которым поднят туннель.
+func (t *Tunnel) Endpoint() string { return t.endpoint }
 
 // Options — настройки открытия туннеля.
 type Options struct {
@@ -161,7 +165,7 @@ func Open(opts Options) (*Tunnel, error) {
 		return nil, fmt.Errorf("tunnel: Up: %w", err)
 	}
 
-	return &Tunnel{device: dev, stack: netStack, logger: logger}, nil
+	return &Tunnel{device: dev, stack: netStack, logger: logger, endpoint: endpoint}, nil
 }
 
 // DialContext открывает TCP-соединение через туннель.
