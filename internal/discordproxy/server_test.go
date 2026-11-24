@@ -307,7 +307,11 @@ func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
 			go func() {
 				buf := make([]byte, 16)
 				_, _ = c.Read(buf)
-				_, _ = c.Write([]byte("partial server flight"))
+				_, _ = c.Write([]byte("server flight"))
+				n, _ := c.Read(buf)
+				if string(buf[:n]) == "finished" {
+					_, _ = c.Write([]byte("ticket"))
+				}
 				_, _ = io.Copy(io.Discard, c)
 			}()
 		}
@@ -344,12 +348,16 @@ func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = alive.Write([]byte("finished"))
-	// Клиент после ответа сервера молчит — рукопожатие застряло.
+	if _, err = alive.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	// Клиент завершил рукопожатие, а узел на это молчит — ответ заморожен.
 	stuck := open()
 	defer stuck.Close()
 	if _, err = stuck.Read(buf); err != nil {
 		t.Fatal(err)
 	}
+	_, _ = stuck.Write([]byte("request"))
 	select {
 	case host := <-stalled:
 		if host != "discord.com" {
