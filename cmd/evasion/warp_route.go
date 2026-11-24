@@ -66,6 +66,7 @@ type warpRoute struct {
 	opening bool
 	retryAt time.Time
 	broken  int
+	carried map[string]bool // узлы, о соединении которых через туннель уже записано
 }
 
 func newWARPRoute(dir string, direct func(context.Context, string, string) (net.Conn, error), logger *slog.Logger) *warpRoute {
@@ -201,6 +202,13 @@ func (r *warpRoute) viaTunnel(ctx context.Context, tn warpDialer, network, addr 
 	}
 	if err == nil {
 		r.broken = 0
+		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil && !r.carried[host] {
+			if r.carried == nil || len(r.carried) >= 1024 {
+				r.carried = map[string]bool{}
+			}
+			r.carried[host] = true
+			r.log.Info("резерв WARP: узел соединился через туннель", "узел", host)
+		}
 		return conn, nil
 	}
 	if ctx.Err() != nil {
