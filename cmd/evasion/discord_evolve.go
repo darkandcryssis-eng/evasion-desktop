@@ -34,17 +34,18 @@ import (
 // держать, а из лучших мутацией и скрещиванием выводятся новые. Потомок входит
 // в ротацию, только если прошёл все свои загрузки.
 const (
-	evolveStartDelay   = 40 * time.Second
-	evolvePause        = 15 * time.Minute
-	evolveTrials       = 3
-	evolveChildTrials  = 5
-	evolveChildren     = 6
-	evolveKeep         = 6
-	evolveTrialBytes   = 256 << 10
-	evolveTrialTimeout = 4 * time.Second
-	evolveTrialGap     = 300 * time.Millisecond
-	evolveFile         = "evolved.json"
-	evolveReferenceGrp = "discord_cdn"
+	evolveStartDelay    = 40 * time.Second
+	evolvePause         = 15 * time.Minute
+	evolveTrials        = 3
+	evolveChildTrials   = 5
+	evolveControlTrials = 4
+	evolveChildren      = 6
+	evolveKeep          = 6
+	evolveTrialBytes    = 256 << 10
+	evolveTrialTimeout  = 4 * time.Second
+	evolveTrialGap      = 300 * time.Millisecond
+	evolveFile          = "evolved.json"
+	evolveReferenceGrp  = "discord_cdn"
 )
 
 type evolveDocument struct {
@@ -261,11 +262,13 @@ func (e *discordEvolver) cycle(ctx context.Context) error {
 	// Контроль: загрузка без приёма. Если она проходит, фильтр сейчас узлу не
 	// мешает, и прошедший потомок ничего не доказал бы.
 	parents := e.provider.Strategies(evolveReferenceGrp)
-	control := e.measure(ctx, target, plainStrategy(parents[0].Strategy), evolveTrials, true)
+	control := e.measureScored(ctx, target, plainStrategy(parents[0].Strategy), evolveControlTrials, false, false)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	filtered := control.passed < evolveTrials
+	// Одиночный срыв бывает и на чистой линии; фильтр считается действующим,
+	// когда без приёма срывается большинство загрузок.
+	filtered := control.passed*2 < control.trials
 
 	// Круг 1: счёт каждой стратегии ротации по живым загрузкам.
 	var results []evolveResult
@@ -285,7 +288,7 @@ func (e *discordEvolver) cycle(ctx context.Context) error {
 	if !filtered {
 		e.promote(results)
 		e.save()
-		e.log.Info("отбор стратегий Discord: загрузка проходит и без приёма, потомки не выводятся")
+		e.log.Info("отбор стратегий Discord: без приёма проходит большинство загрузок, потомки не выводятся")
 		return nil
 	}
 
@@ -459,6 +462,10 @@ func (e *discordEvolver) prune() {
 // measure проверяет стратегию загрузками с узла target. stopOnFail прекращает
 // проверку на первом срыве: потомку нужен безупречный счёт.
 func (e *discordEvolver) measure(ctx context.Context, target *url.URL, s *strategy.Strategy, trials int, stopOnFail bool) evolveResult {
+	return e.measureScored(ctx, target, s, trials, stopOnFail, !stopOnFail)
+}
+
+func (e *discordEvolver) measureScored(ctx context.Context, target *url.URL, s *strategy.Strategy, trials int, stopOnFail, record bool) evolveResult {
 	host := target.Hostname()
 	id, ok := e.provider.SetHostOverride(host, s)
 	result := evolveResult{sel: proxy.Selection{Strategy: s, ID: id}}
@@ -476,7 +483,7 @@ func (e *discordEvolver) measure(ctx context.Context, target *url.URL, s *strate
 		if passed {
 			result.passed++
 		}
-		if !stopOnFail {
+		if record {
 			e.record(id, passed)
 		}
 		if !passed && stopOnFail {
