@@ -27,7 +27,7 @@ const (
 	// Под приёмом (широкий радиус) зависание сначала лечит ротация стратегий:
 	// в туннель сайт уходит, только если не помогла и она.
 	siteDesyncLimit = 8
-	siteTunnelWait  = 150 * time.Second
+	siteTunnelWait  = 4 * time.Minute
 	siteCapacity    = 256
 )
 

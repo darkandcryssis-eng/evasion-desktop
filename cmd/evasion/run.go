@@ -176,6 +176,7 @@ func runCommand(ctx context.Context, args []string) error {
 		cfg.BlockQUIC = m == config.QUICBlock
 	}
 
+	addWARPRegistrationHost(cfg)
 	groupNames := parseGroups(*groupsFlag)
 	domainSet, err := cfg.DomainSet(groupNames)
 	if err != nil {
