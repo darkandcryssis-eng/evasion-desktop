@@ -312,6 +312,16 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		})
 	}
 
+	var partial atomic.Bool // ответ узла остановился посреди записи TLS
+	if s.NoReply > 0 {
+		cutCtx, stopCut := context.WithCancel(ctx)
+		defer stopCut()
+		go s.watchCut(cutCtx, host, &up, &down, &connDown, &partial, func() {
+			_ = upstream.Close()
+			_ = client.Close()
+		})
+	}
+
 	done := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(clientReply{countingWriter{upstream, &up, &stats.up, &lastUp}, records, &pending}, reader)
@@ -319,7 +329,7 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		_ = client.Close()
 		close(done)
 	}()
-	_, _ = io.Copy(serverReply{countingWriter{countingWriter{client, &down, &stats.down, &stats.lastDown}, &discard, &discard, &connDown}, &pending}, upstream)
+	_, _ = io.Copy(serverReply{countingWriter{countingWriter{client, &down, &stats.down, &stats.lastDown}, &discard, &discard, &connDown}, &pending, &recordCut{partial: &partial}}, upstream)
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
@@ -382,11 +392,74 @@ func (c clientReply) Write(p []byte) (int, error) {
 type serverReply struct {
 	countingWriter
 	pending *atomic.Int64
+	cut     *recordCut
 }
 
 func (r serverReply) Write(p []byte) (int, error) {
 	r.pending.Store(0)
+	r.cut.feed(p)
 	return r.countingWriter.Write(p)
+}
+
+// recordCut следит за границами записей TLS в ответе узла и помечает поток,
+// остановившийся посреди записи.
+type recordCut struct {
+	partial *atomic.Bool
+	header  [5]byte
+	have    int
+	skip    int
+	broken  bool
+}
+
+func (c *recordCut) feed(p []byte) {
+	for len(p) > 0 && !c.broken {
+		if c.skip > 0 {
+			n := min(c.skip, len(p))
+			c.skip -= n
+			p = p[n:]
+			continue
+		}
+		n := copy(c.header[c.have:], p)
+		c.have += n
+		p = p[n:]
+		if c.have < len(c.header) {
+			break
+		}
+		c.have = 0
+		if c.header[0] < 20 || c.header[0] > 23 {
+			// Не TLS: границ записей нет, наблюдение снимается.
+			c.broken = true
+			break
+		}
+		c.skip = int(c.header[3])<<8 | int(c.header[4])
+	}
+	c.partial.Store(!c.broken && (c.skip > 0 || c.have > 0))
+}
+
+// watchCut обрывает соединение, в котором ответ узла остановился посреди
+// записи TLS. Узел отправляет запись целиком, и её хвост приходит следом за
+// началом; тишина посреди записи — поток, замороженный по дороге. Клиент сам
+// ждал бы его до своего тайм-аута, а после обрыва сразу повторяет. В отличие
+// от watch следит за соединением всё время его жизни.
+func (s *Server) watchCut(ctx context.Context, host string, up, down, lastDown *atomic.Int64, partial *atomic.Bool, drop func()) {
+	ticker := time.NewTicker(s.NoReply / 2)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !partial.Load() || time.Since(time.Unix(0, lastDown.Load())) < s.NoReply {
+			continue
+		}
+		s.warn("прокси Discord: соединение оборвано для повтора", "узел", host, "причина", "ответ узла замер посреди записи", "отправлено", up.Load(), "получено", down.Load())
+		if s.OnStall != nil {
+			s.OnStall(host)
+		}
+		drop()
+		return
+	}
 }
 
 // requestBytes — отправленное клиентом без ответа крупнее этого считается
