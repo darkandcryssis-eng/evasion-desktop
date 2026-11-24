@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
+	"github.com/fitting-1c/evasion/internal/executor"
 	"github.com/fitting-1c/evasion/internal/flow"
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/packetexec"
@@ -74,6 +77,102 @@ func fragStrategy(offset int) *strategy.Strategy {
 			Right:  &strategy.Action{Kind: core.ActionSend},
 		},
 	}}}
+}
+
+func delayedFragStrategy(offset, delayMs int) *strategy.Strategy {
+	return &strategy.Strategy{Rules: []strategy.Rule{{
+		Direction: core.DirectionOutbound,
+		Trigger:   strategy.Trigger{Match: strategy.MatchClientHello},
+		Action: &strategy.Action{
+			Kind: core.ActionFragment,
+			Params: &strategy.FragmentParams{
+				Proto: strategy.FragTCP, Offset: offset, Order: strategy.FragForward, DelayMs: delayMs,
+			},
+			Left:  &strategy.Action{Kind: core.ActionSend},
+			Right: &strategy.Action{Kind: core.ActionSend},
+		},
+	}}}
+}
+
+type timedPacket struct {
+	port    uint16
+	seq     uint32
+	payload []byte
+	at      time.Time
+}
+
+type timedSink struct {
+	mu      sync.Mutex
+	packets []timedPacket
+}
+
+func (s *timedSink) Send(pkt capture.Packet) error {
+	d, err := packet.Dissect(pkt.Data)
+	if err != nil {
+		return err
+	}
+	tcp, ok := d.TCP(pkt.Data)
+	if !ok {
+		return nil
+	}
+	payload, _ := d.Payload(pkt.Data)
+	record := timedPacket{
+		port: tcp.SrcPort(), seq: tcp.Seq(),
+		payload: append([]byte(nil), payload...), at: time.Now(),
+	}
+	s.mu.Lock()
+	s.packets = append(s.packets, record)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *timedSink) snapshot() []timedPacket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]timedPacket(nil), s.packets...)
+}
+
+type heldPacketSource struct {
+	first   capture.Packet
+	done    chan struct{}
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (s *heldPacketSource) Recv() (capture.Packet, error) {
+	if s.first.Data != nil {
+		pkt := s.first
+		s.first = capture.Packet{}
+		return pkt, nil
+	}
+	<-s.done
+	return capture.Packet{}, io.EOF
+}
+
+func (s *heldPacketSource) ShutdownReceive() error {
+	s.once.Do(func() {
+		close(s.done)
+		close(s.stopped)
+	})
+	return nil
+}
+
+type cancellationExecutor struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (e *cancellationExecutor) Capabilities() core.PrimitiveSet {
+	return core.PrimitiveSet(0).With(core.CapDelay)
+}
+
+func (e *cancellationExecutor) Execute(ctx context.Context, _ *strategy.Strategy, _ executor.Conn) error {
+	close(e.started)
+	<-ctx.Done()
+	<-e.release
+	close(e.finished)
+	return ctx.Err()
 }
 
 // fragStrategyAt — стратегия разреза по структурной точке (а не числу), нужна
@@ -903,7 +1002,7 @@ func TestOnInboundRSTReportsFreshDesyncOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 			tmpl := packetV4(t, helloPayload, core.DirectionOutbound)
-			if engine.execDesync(context.Background(), tmpl, helloPayload, nil, baseSeq, "youtube.com", 50000, 1, false, 0) {
+			if engine.execDesync(context.Background(), tmpl, helloPayload, nil, baseSeq, "youtube.com", 50000, 1, false, 0, func() {}) {
 				t.Fatal("execDesync did not apply the strategy")
 			}
 			now = now.Add(tc.advance)
@@ -1136,5 +1235,98 @@ func TestShortHelloUnderOverlapIsSplitNotRaw(t *testing.T) {
 	}
 	if covered != len(hello) || !bytes.Equal(stream, hello) {
 		t.Fatal("части не складываются в исходный hello")
+	}
+}
+
+func TestRunDelayedFlowDoesNotBlockOtherFlowsAndQueuesSameFlow(t *testing.T) {
+	const delayMs = 200
+	a := packetV4Port(t, helloPayload, core.DirectionOutbound, 50000)
+	b := packetV4Port(t, []byte("B"), core.DirectionOutbound, 50001)
+	a2 := packetV4Seq(t, []byte("A2"), core.DirectionOutbound, 50000, baseSeq+uint32(len(helloPayload)))
+	sink := &timedSink{}
+	e := buildEngine(t, capture.NewSyntheticSource(a, b, a2), sink, fixedParser("slow.example"),
+		fakeProvider{matchSNI: "slow.example", sel: proxy.Selection{
+			Strategy: delayedFragStrategy(5, delayMs), ID: core.StrategyID("delayed"),
+		}})
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	packets := sink.snapshot()
+	bIndex, delayedIndex, a2Index := -1, -1, -1
+	for i, sent := range packets {
+		switch {
+		case sent.port == 50001 && string(sent.payload) == "B":
+			bIndex = i
+		case sent.port == 50000 && sent.seq == baseSeq+5:
+			delayedIndex = i
+		case sent.port == 50000 && string(sent.payload) == "A2":
+			a2Index = i
+		}
+	}
+	if bIndex < 0 || delayedIndex < 0 || a2Index < 0 {
+		t.Fatalf("missing expected packets: B=%d delayed A=%d queued A2=%d; packets=%+v",
+			bIndex, delayedIndex, a2Index, packets)
+	}
+	if bIndex > delayedIndex {
+		t.Fatalf("flow B was sent at %d after flow A delayed op at %d", bIndex, delayedIndex)
+	}
+	if a2Index < delayedIndex {
+		t.Fatalf("same-flow packet A2 was sent at %d before delayed op at %d", a2Index, delayedIndex)
+	}
+}
+
+func TestRunWaitsForDelayedWorkerOnCancellation(t *testing.T) {
+	exec := &cancellationExecutor{
+		started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{}),
+	}
+	source := &heldPacketSource{
+		first: packetV4(t, helloPayload, core.DirectionOutbound),
+		done:  make(chan struct{}), stopped: make(chan struct{}),
+	}
+	e, err := New(Options{
+		Source: source, Sink: &timedSink{},
+		Flows: flow.NewTable(16, time.Minute, testDetector),
+		Provider: fakeProvider{matchSNI: "slow.example", sel: proxy.Selection{
+			Strategy: delayedFragStrategy(5, 200), ID: core.StrategyID("delayed"),
+		}},
+		Exec: exec, Parse: fixedParser("slow.example"),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx) }()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("delayed executor did not start")
+	}
+	cancel()
+	select {
+	case <-source.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop the source")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned before worker finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(exec.release)
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after worker finished")
+	}
+	select {
+	case <-exec.finished:
+	default:
+		t.Fatal("Run returned before worker completion")
 	}
 }

@@ -78,6 +78,7 @@ type link struct {
 
 type hub struct {
 	mu      sync.Mutex
+	sendMu  sync.Mutex
 	handles []*Handle
 	list    atomic.Pointer[[]*Handle]
 	utun    *os.File
@@ -568,7 +569,9 @@ func (hb *hub) send(pkt []byte) error {
 		ip[10], ip[11] = 0, 0
 		binary.BigEndian.PutUint16(ip[10:], ipChecksum(ip[:ihl]))
 	}
+	hb.sendMu.Lock()
 	_, err := unix.Write(l.bpf, frame)
+	hb.sendMu.Unlock()
 	return err
 }
 

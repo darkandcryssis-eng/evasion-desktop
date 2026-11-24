@@ -69,6 +69,10 @@ func (s *gameTLSSource) Recv() (capture.Packet, error) {
 	}
 }
 
+func (s *gameTLSSource) ShutdownReceive() error {
+	return s.handle.ShutdownReceive()
+}
+
 type gameTLSProvider struct {
 	processor     *gamefilter.Processor
 	normal, small [3]proxy.Selection

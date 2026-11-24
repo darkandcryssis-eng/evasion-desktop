@@ -5,9 +5,23 @@ package windivert
 import (
 	"encoding/binary"
 	"testing"
+	"unsafe"
 
 	"github.com/fitting-1c/evasion/internal/packet"
 )
+
+const wantAddressSize = 80
+
+var (
+	_ [wantAddressSize - unsafe.Sizeof(Address{})]byte
+	_ [unsafe.Sizeof(Address{}) - wantAddressSize]byte
+)
+
+func TestAddressSizeMatchesWinDivert2(t *testing.T) {
+	if got := unsafe.Sizeof(Address{}); got != wantAddressSize {
+		t.Fatalf("Address size = %d, want %d", got, wantAddressSize)
+	}
+}
 
 func TestReceiveBufferFitsMaximumIPv6Packet(t *testing.T) {
 	// IPv6 payload length excludes its 40-byte header (RFC 8200).
