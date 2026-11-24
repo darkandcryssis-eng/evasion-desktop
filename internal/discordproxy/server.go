@@ -292,13 +292,13 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		})
 	}()
 
-	var firstUp atomic.Int64 // сколько клиент отправил к первому байту ответа; -1 — ответа ещё не было
-	firstUp.Store(-1)
-	var lastDown atomic.Int64
+	var flight atomic.Int64 // сколько узел прислал к первому ответному слову клиента; -1 — клиент ещё не отвечал
+	flight.Store(-1)
+	var lastUp atomic.Int64
 	if s.NoReply > 0 {
 		watchCtx, stopWatch := context.WithCancel(ctx)
 		defer stopWatch()
-		go s.watch(watchCtx, host, &up, &down, &firstUp, &lastDown, func() {
+		go s.watch(watchCtx, host, &up, &down, &flight, &lastUp, func() {
 			_ = upstream.Close()
 			_ = client.Close()
 		})
@@ -306,64 +306,59 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(countingWriter{upstream, &up, &stats.up, nil}, reader)
+		_, _ = io.Copy(clientReply{countingWriter{upstream, &up, &stats.up, &lastUp}, &down, &flight}, reader)
 		_ = upstream.Close()
 		_ = client.Close()
 		close(done)
 	}()
-	_, _ = io.Copy(firstReply{countingWriter{client, &down, &stats.down, &stats.lastDown}, &up, &firstUp, &lastDown}, upstream)
+	_, _ = io.Copy(countingWriter{client, &down, &stats.down, &stats.lastDown}, upstream)
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
 }
 
-// firstReply запоминает, сколько клиент успел отправить к первому байту ответа
-// узла, и время последнего ответа по этому соединению.
-type firstReply struct {
+// clientReply запоминает, сколько узел успел прислать к моменту, когда клиент
+// впервые ответил на его данные: это размер серверной части рукопожатия.
+type clientReply struct {
 	countingWriter
-	up, firstUp, last *atomic.Int64
+	down, flight *atomic.Int64
 }
 
-func (f firstReply) Write(p []byte) (int, error) {
-	f.firstUp.CompareAndSwap(-1, f.up.Load())
-	f.last.Store(time.Now().UnixNano())
-	return f.countingWriter.Write(p)
+func (c clientReply) Write(p []byte) (int, error) {
+	if got := c.down.Load(); got > 0 {
+		c.flight.CompareAndSwap(-1, got)
+	}
+	return c.countingWriter.Write(p)
 }
 
-// stallChecks — сколько интервалов NoReply соединение наблюдается: рукопожатие
-// либо завершается за это время, либо уже не завершится.
-const stallChecks = 4
+// stallChecks — сколько интервалов NoReply соединение наблюдается: начало
+// обмена либо проходит за это время, либо уже не пройдёт.
+const stallChecks = 6
 
-// handshakeBytes — ответ узла крупнее этого означает, что рукопожатие давно
-// позади и молчание клиента — обычный простой.
-const handshakeBytes = 32 << 10
-
-// watch обрывает соединение, застрявшее в начале: узел не ответил вовсе либо
-// начал отвечать и замолчал, а клиент после первого байта ответа не отправил
-// ничего. В живом TLS клиент обязан ответить на рукопожатие сервера, так что
-// второе означает ответ, замороженный посреди рукопожатия.
-func (s *Server) watch(ctx context.Context, host string, up, down, firstUp, lastDown *atomic.Int64, drop func()) {
-	ticker := time.NewTicker(s.NoReply)
+// watch обрывает соединение, застрявшее в начале обмена: узел не ответил на
+// первый пакет клиента либо прислал свою часть рукопожатия и после ответа
+// клиента на неё не прислал больше ничего. Живой узел на завершение
+// рукопожатия отвечает сразу (билеты сеанса, настройки, ответ на запрос),
+// поэтому такая тишина означает ответ, замороженный по дороге.
+func (s *Server) watch(ctx context.Context, host string, up, down, flight, lastUp *atomic.Int64, drop func()) {
+	ticker := time.NewTicker(s.NoReply / 2)
 	defer ticker.Stop()
-	for range stallChecks {
+	for range stallChecks * 2 {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		sent, got := up.Load(), down.Load()
-		reason := ""
-		switch {
-		case sent == 0 || got > handshakeBytes:
-			continue
-		case got == 0:
-			reason = "узел не ответил"
-		case sent != firstUp.Load():
+		sent, got, replied := up.Load(), down.Load(), flight.Load()
+		if replied >= 0 && got > replied {
 			return
-		case time.Since(time.Unix(0, lastDown.Load())) >= s.NoReply:
-			reason = "ответ узла оборвался посреди рукопожатия"
-		default:
+		}
+		if sent == 0 || (got > 0 && replied < 0) || time.Since(time.Unix(0, lastUp.Load())) < s.NoReply {
 			continue
+		}
+		reason := "узел не ответил"
+		if got > 0 {
+			reason = "узел замолчал после рукопожатия"
 		}
 		s.warn("прокси Discord: соединение оборвано для повтора", "узел", host, "причина", reason, "отправлено", sent, "получено", got)
 		if s.OnStall != nil {
