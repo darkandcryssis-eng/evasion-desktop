@@ -209,3 +209,42 @@ func TestSummaryCountsRelayedBytes(t *testing.T) {
 		t.Fatalf("повторная сводка без изменений: %q", got)
 	}
 }
+
+func TestRerouteSendsDiscordHostThroughPassthrough(t *testing.T) {
+	echo := echoServer(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var direct, through string
+	server := &Server{
+		Dial: func(_ context.Context, _, address string) (net.Conn, error) {
+			direct = address
+			return net.Dial("tcp", echo)
+		},
+		Passthrough: func(_ context.Context, _, address string) (net.Conn, error) {
+			through = address
+			return net.Dial("tcp", echo)
+		},
+		Reroute: func(host string) bool { return host == "gateway.discord.gg" },
+	}
+	go func() { _ = server.Serve(ctx, ln) }()
+	for _, target := range []string{"gateway.discord.gg:443", "discord.com:443"} {
+		conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		conn.Close()
+	}
+	if through != "gateway.discord.gg:443" || direct != "discord.com:443" {
+		t.Fatalf("through=%q direct=%q", through, direct)
+	}
+}

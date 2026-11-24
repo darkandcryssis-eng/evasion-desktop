@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -122,7 +123,10 @@ func startDiscordDirectProxy(parent context.Context, ifIndex uint32, listen stri
 	server := &discordproxy.Server{
 		Dial:        discordproxy.DialContextFunc(netbind.Dialer(ifIndex)),
 		Passthrough: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		Logger:      logger,
+		Reroute: func(host string) bool {
+			return discordGatewayViaDefault.Load() && strings.EqualFold(strings.TrimSuffix(host, "."), discordGatewayHost)
+		},
+		Logger: logger,
 	}
 	go func() {
 		_ = server.Serve(ctx, ln)
@@ -180,6 +184,25 @@ func startDiscordSelfCheck(ctx context.Context, route netbind.Route, logger *slo
 				name string
 				dial netbind.DialContextFunc
 			}{"мимо VPN", netbind.Dialer(route.Physical.Index)})
+		}
+		// Обмен с gateway идёт первым: по нему выбирается маршрут, а клиент
+		// Discord в это время уже подключается.
+		exchange := make([]error, len(paths))
+		for i, path := range paths {
+			exchange[i] = discordGatewayExchange(ctx, path.dial)
+			result := "ok: Hello, пинг и ответ на вход получены"
+			if exchange[i] != nil {
+				result = "СОРВАН: " + exchange[i].Error()
+			}
+			logger.Info("самопроверка Discord: обмен с gateway", "маршрут", path.name, "итог", result)
+		}
+		if route.Tunnel && exchange[1] != nil {
+			if exchange[0] == nil {
+				discordGatewayViaDefault.Store(true)
+				logger.Warn("gateway Discord мимо VPN не отвечает после рукопожатия: веду его через VPN")
+			} else {
+				logger.Warn("gateway Discord не отвечает ни по одному маршруту")
+			}
 		}
 		for _, path := range paths {
 			for _, host := range discordSelfCheckHosts {
