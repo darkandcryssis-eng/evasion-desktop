@@ -1,6 +1,10 @@
 package strategy
 
-import "github.com/fitting-1c/evasion/internal/tlsfake"
+import (
+	"crypto/rand"
+
+	"github.com/fitting-1c/evasion/internal/tlsfake"
+)
 
 // Имена пресетов фейковой нагрузки. Каждый — полный безобидный TLS ClientHello
 // с конкретным SNI. Кладётся в фейковый пакет приёма «fake», чтобы DPI отнёс
@@ -112,5 +116,13 @@ func FakePreset(name string) ([]byte, bool) {
 	}
 	out := make([]byte, len(b))
 	copy(out, b)
+	// Каждый вызов — свежие random, session_id и key_share: одинаковые байты
+	// фейка на всех соединениях служат DPI сигнатурой инструмента. Пресеты не
+	// TLS (если появятся) Refresh не трогает.
+	tlsfake.Refresh(out, fillRandom)
 	return out, true
 }
+
+// fillRandom заполняет срез криптостойкими случайными байтами. crypto/rand
+// с Go 1.24 не возвращает ошибок и на сотне байт стоит доли микросекунды.
+func fillRandom(b []byte) { _, _ = rand.Read(b) }

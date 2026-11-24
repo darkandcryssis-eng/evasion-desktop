@@ -7,6 +7,7 @@ import (
 
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/strategy"
+	"github.com/fitting-1c/evasion/internal/tlsfake"
 )
 
 // overlapStrategy — стратегия с единственным правилом tcp_overlap на заданном
@@ -54,7 +55,7 @@ func TestTCPOverlapGeometry(t *testing.T) {
 	if coverOp.Kind != OpSendReal {
 		t.Fatalf("cover: вид %v, ожидали OpSendReal", coverOp.Kind)
 	}
-	if !bytes.Equal(coverOp.Payload, cover) {
+	if !tlsfake.EqualIgnoringRandom(coverOp.Payload, cover) {
 		t.Fatal("cover: нагрузка не совпадает с байтами пресета")
 	}
 	if coverOp.StreamOffset != L-M {
@@ -149,7 +150,7 @@ func TestTCPOverlapAllCoverPresetsSameGeometry(t *testing.T) {
 		if len(plan.Ops) != 2 {
 			t.Fatalf("%q: ожидали 2 операции, получили %d", name, len(plan.Ops))
 		}
-		if !bytes.Equal(plan.Ops[0].Payload, cover) {
+		if !tlsfake.EqualIgnoringRandom(plan.Ops[0].Payload, cover) {
 			t.Fatalf("%q: cover-операция несёт не байты своего пресета", name)
 		}
 		off := plan.Ops[0].StreamOffset
@@ -175,7 +176,7 @@ func TestTCPSplitSeqOverlapGeometry(t *testing.T) {
 		t.Fatalf("unexpected split-seqovl geometry: %+v", plan.Ops)
 	}
 	wantFirst := append(append([]byte(nil), cover...), payload[0])
-	if !bytes.Equal(plan.Ops[0].Payload, wantFirst) || !bytes.Equal(plan.Ops[1].Payload, payload[1:]) {
+	if !tlsfake.EqualIgnoringRandom(plan.Ops[0].Payload[:len(cover)], cover) || !bytes.Equal(plan.Ops[0].Payload[len(cover):], wantFirst[len(cover):]) || !bytes.Equal(plan.Ops[1].Payload, payload[1:]) {
 		t.Fatal("split-seqovl changed the real byte stream")
 	}
 	if payload[0] != 0x5c {
