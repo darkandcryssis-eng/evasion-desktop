@@ -30,6 +30,12 @@ const (
 // пропустить (входящие).
 func (a Address) Outbound() bool { return a[flagsOffset]&flagOutbound != 0 }
 
+// IfIdx — индекс сетевого интерфейса пакета (слой Network: первое поле
+// объединения данных, сразу за 16-байтовым заголовком адреса).
+func (a Address) IfIdx() uint32 {
+	return uint32(a[16]) | uint32(a[17])<<8 | uint32(a[18])<<16 | uint32(a[19])<<24
+}
+
 // WithFinalTCPChecksums prevents WinDivert from repairing checksums after the
 // TCP executor calculated them and applied any deliberate checksum corruption.
 // The original captured address remains unchanged for untouched packets.
