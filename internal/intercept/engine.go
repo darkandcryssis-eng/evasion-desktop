@@ -154,6 +154,7 @@ type Engine struct {
 	block                 Blocklist
 	failureMu             sync.Mutex
 	recentDesync          map[desyncKey]desyncRecord
+	lastDesyncPrune       time.Time
 
 	// Счётчики разбора ClientHello (принадлежат горутине Run, без синхронизации).
 	// Нужны наблюдаемости: отличить «десинк применён, но не помог» от «десинк
@@ -174,7 +175,10 @@ type Engine struct {
 	multisegReason [8]int
 	// retransmits — повторы ClientHello (пассивный признак срыва, 5.10). В
 	// сводке, чтобы срыв был виден человеку, а не только копился в оценках.
-	retransmits   int
+	retransmits int
+	// stalls — зависания после рукопожатия: сегмент с данными переслан
+	// несколько раз без ответа.
+	stalls        int
 	lastHelloLog  time.Time
 	lastFlowSweep time.Time
 
@@ -201,7 +205,10 @@ type desyncRecord struct {
 }
 
 const (
-	recentDesyncWindow   = 5 * time.Second
+	recentDesyncWindow = 5 * time.Second
+	// stallDesyncWindow — сколько запись о применённом приёме ждёт признака
+	// зависания после рукопожатия; совпадает с окном слежения в таблице потоков.
+	stallDesyncWindow    = 60 * time.Second
 	recentDesyncCapacity = 4096
 	maxAsyncWorkers      = 256
 )
@@ -642,6 +649,15 @@ func (e *Engine) handle(ctx context.Context, pkt capture.Packet) {
 		e.observePassive(act.Hello, flowID, pkt)
 		e.forward(pkt)
 
+	case act.Stalled:
+		// Рукопожатие прошло, но данные клиента остаются без ответа: приём
+		// пропустил ClientHello и оставил DPI в состоянии, в котором тот душит
+		// соединение дальше. Для ротации это такой же срыв, как повтор
+		// ClientHello; сам пакет проходит без изменений.
+		e.stalls++
+		e.observeStall(pkt)
+		e.forward(pkt)
+
 	default:
 		// Pass: не-TLS, уже settled или прозрачный режим таблицы (переполнение).
 		e.forward(pkt)
@@ -659,7 +675,7 @@ const helloLogEvery = 30 * time.Second
 // отличить «приём не сработал» от «приём к цели не применялся». Первый вызов
 // печатает сразу, дальше — не чаще helloLogEvery.
 func (e *Engine) maybeLogHello() {
-	if e.helloComplete == 0 && e.helloAssembled == 0 && e.helloMultiseg == 0 && e.retransmits == 0 {
+	if e.helloComplete == 0 && e.helloAssembled == 0 && e.helloMultiseg == 0 && e.retransmits == 0 && e.stalls == 0 {
 		return
 	}
 	now := e.now()
@@ -672,6 +688,7 @@ func (e *Engine) maybeLogHello() {
 		"многосегментных_собрано", e.helloAssembled,
 		"многосегментных_пропущено", e.helloMultiseg,
 		"повторов_clienthello", e.retransmits,
+		"зависаний_после_рукопожатия", e.stalls,
 	}
 	// Разбивку причин печатаем, только когда есть что пропускать: иначе строка
 	// пуста и лишь зашумляет журнал.
@@ -1085,20 +1102,53 @@ func (e *Engine) takeRecentDesyncForPacket(pkt capture.Packet) (desyncRecord, bo
 	if !ok {
 		return desyncRecord{}, false
 	}
-	now := e.now()
+	return e.takeDesync(key, e.now(), recentDesyncWindow)
+}
+
+// takeDesync забирает запись о приёме, применённом к соединению key, если она
+// не старше window. Более старая остаётся ждать признака зависания.
+func (e *Engine) takeDesync(key desyncKey, now time.Time, window time.Duration) (desyncRecord, bool) {
 	e.failureMu.Lock()
 	defer e.failureMu.Unlock()
 	e.pruneRecentDesync(now)
 	record, ok := e.recentDesync[key]
-	if ok {
-		delete(e.recentDesync, key)
+	if !ok || now.Sub(record.at) > window {
+		return desyncRecord{}, false
 	}
-	return record, ok
+	delete(e.recentDesync, key)
+	return record, true
 }
 
+// observeStall сообщает провайдеру о зависании после рукопожатия на соединении,
+// к которому недавно применялся приём.
+func (e *Engine) observeStall(pkt capture.Packet) {
+	reporter, ok := e.prov.(FailureReporter)
+	if !ok {
+		return
+	}
+	key, ok := desyncKeyForPacket(pkt)
+	if !ok {
+		return
+	}
+	record, ok := e.takeDesync(key, e.now(), stallDesyncWindow)
+	if !ok {
+		return
+	}
+	reporter.ReportFailure(record.sni, record.strategyID)
+	if e.log != nil {
+		e.log.Info("соединение зависло после рукопожатия, приём засчитан как сорванный", "sni", record.sni, "strategy", record.strategyID)
+	}
+}
+
+// pruneRecentDesync выбрасывает устаревшие записи, не чаще раза в секунду:
+// полный обход на каждом соединении был бы лишней работой на горячем пути.
 func (e *Engine) pruneRecentDesync(now time.Time) {
+	if !e.lastDesyncPrune.IsZero() && now.Sub(e.lastDesyncPrune) < time.Second && !now.Before(e.lastDesyncPrune) {
+		return
+	}
+	e.lastDesyncPrune = now
 	for key, record := range e.recentDesync {
-		if now.Sub(record.at) > recentDesyncWindow {
+		if now.Sub(record.at) > stallDesyncWindow {
 			delete(e.recentDesync, key)
 		}
 	}
@@ -1114,13 +1164,7 @@ func (e *Engine) OnInboundRST(remote netip.AddrPort, localPort uint16) {
 	if e.now != nil {
 		now = e.now()
 	}
-	e.failureMu.Lock()
-	e.pruneRecentDesync(now)
-	record, ok := e.recentDesync[key]
-	if ok {
-		delete(e.recentDesync, key)
-	}
-	e.failureMu.Unlock()
+	record, ok := e.takeDesync(key, now, recentDesyncWindow)
 	if !ok {
 		return
 	}

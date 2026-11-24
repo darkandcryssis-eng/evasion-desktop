@@ -104,6 +104,55 @@ type entry struct {
 	// Гасится после первого же повтора: одно сорванное соединение — одно
 	// наблюдение, а не по числу ретрансмиссий, которых TCP делает несколько.
 	watchRetransmit bool
+
+	// Слежение за зависанием ПОСЛЕ рукопожатия: соединение установилось, но
+	// данные клиента остаются без подтверждения, и TCP пересылает один и тот
+	// же сегмент. settledAt — когда поток решён; dataTop — старший seq
+	// сегмента с данными; retxSeq/retxCount — какой сегмент и сколько раз
+	// переслан. stallDone гасит слежение после первого признака.
+	settledAt time.Time
+	dataTop   uint32
+	hasData   bool
+	retxSeq   uint32
+	retxCount uint8
+	stallDone bool
+}
+
+const (
+	// stallWatchWindow — сколько после ClientHello ищем зависание. Позже
+	// повторы уже не говорят о приёме обхода: это обычные потери на линии.
+	stallWatchWindow = 60 * time.Second
+	// stallRetransmits — сколько повторов одного сегмента считаем зависанием.
+	// Один повтор — рядовая потеря пакета; два подряд (с удвоением RTO) без
+	// продвижения — соединение не отвечает.
+	stallRetransmits = 2
+)
+
+// stalled сообщает, что сегмент с данными seq переслан stallRetransmits раз.
+// Однобайтовые сегменты не считаются: так выглядит TCP keep-alive, который
+// штатно повторяет один и тот же seq.
+func (e *entry) stalled(seq uint32, size int, now time.Time) bool {
+	if e.stallDone || size <= 1 || seq == e.helloSeq {
+		return false
+	}
+	if now.Sub(e.settledAt) > stallWatchWindow {
+		e.stallDone = true
+		return false
+	}
+	if !e.hasData || seqLT(e.dataTop, seq) {
+		e.hasData, e.dataTop = true, seq
+		return false
+	}
+	if e.retxCount == 0 || seq != e.retxSeq {
+		e.retxSeq, e.retxCount = seq, 1
+		return false
+	}
+	e.retxCount++
+	if e.retxCount < stallRetransmits {
+		return false
+	}
+	e.stallDone = true
+	return true
 }
 
 // Disposition — что вызывающий должен сделать с текущим пакетом.
@@ -164,6 +213,10 @@ type Action struct {
 	// детект наблюдательный, сам пакет проходит без изменений. Поднимается не
 	// более раза на поток.
 	Retransmit bool
+	// Stalled — на решённом потоке один и тот же сегмент с данными переслан
+	// несколько раз уже ПОСЛЕ ClientHello: рукопожатие прошло, а дальше
+	// соединение не отвечает. Поднимается вместе с Pass, не более раза на поток.
+	Stalled bool
 }
 
 // Table — таблица потоков. Не потокобезопасна: ею владеет одна горутина (4.2
@@ -221,6 +274,9 @@ func (t *Table) Outbound(key Key, seq uint32, payload []byte, now time.Time) Act
 			e.watchRetransmit = false
 			return Action{Disposition: Pass, Retransmit: true, Hello: payload, BaseSeq: seq}
 		}
+		if e.stalled(seq, len(payload), now) {
+			return Action{Disposition: Pass, Stalled: true}
+		}
 		return Action{Disposition: Pass}
 	case assembling:
 		return t.assemble(e, seq, payload)
@@ -241,6 +297,7 @@ func (t *Table) Outbound(key Key, seq uint32, payload []byte, now time.Time) Act
 		e.phase = settled
 		e.helloSeq = seq
 		e.watchRetransmit = true
+		e.settledAt = e.seen
 		return Action{Disposition: Apply, Hello: hello, BaseSeq: seq}
 	case isTLS:
 		// TLS распознан, но имени ещё не видно: возможно, крупный ClientHello,
@@ -323,6 +380,7 @@ func (t *Table) assemble(e *entry, seq uint32, payload []byte) Action {
 		e.phase = settled
 		e.helloSeq = base
 		e.watchRetransmit = true
+		e.settledAt = e.seen
 		e.buf, e.segLens = nil, nil
 		return Action{Disposition: Apply, Hello: buf, BaseSeq: base, SegLens: segLens}
 	case isTLS && len(e.segLens) < maxAssemblySegments && len(e.buf) < maxAssemblyBytes:

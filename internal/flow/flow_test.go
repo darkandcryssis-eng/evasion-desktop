@@ -567,3 +567,59 @@ func TestNonTLSFlowDoesNotWatchRetransmit(t *testing.T) {
 		t.Fatal("поток без ClientHello не должен поднимать Retransmit")
 	}
 }
+
+// TestStallAfterHandshake — сегмент с данными после ClientHello, пересланный
+// дважды, поднимает Stalled ровно один раз; одиночный повтор и keep-alive — нет.
+func TestStallAfterHandshake(t *testing.T) {
+	hello := []byte{0x16, 0x03, 0x01, 0x00, 0x05}
+	data := []byte{0x17, 0x03, 0x03, 0x00, 0x10, 1, 2, 3}
+	now := time.Unix(100, 0)
+
+	tbl := NewTable(16, time.Minute, helloOnTLS)
+	k := keyAB(t)
+	if a := tbl.Outbound(k, 1000, hello, now); a.Disposition != Apply {
+		t.Fatalf("ClientHello: %+v", a)
+	}
+	steps := []struct {
+		seq     uint32
+		payload []byte
+		stalled bool
+	}{
+		{1005, data, false},      // новые данные
+		{1005, data, false},      // один повтор — рядовая потеря
+		{1013, data, false},      // поток продвинулся
+		{1012, []byte{0}, false}, // keep-alive
+		{1012, []byte{0}, false},
+		{1012, []byte{0}, false},
+		{1013, data, false}, // первый повтор
+		{1013, data, true},  // второй повтор того же сегмента — зависание
+		{1013, data, false}, // не более раза на поток
+	}
+	for i, step := range steps {
+		now = now.Add(300 * time.Millisecond)
+		a := tbl.Outbound(k, step.seq, step.payload, now)
+		if a.Disposition != Pass || a.Stalled != step.stalled {
+			t.Fatalf("шаг %d: %+v, ожидался Stalled=%v", i, a, step.stalled)
+		}
+	}
+
+	// Вне окна слежения повторы уже не считаются.
+	late := NewTable(16, time.Hour, helloOnTLS)
+	late.Outbound(k, 1000, hello, now)
+	late.Outbound(k, 1005, data, now)
+	after := now.Add(stallWatchWindow + time.Second)
+	for i := 0; i < 4; i++ {
+		if a := late.Outbound(k, 1005, data, after); a.Stalled {
+			t.Fatalf("повтор вне окна засчитан как зависание")
+		}
+	}
+
+	// Поток без TLS под слежение не попадает.
+	plain := NewTable(16, time.Minute, helloOnTLS)
+	plain.Outbound(k, 1000, []byte("GET / HTTP/1.1\r\n"), now)
+	for i := 0; i < 4; i++ {
+		if a := plain.Outbound(k, 1016, data, now); a.Stalled {
+			t.Fatalf("не-TLS поток засчитан как зависший")
+		}
+	}
+}
