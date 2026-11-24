@@ -78,9 +78,6 @@ func IsYouTube(host string) bool {
 }
 
 func ValidateVideoGroup(cfg *config.Config) error {
-	if len(cfg.StrategiesRotation["video"]) > 0 {
-		return errors.New("группа video использует ротацию: автоподбор пропущен")
-	}
 	for name, hosts := range cfg.Groups {
 		if name == "video" {
 			continue
