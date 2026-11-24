@@ -62,7 +62,13 @@ const (
 	// параллельность не смешивает профили; 3 вместо 2 сокращает худший перебор
 	// 12 профилей на треть, не создавая шторма соединений к YouTube.
 	youtubeScanWorkers = 3
+	// youtubePageBytes — сколько данных страницы должно дойти при глубокой
+	// проверке; заведомо больше порога, после которого ТСПУ замораживает поток.
+	youtubePageBytes = 64 << 10
 )
+
+// youtubeProbeTLS — подмена настроек TLS проверки в тестах.
+var youtubeProbeTLS func(*tls.Config)
 
 type youtubeMux struct {
 	dial        func(context.Context, string, string) (net.Conn, error)
@@ -78,6 +84,9 @@ type youtubeMux struct {
 	lastWake    time.Time
 	wake        chan struct{}
 	cancelRound context.CancelFunc
+	// deep — проверка сайта качает страницу целиком, а не ждёт пустой ответ:
+	// так ловится путь, который пропускает рукопожатие и замораживает данные.
+	deep bool
 }
 
 func newYouTubeMux(base proxy.StrategyProvider, scope *config.DomainSet) (*youtubeMux, error) {
@@ -205,12 +214,18 @@ func (p *youtubeMux) lease(c net.Conn, name string) net.Conn {
 // Candidate selection is limited to that exact endpoint; user flows keep active.
 func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short bool) youtubeCheck {
 	r := youtubeCheck{Target: target, Stage: "dns"}
+	if target == "site_page" {
+		r.Target = "site"
+	}
 	var traceMu sync.Mutex
 	phase := "dns"
 	stage := func(s string) { traceMu.Lock(); phase = s; traceMu.Unlock() }
 	tc := &tls.Config{MinVersion: tls.VersionTLS12}
 	if short {
 		tc.CurvePreferences = []tls.CurveID{tls.X25519}
+	}
+	if youtubeProbeTLS != nil {
+		youtubeProbeTLS(tc)
 	}
 	tr := &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSClientConfig: tc, DisableKeepAlives: true, TLSHandshakeTimeout: 4 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		dial := p.dial
@@ -241,6 +256,9 @@ func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short 
 	}
 	req.Header.Set("User-Agent", "Evasion-Connection-Check/2")
 	req.Header.Set("Cache-Control", "no-cache")
+	if target == "site_page" {
+		req.Header.Set("Accept-Encoding", "identity")
+	}
 	start := time.Now()
 	response, e := (&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
 	if e != nil {
@@ -256,6 +274,14 @@ func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short 
 	switch target {
 	case "site":
 		r.OK = r.Code == http.StatusNoContent
+	case "site_page":
+		switch {
+		case r.Code == http.StatusOK:
+			n, _ := io.Copy(io.Discard, io.LimitReader(response.Body, youtubePageBytes))
+			r.OK = n >= youtubePageBytes
+		case r.Code >= 300 && r.Code < 400:
+			r.OK = true
+		}
 	case "image":
 		if r.Code == http.StatusOK {
 			data, err := io.ReadAll(io.LimitReader(response.Body, 65537))
@@ -269,7 +295,11 @@ func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short 
 }
 func (p *youtubeMux) measure(ctx context.Context, name string, short bool) []youtubeCheck {
 	media, _ := p.mediaHost()
-	targets := []struct{ key, url string }{{"site", "https://www.youtube.com/generate_204"}, {"image", "https://i.ytimg.com/vi/M7lc1UVf-VE/default.jpg"}, {"media_transport", "https://" + media + "/generate_204"}}
+	site := struct{ key, url string }{"site", "https://www.youtube.com/generate_204"}
+	if p.deep {
+		site.key, site.url = "site_page", "https://www.youtube.com/"
+	}
+	targets := []struct{ key, url string }{site, {"image", "https://i.ytimg.com/vi/M7lc1UVf-VE/default.jpg"}, {"media_transport", "https://" + media + "/generate_204"}}
 	ch := make(chan youtubeCheck, len(targets))
 	for _, v := range targets {
 		go func(key, url string) { ch <- p.probe(ctx, name, key, url, short) }(v.key, v.url)

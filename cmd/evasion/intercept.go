@@ -24,6 +24,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/inbound"
 	"github.com/fitting-1c/evasion/internal/intercept"
 	"github.com/fitting-1c/evasion/internal/iplist"
+	"github.com/fitting-1c/evasion/internal/netbind"
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/packetexec"
 	"github.com/fitting-1c/evasion/internal/policy"
@@ -520,6 +521,35 @@ func runIntercept(opts interceptOptions) error {
 				}
 				defer yt.Close()
 				logger.Info("автоматический VLESS-резерв YouTube готов", "listen", youtubeListen)
+			}
+		}
+		if youtubeProfile == "" && route.Tunnel {
+			// Сторонний VPN: проверки и сам YouTube идут мимо туннеля, под
+			// обход; VPN остаётся запасным путём.
+			youtube.dial = netbind.Dialer(route.Physical.Index)
+			youtube.deep = true
+			yb, err := startYouTubeBypass(ctx, route, defaultYouTubeTunnelListen, defaultStateDir, logger)
+			if err != nil {
+				logger.Error("YouTube мимо VPN недоступен, он останется в VPN", "err", err)
+			} else {
+				youtubeListen = yb.Listen
+				monitor.tunnelMeasure = func(ctx context.Context, short bool) []youtubeCheck {
+					checks := yb.Measure(ctx, short)
+					if !youtubeHealthy(checks) {
+						logger.Warn("YouTube: путь через VPN не прошёл проверку сайта, превью и видеосети; переключение отменено", "checks", checks)
+					}
+					return checks
+				}
+				monitor.route = func(enabled bool) {
+					yb.Router.SetTunnel(enabled)
+					if enabled {
+						logger.Warn("YouTube: прямой обход мимо VPN нестабилен, новые соединения идут через VPN")
+					} else {
+						logger.Info("YouTube: прямой обход восстановлен, новые соединения идут мимо VPN")
+					}
+				}
+				defer yb.Close()
+				logger.Info("YouTube идёт мимо VPN через физический адаптер, VPN — запасной путь", "listen", youtubeListen, "адаптер", route.Physical.Name)
 			}
 		}
 		if monitor.startProfile(ytStartProfile) {
