@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fitting-1c/evasion/internal/config"
 	"github.com/fitting-1c/evasion/internal/tunnel"
 	"github.com/fitting-1c/evasion/internal/warp"
 )
@@ -22,16 +23,19 @@ import (
 // живёт внутри процесса и маршрутов системы не меняет: в него попадают только
 // соединения узлов, набравших срывы; остальное идёт прямым путём.
 const (
-	warpFailWindow  = 2 * time.Minute
-	warpFailLimit   = 6                // очков срыва за окно, после которых узел уходит в туннель
-	warpDialWeight  = 3                // соединение не установлено вовсе: два таких подряд — уже туннель
-	warpStallWeight = 1                // узел замолчал: ротация стратегий ещё может помочь
-	warpStallGap    = 2 * time.Second  // пачка обрывов одного узла считается одним срывом
-	warpHostTTL     = 30 * time.Minute // после этого узел снова пробуется напрямую
-	warpRetry       = 10 * time.Minute // пауза после неудачного подъёма туннеля
-	warpPortWait    = 3 * time.Second
-	warpProbeAddr   = "1.1.1.1:443"
-	warpBrokenDials = 3 // столько отказов туннеля подряд — туннель поднимается заново
+	warpFailWindow    = 2 * time.Minute
+	warpFailLimit     = 6                // очков срыва за окно, после которых узел уходит в туннель
+	warpDialWeight    = 3                // соединение не установлено вовсе: два таких подряд — уже туннель
+	warpStallWeight   = 1                // узел замолчал: ротация стратегий ещё может помочь
+	warpStallGap      = 2 * time.Second  // пачка обрывов одного узла считается одним срывом
+	warpHostTTL       = 30 * time.Minute // после этого узел снова пробуется напрямую
+	warpRetry         = 3 * time.Minute  // пауза после неудачного подъёма туннеля
+	warpPortWait      = 3 * time.Second
+	warpProbeAddr     = "1.1.1.1:443"
+	warpRegisterHost  = "api.cloudflareclient.com"
+	warpRegisterTries = 8
+	warpRegisterWait  = 12 * time.Second
+	warpBrokenDials   = 3 // столько отказов туннеля подряд — туннель поднимается заново
 )
 
 type warpDialer interface {
@@ -262,9 +266,20 @@ func openWARP(ctx context.Context, dir string, logger *slog.Logger) (warpDialer,
 	acc, err := loadWARPAccount(path)
 	if err != nil {
 		logger.Info("резерв WARP: регистрация устройства")
-		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		acc, err = warp.Register(rctx, &http.Client{Timeout: 30 * time.Second})
-		cancel()
+		// Провайдер может резать сам узел регистрации по имени. Он входит в
+		// радиус обхода, и каждый срыв сдвигает ротацию стратегий, поэтому
+		// попыток несколько и каждая короткая.
+		for attempt := 1; attempt <= warpRegisterTries; attempt++ {
+			rctx, cancel := context.WithTimeout(ctx, warpRegisterWait)
+			transport := &http.Transport{TLSHandshakeTimeout: warpRegisterWait / 2, DisableKeepAlives: true}
+			acc, err = warp.Register(rctx, &http.Client{Timeout: warpRegisterWait, Transport: transport})
+			cancel()
+			transport.CloseIdleConnections()
+			if err == nil || ctx.Err() != nil {
+				break
+			}
+			logger.Info("резерв WARP: регистрация не прошла, повтор на другой стратегии", "попытка", attempt, "err", err)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("регистрация: %w", err)
 		}
@@ -295,6 +310,24 @@ func openWARP(ctx context.Context, dir string, logger *slog.Logger) (warpDialer,
 	}
 	logger.Info("резерв WARP: туннель готов", "пир", tn.Endpoint(), "подъём_мс", time.Since(started).Milliseconds())
 	return tn, nil
+}
+
+// addWARPRegistrationHost вносит узел регистрации WARP в радиус обхода: там,
+// где провайдер режет его по имени, без приёма резерв не поднять вовсе.
+func addWARPRegistrationHost(cfg *config.Config) {
+	for _, group := range []string{"discord_cdn", "discord"} {
+		hosts, ok := cfg.Groups[group]
+		if !ok {
+			continue
+		}
+		for _, host := range hosts {
+			if host == warpRegisterHost {
+				return
+			}
+		}
+		cfg.Groups[group] = append(hosts, warpRegisterHost)
+		return
+	}
 }
 
 // warpPorts ставит первым порт, на котором туннель поднимался в прошлый раз.
