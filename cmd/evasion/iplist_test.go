@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/fitting-1c/evasion/internal/iplist"
+	"github.com/fitting-1c/evasion/internal/policy"
 	"github.com/fitting-1c/evasion/internal/proxy"
 )
 
@@ -53,5 +54,25 @@ func TestIPListProvider(t *testing.T) {
 	listed.PayloadLength = 1800
 	if got := base.Select(listed); got.ID != own.ID {
 		t.Fatal("список подменил стратегию базового провайдера")
+	}
+}
+
+func TestIPListProviderWrapsAutopilotTable(t *testing.T) {
+	set, err := iplist.Parse("203.0.113.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := newIPListProvider(policy.NewTable(), set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := proxy.ConnMeta{
+		Host:          "203.0.113.9",
+		SNI:           "not-in-radius.example",
+		IsClientHello: true,
+		PayloadLength: 1800,
+	}
+	if got := p.Select(meta); got.Strategy == nil {
+		t.Fatal("IP-list fallback was not applied around the autopilot provider")
 	}
 }

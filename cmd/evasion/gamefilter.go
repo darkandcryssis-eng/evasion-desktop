@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/enginelock"
 	"github.com/fitting-1c/evasion/internal/flow"
@@ -23,27 +22,10 @@ import (
 	"github.com/fitting-1c/evasion/internal/windivert"
 )
 
-const gameTCPFilter = "outbound and tcp and (tcp.DstPort == 80 or tcp.DstPort == 443 or tcp.DstPort >= 1024) and not impostor"
-const gameUDPFilter = "outbound and udp and udp.DstPort >= 1024 and udp.DstPort != 443 and udp.PayloadLength > 0 and udp.PayloadLength <= 1400 and not (udp.PayloadLength == 74 and udp.Payload16[0] == 1 and udp.Payload16[1] == 70) and not impostor"
-
 type gameTargets []string
 
 func (p *gameTargets) String() string     { return fmt.Sprintf("%d selected", len(*p)) }
 func (p *gameTargets) Set(s string) error { *p = append(*p, s); return nil }
-
-type gameSource struct {
-	source    capture.PacketSource
-	sink      capture.PacketSink
-	processor *gamefilter.Processor
-}
-
-func (s *gameSource) Recv() (capture.Packet, error) {
-	p, err := s.source.Recv()
-	if err == nil {
-		s.processor.Before(p, s.sink)
-	}
-	return p, err
-}
 
 type gameProvider struct {
 	base           proxy.StrategyProvider
@@ -107,65 +89,10 @@ func gameStrategy(mode string, small ...bool) (*strategy.Strategy, error) {
 type gameRuntime struct {
 	processor *gamefilter.Processor
 	owners    *gamefilter.Owners
-	udp       *windivert.Handle
-	done      chan struct{}
-	watch     chan struct{}
 	mu        sync.Mutex
 	lastError string
-	udpMu     sync.Mutex
-	udpClosed bool
-	draining  atomic.Bool
 }
 
-func startGames(ctx context.Context, o gamefilter.Options, logger *slog.Logger) (*gameRuntime, error) {
-	owners := gamefilter.NewOwners(o)
-	g := &gameRuntime{processor: gamefilter.New(o, owners), owners: owners, done: make(chan struct{}), watch: make(chan struct{})}
-	if o.UDP() {
-		h, err := windivert.Open(gameUDPFilter)
-		if err != nil {
-			return nil, fmt.Errorf("не удалось открыть игровой UDP-фильтр: %w", err)
-		}
-		g.udp = h
-		go func() {
-			defer close(g.done)
-			defer g.closeUDP()
-			for {
-				pkt, err := h.Recv()
-				if err != nil {
-					return
-				}
-				if !g.draining.Load() {
-					g.processor.Before(pkt, h)
-				}
-				if err = h.Send(pkt); err != nil {
-					g.mu.Lock()
-					g.lastError = "не удалось отправить игровой пакет"
-					g.processor.RecordSendError()
-					g.mu.Unlock()
-					logger.Warn("игровой фильтр: отправка оригинала", "err", err)
-					return
-				}
-			}
-		}()
-	} else {
-		close(g.done)
-	}
-	go func() {
-		defer close(g.watch)
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			g.save()
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	logger.Info("игровой фильтр включён", "режим", o.Mode, "протокол", o.Protocol)
-	return g, nil
-}
 func (g *gameRuntime) save() {
 	targets, errText := g.owners.Status()
 	g.mu.Lock()
@@ -197,29 +124,6 @@ func (g *gameRuntime) save() {
 			_ = os.Remove(tmp)
 		}
 	}
-}
-
-func (g *gameRuntime) closeUDP() {
-	g.udpMu.Lock()
-	defer g.udpMu.Unlock()
-	if g.udp != nil && !g.udpClosed {
-		_ = g.udp.Close()
-		g.udpClosed = true
-	}
-}
-func (g *gameRuntime) stop() {
-	g.draining.Store(true)
-	g.udpMu.Lock()
-	if g.udp != nil && !g.udpClosed {
-		if g.udp.ShutdownReceive() != nil {
-			_ = g.udp.Close()
-			g.udpClosed = true
-		}
-	}
-	g.udpMu.Unlock()
-	<-g.done
-	g.closeUDP()
-	<-g.watch
 }
 
 // Game ports and new TLS connections are captured at a separate priority.

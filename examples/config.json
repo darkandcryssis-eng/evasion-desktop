@@ -4,7 +4,6 @@
   "block_quic": true,
   "groups": {
     "video": ["youtube.com", "googlevideo.com", "ytimg.com"],
-    "discord": ["discord.com", "discord.gg", "discordapp.com"],
     "discord_web": ["discord.com", "discord.gg", "discordapp.com"],
     "discord_updates": ["updates.discord.com"],
     "discord_gateway": ["gateway.discord.gg"],
@@ -22,7 +21,7 @@
     "enabled": true,
     "entries": [
       {
-        "safe_ip": "162.159.138.232",
+        "safe_ips": ["162.159.138.232", "23.227.38.74"],
         "domains": [
           "gateway.discord.gg",
           "media.discordapp.net"

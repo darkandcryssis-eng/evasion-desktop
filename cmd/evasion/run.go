@@ -92,6 +92,7 @@ func runCommand(ctx context.Context, args []string) error {
 		observe         = fs.Bool("observe", false, "режим наблюдения: не применять стратегии")
 		quicFlag        = fs.String("quic", "", "режим QUIC: block|desync|off (переопределяет конфиг)")
 		groupsFlag      = fs.String("groups", "", "ограничить радиус группами через запятую")
+		radiusFlag      = fs.String("radius", "", "режим радиуса: groups|all (переопределяет конфиг)")
 		stateDir        = fs.String("state-dir", defaultStateDir, "каталог состояния для команд status и portfolio")
 		replanEach      = fs.Duration("replan", time.Minute, "период пересчёта снимка контуром управления")
 		autoPilot       = fs.Bool("auto", false, "intercept: сам подбирать и держать рабочую стратегию из портфеля")
@@ -153,6 +154,9 @@ func runCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := applyRadiusOverride(cfg, *radiusFlag); err != nil {
+		return err
+	}
 	// Переопределения флагами.
 	if *listen != "" {
 		cfg.Listen = *listen
@@ -191,9 +195,12 @@ func runCommand(ctx context.Context, args []string) error {
 	// совпадает с конфигом, hosts не трогается. Нужны права администратора,
 	// без них — внятная ошибка (а не тихий пропуск с «молча не работает»).
 	if cfg.TransportFallback.Enabled {
-		if err := applyTransportFallbackOnStart(cfg.TransportFallback, logger); err != nil {
+		selected, err := applyTransportFallbackOnStart(ctx, cfg.TransportFallback, logger)
+		if err != nil {
 			return err
 		}
+		stopFallbackMonitor := startTransportFallbackMonitor(ctx, cfg.TransportFallback, selected, logger, nil)
+		defer stopFallbackMonitor()
 	}
 
 	// Этап 1: системный перехват через WinDivert. Путь данных другой, но выбор
@@ -203,7 +210,23 @@ func runCommand(ctx context.Context, args []string) error {
 		if *ytProfile != "" && !youtubeProfileAllowed(*ytProfile) {
 			return fmt.Errorf("неизвестный профиль YouTube %q", *ytProfile)
 		}
-		return runIntercept(ctx, cfg, domainSet, groupNames, logger, *jsonOut, *autoPilot, *searchGen, voice, *redirectF, *ytProfile, *discordProfile, *youtubeProfile, *telegramProfile, *ipListFlag)
+		return runIntercept(interceptOptions{
+			ctx:             ctx,
+			cfg:             cfg,
+			domainSet:       domainSet,
+			groupNames:      groupNames,
+			logger:          logger,
+			jsonOut:         *jsonOut,
+			auto:            *autoPilot,
+			search:          *searchGen,
+			voice:           voice,
+			redirect:        *redirectF,
+			ytStartProfile:  *ytProfile,
+			discordProfile:  *discordProfile,
+			youtubeProfile:  *youtubeProfile,
+			telegramProfile: *telegramProfile,
+			ipListPath:      *ipListFlag,
+		})
 	}
 
 	// Горячая таблица и контур управления (M6). Прокси получает policy.Table

@@ -17,7 +17,7 @@ func TestDefaultServicesExcludeInstagram(t *testing.T) {
 	if _, ok := cfg.Groups["instagram"]; ok {
 		t.Fatal("Instagram must not be bundled")
 	}
-	for _, group := range []string{"video", "discord", "discord_gateway", "discord_voice"} {
+	for _, group := range []string{"video", "discord_web", "discord_gateway", "discord_voice"} {
 		if len(cfg.Groups[group]) == 0 {
 			t.Fatalf("missing group %s", group)
 		}
