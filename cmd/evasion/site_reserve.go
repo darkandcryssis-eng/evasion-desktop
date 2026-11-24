@@ -65,11 +65,7 @@ func newSiteReserve(ctx context.Context, route *warpRoute, settings pacSettings,
 	s := &siteReserve{ctx: ctx, route: route, settings: settings, listen: listen, prefix: "http://" + listen + "/proxy.pac",
 		log: logger, now: time.Now, wait: siteTunnelWait,
 		stalls: map[string][]time.Time{}, desynced: map[string]bool{}, pending: map[string]bool{}, sites: map[string]bool{}}
-	// Запись, оставшаяся от аварийно завершённого запуска, снимается сразу.
-	if current, err := settings.Snapshot(); err == nil && strings.HasPrefix(current.AutoConfigURL, s.prefix) {
-		_ = settings.SetAutoConfigURL("")
-		_ = settings.Notify()
-	}
+	clearStaleSitePAC(settings, listen)
 	hook := s.Stall
 	siteStallHook.Store(&hook)
 	return s
@@ -240,5 +236,19 @@ func siteHostOK(host string) bool {
 			return false
 		}
 	}
+	return true
+}
+
+// clearStaleSitePAC снимает сценарий резерва сайтов, оставшийся в Windows от
+// аварийно завершённого запуска. Вызывается при каждом старте, в том числе
+// при стороннем VPN, когда сам резерв не включается: иначе запись указывала бы
+// на прокси, который сценарий уже не отдаёт.
+func clearStaleSitePAC(settings pacSettings, listen string) bool {
+	current, err := settings.Snapshot()
+	if err != nil || !strings.HasPrefix(current.AutoConfigURL, "http://"+listen+"/proxy.pac") {
+		return false
+	}
+	_ = settings.SetAutoConfigURL("")
+	_ = settings.Notify()
 	return true
 }
