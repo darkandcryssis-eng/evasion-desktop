@@ -41,12 +41,15 @@ const (
 	// воспроизведении обеспечивает desync фиксированным сидом, не само
 	// представление.
 	TamperCorrupt
+	// TamperAutoTTL — выбрать TTL по наблюдённому числу переходов до узла.
+	TamperAutoTTL
 )
 
 const (
 	tamperReplaceText = "replace"
 	tamperAddText     = "add"
 	tamperCorruptText = "corrupt"
+	tamperAutoTTLText = "auto_ttl"
 )
 
 // String возвращает токен режима правки.
@@ -58,6 +61,8 @@ func (m TamperMode) String() string {
 		return tamperAddText
 	case TamperCorrupt:
 		return tamperCorruptText
+	case TamperAutoTTL:
+		return tamperAutoTTLText
 	default:
 		return fmt.Sprintf("TamperMode(%d)", uint8(m))
 	}
@@ -66,7 +71,7 @@ func (m TamperMode) String() string {
 // MarshalText сериализует режим правки как токен.
 func (m TamperMode) MarshalText() ([]byte, error) {
 	switch m {
-	case TamperReplace, TamperAdd, TamperCorrupt:
+	case TamperReplace, TamperAdd, TamperCorrupt, TamperAutoTTL:
 		return []byte(m.String()), nil
 	default:
 		return nil, fmt.Errorf("strategy: недопустимый режим правки %d", uint8(m))
@@ -82,6 +87,8 @@ func (m *TamperMode) UnmarshalText(text []byte) error {
 		*m = TamperAdd
 	case tamperCorruptText:
 		*m = TamperCorrupt
+	case tamperAutoTTLText:
+		*m = TamperAutoTTL
 	default:
 		return fmt.Errorf("strategy: неизвестный режим правки %q", string(text))
 	}
@@ -116,9 +123,17 @@ func (p *TamperParams) validate(limits Limits) error {
 		return fmt.Errorf("неизвестное поле %d", uint8(p.Field))
 	}
 	switch p.Mode {
-	case TamperReplace, TamperAdd, TamperCorrupt:
+	case TamperReplace, TamperAdd, TamperCorrupt, TamperAutoTTL:
 	default:
 		return fmt.Errorf("недопустимый режим правки %d", uint8(p.Mode))
+	}
+	if p.Mode == TamperAutoTTL {
+		if p.Field != FieldIPv4TTL && p.Field != FieldIPv6HopLimit {
+			return fmt.Errorf("режим auto_ttl применим только к ipv4_ttl и ipv6_hop_limit")
+		}
+		if p.Value > 8 {
+			return fmt.Errorf("дельта auto_ttl должна быть от 0 до 8, получено %d", p.Value)
+		}
 	}
 
 	if fi.isPayload {

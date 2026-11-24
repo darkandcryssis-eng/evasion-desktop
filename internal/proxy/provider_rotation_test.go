@@ -156,3 +156,35 @@ func TestMultiGroupProviderStrategiesPreferredOverStrategy(t *testing.T) {
 		}
 	}
 }
+
+func TestMultiGroupProviderReportFailureShiftsOnlySNI(t *testing.T) {
+	matcher := suffixMatcher{sfx: ".discord.media"}
+	p, err := NewMultiGroupProvider(
+		[]GroupRule{{Name: "voice", Matcher: matcher, Strategies: distinctStrategies(4)}},
+		nil,
+		matcher,
+	)
+	if err != nil {
+		t.Fatalf("NewMultiGroupProvider: %v", err)
+	}
+	meta := ConnMeta{SNI: "one.discord.media", LocalPort: 12345}
+	before := p.Select(meta).ID
+	otherMeta := ConnMeta{SNI: "two.discord.media", LocalPort: 12345}
+	otherBefore := p.Select(otherMeta).ID
+	p.ReportFailure(meta.SNI)
+	if after := p.Select(meta).ID; after == before {
+		t.Fatalf("failure did not shift strategy for %s: %s", meta.SNI, after)
+	}
+	if after := p.Select(otherMeta).ID; after != otherBefore {
+		t.Fatalf("failure for %s shifted %s from %s to %s", meta.SNI, otherMeta.SNI, otherBefore, after)
+	}
+	p.ReportFailure("unknown.example")
+}
+
+func TestZeroValueMultiGroupProviderFailureIsSafe(t *testing.T) {
+	var p MultiGroupProvider
+	p.ReportFailure("example.com")
+	if got := p.Select(ConnMeta{}); got.Strategy != nil {
+		t.Fatalf("zero-value provider selected a strategy: %+v", got)
+	}
+}

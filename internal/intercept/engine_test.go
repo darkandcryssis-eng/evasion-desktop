@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -44,6 +45,15 @@ func fixedParser(sni string) HelloParser {
 type fakeProvider struct {
 	matchSNI string
 	sel      proxy.Selection
+}
+
+type failureRecordingProvider struct {
+	proxy.StrategyProvider
+	failures []string
+}
+
+func (p *failureRecordingProvider) ReportFailure(sni string) {
+	p.failures = append(p.failures, sni)
 }
 
 func (p fakeProvider) Select(m proxy.ConnMeta) proxy.Selection {
@@ -834,6 +844,82 @@ func TestOnPassiveOnClientHelloRetransmit(t *testing.T) {
 	ev := events[0]
 	if ev.SNI != "youtube.com" || ev.Target != "youtube.com" || ev.StrategyID != core.StrategyID("sid1") {
 		t.Fatalf("пассивное событие неверно атрибутировано: %+v", ev)
+	}
+}
+
+func TestRetransmitReportsFailureAndPassesThrough(t *testing.T) {
+	seq := uint32(1000)
+	first := packetV4Seq(t, helloPayload, core.DirectionOutbound, 50000, seq)
+	retransmit := packetV4Seq(t, helloPayload, core.DirectionOutbound, 50000, seq)
+	sink := &capture.SyntheticSink{}
+	provider := &failureRecordingProvider{StrategyProvider: fakeProvider{
+		matchSNI: "youtube.com",
+		sel:      proxy.Selection{Strategy: fragStrategy(5), ID: core.StrategyID("sid1"), Target: "youtube.com"},
+	}}
+	engine := buildEngine(t, capture.NewSyntheticSource(first, retransmit), sink, fixedParser("youtube.com"), provider)
+	if err := engine.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(provider.failures) != 1 || provider.failures[0] != "youtube.com" {
+		t.Fatalf("ReportFailure calls = %v", provider.failures)
+	}
+	rawSeen := 0
+	for _, sent := range sink.Sent() {
+		if bytes.Equal(sent.Data, retransmit.Data) {
+			rawSeen++
+		}
+	}
+	if rawSeen != 1 {
+		t.Fatalf("retransmit passthrough count = %d, want 1", rawSeen)
+	}
+}
+
+func TestOnInboundRSTReportsFreshDesyncOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		advance    time.Duration
+		wantReport bool
+	}{
+		{name: "within window", advance: 4 * time.Second, wantReport: true},
+		{name: "expired", advance: 6 * time.Second},
+		{name: "duplicate", advance: 0, wantReport: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+			provider := &failureRecordingProvider{StrategyProvider: fakeProvider{
+				matchSNI: "youtube.com",
+				sel:      proxy.Selection{Strategy: fragStrategy(5), ID: core.StrategyID("sid1")},
+			}}
+			engine, err := New(Options{
+				Source:   capture.NewSyntheticSource(),
+				Sink:     &capture.SyntheticSink{},
+				Flows:    flow.NewTable(16, time.Minute, testDetector),
+				Provider: provider,
+				Exec:     packetexec.New(),
+				Parse:    fixedParser("youtube.com"),
+				Now:      func() time.Time { return now },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tmpl := packetV4(t, helloPayload, core.DirectionOutbound)
+			if engine.execDesync(context.Background(), tmpl, helloPayload, nil, baseSeq, "youtube.com", 50000, 1, false, 0) {
+				t.Fatal("execDesync did not apply the strategy")
+			}
+			now = now.Add(tc.advance)
+			remote := netip.MustParseAddrPort("93.184.216.34:443")
+			engine.OnInboundRST(remote, 50000)
+			if tc.name == "duplicate" {
+				engine.OnInboundRST(remote, 50000)
+			}
+			want := 0
+			if tc.wantReport {
+				want = 1
+			}
+			if len(provider.failures) != want {
+				t.Fatalf("ReportFailure calls = %v, want %d", provider.failures, want)
+			}
+		})
 	}
 }
 
