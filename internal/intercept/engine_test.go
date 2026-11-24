@@ -52,11 +52,16 @@ type fakeProvider struct {
 
 type failureRecordingProvider struct {
 	proxy.StrategyProvider
-	failures []string
+	failures []reportedFailure
 }
 
-func (p *failureRecordingProvider) ReportFailure(sni string) {
-	p.failures = append(p.failures, sni)
+type reportedFailure struct {
+	sni string
+	id  core.StrategyID
+}
+
+func (p *failureRecordingProvider) ReportFailure(sni string, failed core.StrategyID) {
+	p.failures = append(p.failures, reportedFailure{sni: sni, id: failed})
 }
 
 func (p fakeProvider) Select(m proxy.ConnMeta) proxy.Selection {
@@ -959,7 +964,7 @@ func TestRetransmitReportsFailureAndPassesThrough(t *testing.T) {
 	if err := engine.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(provider.failures) != 1 || provider.failures[0] != "youtube.com" {
+	if len(provider.failures) != 1 || provider.failures[0] != (reportedFailure{sni: "youtube.com", id: "sid1"}) {
 		t.Fatalf("ReportFailure calls = %v", provider.failures)
 	}
 	rawSeen := 0
@@ -1017,6 +1022,9 @@ func TestOnInboundRSTReportsFreshDesyncOnce(t *testing.T) {
 			}
 			if len(provider.failures) != want {
 				t.Fatalf("ReportFailure calls = %v, want %d", provider.failures, want)
+			}
+			if want == 1 && provider.failures[0] != (reportedFailure{sni: "youtube.com", id: "sid1"}) {
+				t.Fatalf("ReportFailure call = %+v", provider.failures[0])
 			}
 		})
 	}

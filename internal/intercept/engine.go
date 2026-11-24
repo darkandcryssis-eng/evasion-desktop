@@ -186,7 +186,7 @@ type Engine struct {
 }
 
 type FailureReporter interface {
-	ReportFailure(sni string)
+	ReportFailure(sni string, failed core.StrategyID)
 }
 
 type desyncKey struct {
@@ -195,8 +195,9 @@ type desyncKey struct {
 }
 
 type desyncRecord struct {
-	sni string
-	at  time.Time
+	sni        string
+	strategyID core.StrategyID
+	at         time.Time
 }
 
 const (
@@ -638,7 +639,7 @@ func (e *Engine) handle(ctx context.Context, pkt capture.Packet) {
 		// записывается в оценку стратегии — только через OnPassive, без
 		// повторной отправки пакетов.
 		e.retransmits++
-		e.observePassive(act.Hello, flowID)
+		e.observePassive(act.Hello, flowID, pkt)
 		e.forward(pkt)
 
 	default:
@@ -694,12 +695,10 @@ func (e *Engine) multisegReasonSummary() string {
 	return strings.Join(parts, " ")
 }
 
-// observePassive превращает повтор ClientHello в пассивное наблюдение срыва
-// (5.10) и отдаёт его наблюдателям. Имя разбирается, стратегия определяется
-// текущим снимком — тем же выбором, что у настоящего соединения. Вне радиуса
-// (стратегия не выбрана) повтор не атрибутируется: цель не наша, наказывать
-// нечем. Разбор нагрузки здесь не горячий путь — повтор ClientHello редок.
-func (e *Engine) observePassive(hello []byte, flowID uint64) {
+// observePassive связывает повтор ClientHello с последней применённой
+// стратегией потока и сообщает о возможном срыве. Разбор нагрузки здесь не
+// горячий путь — повтор ClientHello редок.
+func (e *Engine) observePassive(hello []byte, flowID uint64, pkt capture.Packet) {
 	reporter, reportsFailures := e.prov.(FailureReporter)
 	if e.onPsv == nil && e.obs == nil && !reportsFailures {
 		return
@@ -708,15 +707,16 @@ func (e *Engine) observePassive(hello []byte, flowID uint64) {
 	if !ok {
 		return
 	}
+	record, hasApplied := e.takeRecentDesyncForPacket(pkt)
+	if reportsFailures && hasApplied && record.strategyID != "" {
+		reporter.ReportFailure(sni, record.strategyID)
+	}
 	if e.onPsv == nil && e.obs == nil {
-		if reportsFailures {
-			reporter.ReportFailure(sni)
-		}
 		return
 	}
 	sel := e.prov.Select(proxy.ConnMeta{SNI: sni, IsClientHello: true})
-	if reportsFailures {
-		reporter.ReportFailure(sni)
+	if hasApplied && record.strategyID != "" {
+		sel.ID = record.strategyID
 	}
 	if sel.Strategy == nil || sel.Target == "" {
 		return
@@ -988,7 +988,7 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 		if e.obs != nil {
 			e.obs.OnStrategyApplied(flowID, sni, sel.ID)
 		}
-		e.rememberDesync(tmpl, sni, localPort)
+		e.rememberDesync(tmpl, sni, sel.ID, localPort)
 		e.log.Debug("стратегия применена", "sni", sni, "strategy", sel.ID)
 		return false
 	}
@@ -1008,44 +1008,56 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 	return finish(err, sent)
 }
 
-func (e *Engine) rememberDesync(tmpl capture.Packet, sni string, localPort uint16) {
+func (e *Engine) rememberDesync(tmpl capture.Packet, sni string, strategyID core.StrategyID, localPort uint16) {
+	key, ok := desyncKeyForPacket(tmpl)
+	if !ok {
+		return
+	}
+	key.localPort = localPort
+	e.rememberDesyncAt(key, sni, strategyID, e.now())
+}
+
+func desyncKeyForPacket(tmpl capture.Packet) (desyncKey, bool) {
 	d, err := packet.Dissect(tmpl.Data)
 	if err != nil || d.Protocol != packet.ProtoTCP {
-		return
+		return desyncKey{}, false
 	}
 	tcp, ok := d.TCP(tmpl.Data)
 	if !ok {
-		return
+		return desyncKey{}, false
 	}
 	var remote netip.Addr
 	switch d.Version {
 	case packet.Version4:
 		ip, ok := d.IPv4(tmpl.Data)
 		if !ok {
-			return
+			return desyncKey{}, false
 		}
 		remote, ok = netip.AddrFromSlice(ip.Dst())
 		if !ok {
-			return
+			return desyncKey{}, false
 		}
 		remote = remote.Unmap()
 	case packet.Version6:
 		ip, ok := d.IPv6(tmpl.Data)
 		if !ok {
-			return
+			return desyncKey{}, false
 		}
 		remote, ok = netip.AddrFromSlice(ip.Dst())
 		if !ok {
-			return
+			return desyncKey{}, false
 		}
 	default:
-		return
+		return desyncKey{}, false
 	}
-	e.rememberDesyncAt(desyncKey{remote: netip.AddrPortFrom(remote, tcp.DstPort()), localPort: localPort}, sni, e.now())
+	return desyncKey{
+		remote:    netip.AddrPortFrom(remote, tcp.DstPort()),
+		localPort: tcp.SrcPort(),
+	}, true
 }
 
-func (e *Engine) rememberDesyncAt(key desyncKey, sni string, now time.Time) {
-	if !key.remote.IsValid() || sni == "" {
+func (e *Engine) rememberDesyncAt(key desyncKey, sni string, strategyID core.StrategyID, now time.Time) {
+	if !key.remote.IsValid() || sni == "" || strategyID == "" {
 		return
 	}
 	e.failureMu.Lock()
@@ -1065,7 +1077,23 @@ func (e *Engine) rememberDesyncAt(key desyncKey, sni string, now time.Time) {
 		}
 		delete(e.recentDesync, oldestKey)
 	}
-	e.recentDesync[key] = desyncRecord{sni: sni, at: now}
+	e.recentDesync[key] = desyncRecord{sni: sni, strategyID: strategyID, at: now}
+}
+
+func (e *Engine) takeRecentDesyncForPacket(pkt capture.Packet) (desyncRecord, bool) {
+	key, ok := desyncKeyForPacket(pkt)
+	if !ok {
+		return desyncRecord{}, false
+	}
+	now := e.now()
+	e.failureMu.Lock()
+	defer e.failureMu.Unlock()
+	e.pruneRecentDesync(now)
+	record, ok := e.recentDesync[key]
+	if ok {
+		delete(e.recentDesync, key)
+	}
+	return record, ok
 }
 
 func (e *Engine) pruneRecentDesync(now time.Time) {
@@ -1097,10 +1125,10 @@ func (e *Engine) OnInboundRST(remote netip.AddrPort, localPort uint16) {
 		return
 	}
 	if reporter, ok := e.prov.(FailureReporter); ok {
-		reporter.ReportFailure(record.sni)
+		reporter.ReportFailure(record.sni, record.strategyID)
 	}
 	if e.log != nil {
-		e.log.Debug("RST после десинка, ротация стратегии", "sni", record.sni)
+		e.log.Debug("RST после десинка, ротация стратегии", "sni", record.sni, "strategy", record.strategyID)
 	}
 }
 

@@ -78,11 +78,16 @@ hosts-подмена **не помогает**: там блокировка на
 
 | группа | домены | стратегия |
 |--------|--------|-----------|
-| `discord_updates` | `updates.discord.com` | `disorder-sni` |
-| `discord_gateway` | `gateway.discord.gg` | fallback (+ hosts-reroute) |
-| `discord_voice` | `discord.media` | **`badseq` + apple-ClientHello + `split-sni`** |
-| `discord_cdn` | `cdn.discordapp.com`, `discordapp.net` | **`tcp_overlap` с cover-пресетом** |
+| `discord_updates` | `updates.discord.com` | активная стратегия группы с failover |
+| `discord_gateway` | `gateway.discord.gg` | активная стратегия группы с failover |
+| `discord_voice` | `discord.media` | активная стратегия группы с failover |
+| `discord_cdn` | `cdn.discordapp.com`, `discordapp.net` | активная стратегия группы с failover |
+| `video` | домены видеосервисов | активная стратегия группы с failover |
 | (вне радиуса) | `discord.com` | без десинка |
+
+В ротационных группах все соединения используют одну активную стратегию;
+группа переключается только после отказа этой стратегии. Активная стратегия
+сохраняется отдельно для отпечатка каждой сети в `state/rotation.json`.
 
 Голосовой control-plane (WSS к `*.discord.media`) — самый плотный рецепт:
 
