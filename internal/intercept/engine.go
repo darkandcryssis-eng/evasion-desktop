@@ -155,6 +155,8 @@ type Engine struct {
 	failureMu             sync.Mutex
 	recentDesync          map[desyncKey]desyncRecord
 	lastDesyncPrune       time.Time
+	passiveLogMu          sync.Mutex
+	lastPassiveLogs       map[string]time.Time
 
 	// Счётчики разбора ClientHello (принадлежат горутине Run, без синхронизации).
 	// Нужны наблюдаемости: отличить «десинк применён, но не помог» от «десинк
@@ -206,10 +208,12 @@ type desyncRecord struct {
 
 const (
 	recentDesyncWindow = 5 * time.Second
+	passiveLogInterval = 5 * time.Second
 	// stallDesyncWindow — сколько запись о применённом приёме ждёт признака
 	// зависания после рукопожатия; совпадает с окном слежения в таблице потоков.
 	stallDesyncWindow    = 60 * time.Second
 	recentDesyncCapacity = 4096
+	passiveLogCapacity   = 4096
 	maxAsyncWorkers      = 256
 )
 
@@ -728,12 +732,17 @@ func (e *Engine) observePassive(hello []byte, flowID uint64, pkt capture.Packet)
 	if reportsFailures && hasApplied && record.strategyID != "" {
 		reporter.ReportFailure(sni, record.strategyID)
 	}
-	if e.onPsv == nil && e.obs == nil {
-		return
-	}
 	sel := e.prov.Select(proxy.ConnMeta{SNI: sni, IsClientHello: true})
 	if hasApplied && record.strategyID != "" {
 		sel.ID = record.strategyID
+	}
+	strategyID := sel.ID
+	if hasApplied {
+		strategyID = record.strategyID
+	}
+	e.logPassiveRetransmit(sni, strategyID)
+	if e.onPsv == nil && e.obs == nil {
+		return
 	}
 	if sel.Strategy == nil || sel.Target == "" {
 		return
@@ -744,6 +753,34 @@ func (e *Engine) observePassive(hello []byte, flowID uint64, pkt capture.Packet)
 	if e.obs != nil {
 		e.obs.OnPassiveRetransmit(flowID, sni, sel.Target, sel.ID)
 	}
+}
+
+func (e *Engine) logPassiveRetransmit(sni string, strategyID core.StrategyID) {
+	if e.log == nil {
+		return
+	}
+	now := e.now()
+	e.passiveLogMu.Lock()
+	if e.lastPassiveLogs == nil {
+		e.lastPassiveLogs = make(map[string]time.Time)
+	}
+	if last, ok := e.lastPassiveLogs[sni]; ok && now.Sub(last) < passiveLogInterval {
+		e.passiveLogMu.Unlock()
+		return
+	}
+	if len(e.lastPassiveLogs) >= passiveLogCapacity {
+		oldestSNI := ""
+		var oldest time.Time
+		for name, loggedAt := range e.lastPassiveLogs {
+			if oldestSNI == "" || loggedAt.Before(oldest) {
+				oldestSNI, oldest = name, loggedAt
+			}
+		}
+		delete(e.lastPassiveLogs, oldestSNI)
+	}
+	e.lastPassiveLogs[sni] = now
+	e.passiveLogMu.Unlock()
+	e.log.Info("повтор ClientHello", "sni", sni, "strategy", strategyID)
 }
 
 // applySingle применяет стратегию к одиночному (уместившемуся или с именем в
