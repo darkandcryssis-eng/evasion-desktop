@@ -98,6 +98,12 @@ func (r *voiceRouter) saveJournal() {
 	}
 }
 
+// isDiscordVoiceHost — узел голосового сервера Discord (c-ams19-….discord.media).
+func isDiscordVoiceHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	return strings.HasSuffix(host, ".discord.media")
+}
+
 // routableVoiceAddr отсекает адреса, на которые маршрут ставить нельзя:
 // частные и служебные, включая 198.18.0.0/15, которым VPN-клиенты с
 // подменой адресов отвечают вместо настоящего.

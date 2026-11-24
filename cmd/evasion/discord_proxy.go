@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -123,14 +122,15 @@ func startDiscordDirectProxy(parent context.Context, route netbind.Route, listen
 	server := &discordproxy.Server{
 		Dial:        discordproxy.DialContextFunc(netbind.Dialer(route.Physical.Index)),
 		Passthrough: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		Reroute:     func(string) bool { return !discordDirectProven.Load() },
-		Logger:      logger,
+		// Сигнальные соединения голосовых серверов остаются в VPN всегда:
+		// проверка прямого пути их не покрывает, а на прямом пути провайдер
+		// душит их после рукопожатия — клиент виснет на аутентификации.
+		Reroute: func(host string) bool { return isDiscordVoiceHost(host) || !discordDirectProven.Load() },
+		Logger:  logger,
 	}
 	voice := newVoiceRouter(route.Physical, logger)
 	stopVoice := startVoiceObserver(ctx, route, voice, func() int {
-		return server.Drop(func(host string) bool {
-			return strings.HasSuffix(strings.TrimSuffix(strings.ToLower(host), "."), ".discord.media")
-		})
+		return server.Drop(isDiscordVoiceHost)
 	}, logger)
 	go func() {
 		_ = server.Serve(ctx, ln)

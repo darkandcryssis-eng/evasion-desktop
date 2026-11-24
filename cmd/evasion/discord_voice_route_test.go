@@ -81,3 +81,17 @@ func udpPacketV4(src, dst netip.AddrPort, payload []byte) []byte {
 	copy(buf[28:], payload)
 	return buf
 }
+
+func TestIsDiscordVoiceHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"c-arn09-513e6835.discord.media": true,
+		"LATENCY.discord.media.":         true,
+		"discord.media":                  false,
+		"gateway.discord.gg":             false,
+		"discord.media.example.com":      false,
+	} {
+		if got := isDiscordVoiceHost(host); got != want {
+			t.Errorf("%s: %v", host, got)
+		}
+	}
+}
