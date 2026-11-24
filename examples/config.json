@@ -3,25 +3,51 @@
   "observe": false,
   "block_quic": true,
   "groups": {
-    "video": ["youtube.com", "googlevideo.com", "ytimg.com"],
-    "discord_web": ["discord.com", "discord.gg", "discordapp.com"],
-    "discord_updates": ["updates.discord.com"],
-    "discord_gateway": ["gateway.discord.gg"],
-    "discord_voice": ["discord.media"],
-    "discord_cdn": ["cdn.discordapp.com", "discordapp.net"]
+    "video": [
+      "youtube.com",
+      "googlevideo.com",
+      "ytimg.com"
+    ],
+    "discord_web": [
+      "discord.com",
+      "discord.gg",
+      "discordapp.com"
+    ],
+    "discord_updates": [
+      "updates.discord.com"
+    ],
+    "discord_gateway": [
+      "gateway.discord.gg"
+    ],
+    "discord_voice": [
+      "discord.media"
+    ],
+    "discord_cdn": [
+      "cdn.discordapp.com",
+      "discordapp.net"
+    ]
   },
   "vantage": {
     "operator": "укажите-своего-оператора",
     "region": "RU-SPE",
     "access": "wired"
   },
-  "probe_targets": ["www.youtube.com", "discord.com"],
-  "control_targets": ["example.com", "ya.ru"],
+  "probe_targets": [
+    "www.youtube.com",
+    "discord.com"
+  ],
+  "control_targets": [
+    "example.com",
+    "ya.ru"
+  ],
   "transport_fallback": {
     "enabled": true,
     "entries": [
       {
-        "safe_ips": ["162.159.138.232", "23.227.38.74"],
+        "safe_ips": [
+          "162.159.138.232",
+          "23.227.38.74"
+        ],
         "domains": [
           "gateway.discord.gg",
           "media.discordapp.net"
@@ -38,19 +64,32 @@
     "rules": [
       {
         "direction": "outbound",
-        "trigger": { "match": "client_hello" },
+        "trigger": {
+          "match": "client_hello"
+        },
         "action": {
           "kind": "duplicate",
           "left": {
             "kind": "tamper",
-            "params": { "field": "tcp_checksum", "mode": "corrupt" },
+            "params": {
+              "field": "tcp_checksum",
+              "mode": "corrupt"
+            },
             "left": {
               "kind": "tamper",
-              "params": { "field": "payload", "mode": "replace", "length": 200 },
-              "left": { "kind": "send" }
+              "params": {
+                "field": "payload",
+                "mode": "replace",
+                "length": 200
+              },
+              "left": {
+                "kind": "send"
+              }
             }
           },
-          "right": { "kind": "send" }
+          "right": {
+            "kind": "send"
+          }
         }
       }
     ]
@@ -58,6 +97,201 @@
   "strategies": {
     "discord_web": {
       "rotation": [
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_vk"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sld",
+                    "order": "reverse"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_yandex"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "duplicate",
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "tcp_seq",
+                      "mode": "add",
+                      "value": 4294957296
+                    },
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "payload",
+                        "mode": "replace",
+                        "preset": "tls_clienthello_yandex"
+                      },
+                      "left": {
+                        "kind": "send"
+                      }
+                    }
+                  },
+                  "right": {
+                    "kind": "duplicate",
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "tcp_seq",
+                        "mode": "add",
+                        "value": 4294957296
+                      },
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "payload",
+                          "mode": "replace",
+                          "preset": "tls_clienthello_yandex"
+                        },
+                        "left": {
+                          "kind": "send"
+                        }
+                      }
+                    },
+                    "right": {
+                      "kind": "duplicate",
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "tcp_seq",
+                          "mode": "add",
+                          "value": 4294957296
+                        },
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "payload",
+                            "mode": "replace",
+                            "preset": "tls_clienthello_yandex"
+                          },
+                          "left": {
+                            "kind": "send"
+                          }
+                        }
+                      },
+                      "right": {
+                        "kind": "duplicate",
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "tcp_seq",
+                            "mode": "add",
+                            "value": 4294957296
+                          },
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "payload",
+                              "mode": "replace",
+                              "preset": "tls_clienthello_yandex"
+                            },
+                            "left": {
+                              "kind": "send"
+                            }
+                          }
+                        },
+                        "right": {
+                          "kind": "duplicate",
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "tcp_seq",
+                              "mode": "add",
+                              "value": 4294957296
+                            },
+                            "left": {
+                              "kind": "tamper",
+                              "params": {
+                                "field": "payload",
+                                "mode": "replace",
+                                "preset": "tls_clienthello_yandex"
+                              },
+                              "left": {
+                                "kind": "send"
+                              }
+                            }
+                          },
+                          "right": {
+                            "kind": "tcp_overlap",
+                            "params": {
+                              "preset": "tls_cover_681",
+                              "offset": 1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
         {
           "rules": [
             {
@@ -239,6 +473,201 @@
                 "match": "client_hello"
               },
               "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_vk"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sld",
+                    "order": "reverse"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_yandex"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "duplicate",
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "tcp_seq",
+                      "mode": "add",
+                      "value": 4294957296
+                    },
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "payload",
+                        "mode": "replace",
+                        "preset": "tls_clienthello_yandex"
+                      },
+                      "left": {
+                        "kind": "send"
+                      }
+                    }
+                  },
+                  "right": {
+                    "kind": "duplicate",
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "tcp_seq",
+                        "mode": "add",
+                        "value": 4294957296
+                      },
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "payload",
+                          "mode": "replace",
+                          "preset": "tls_clienthello_yandex"
+                        },
+                        "left": {
+                          "kind": "send"
+                        }
+                      }
+                    },
+                    "right": {
+                      "kind": "duplicate",
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "tcp_seq",
+                          "mode": "add",
+                          "value": 4294957296
+                        },
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "payload",
+                            "mode": "replace",
+                            "preset": "tls_clienthello_yandex"
+                          },
+                          "left": {
+                            "kind": "send"
+                          }
+                        }
+                      },
+                      "right": {
+                        "kind": "duplicate",
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "tcp_seq",
+                            "mode": "add",
+                            "value": 4294957296
+                          },
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "payload",
+                              "mode": "replace",
+                              "preset": "tls_clienthello_yandex"
+                            },
+                            "left": {
+                              "kind": "send"
+                            }
+                          }
+                        },
+                        "right": {
+                          "kind": "duplicate",
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "tcp_seq",
+                              "mode": "add",
+                              "value": 4294957296
+                            },
+                            "left": {
+                              "kind": "tamper",
+                              "params": {
+                                "field": "payload",
+                                "mode": "replace",
+                                "preset": "tls_clienthello_yandex"
+                              },
+                              "left": {
+                                "kind": "send"
+                              }
+                            }
+                          },
+                          "right": {
+                            "kind": "tcp_overlap",
+                            "params": {
+                              "preset": "tls_cover_681",
+                              "offset": 1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
                 "kind": "tcp_overlap",
                 "params": {
                   "preset": "tls_cover_681"
@@ -412,6 +841,201 @@
                 "match": "client_hello"
               },
               "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_vk"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sld",
+                    "order": "reverse"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_yandex"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "duplicate",
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "tcp_seq",
+                      "mode": "add",
+                      "value": 4294957296
+                    },
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "payload",
+                        "mode": "replace",
+                        "preset": "tls_clienthello_yandex"
+                      },
+                      "left": {
+                        "kind": "send"
+                      }
+                    }
+                  },
+                  "right": {
+                    "kind": "duplicate",
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "tcp_seq",
+                        "mode": "add",
+                        "value": 4294957296
+                      },
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "payload",
+                          "mode": "replace",
+                          "preset": "tls_clienthello_yandex"
+                        },
+                        "left": {
+                          "kind": "send"
+                        }
+                      }
+                    },
+                    "right": {
+                      "kind": "duplicate",
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "tcp_seq",
+                          "mode": "add",
+                          "value": 4294957296
+                        },
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "payload",
+                            "mode": "replace",
+                            "preset": "tls_clienthello_yandex"
+                          },
+                          "left": {
+                            "kind": "send"
+                          }
+                        }
+                      },
+                      "right": {
+                        "kind": "duplicate",
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "tcp_seq",
+                            "mode": "add",
+                            "value": 4294957296
+                          },
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "payload",
+                              "mode": "replace",
+                              "preset": "tls_clienthello_yandex"
+                            },
+                            "left": {
+                              "kind": "send"
+                            }
+                          }
+                        },
+                        "right": {
+                          "kind": "duplicate",
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "tcp_seq",
+                              "mode": "add",
+                              "value": 4294957296
+                            },
+                            "left": {
+                              "kind": "tamper",
+                              "params": {
+                                "field": "payload",
+                                "mode": "replace",
+                                "preset": "tls_clienthello_yandex"
+                              },
+                              "left": {
+                                "kind": "send"
+                              }
+                            }
+                          },
+                          "right": {
+                            "kind": "tcp_overlap",
+                            "params": {
+                              "preset": "tls_cover_681",
+                              "offset": 1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
                 "kind": "tcp_overlap",
                 "params": {
                   "preset": "tls_cover_681"
@@ -577,6 +1201,201 @@
     },
     "discord_updates": {
       "rotation": [
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_vk"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sld",
+                    "order": "reverse"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
+                "left": {
+                  "kind": "tamper",
+                  "params": {
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_yandex"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "duplicate",
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "tcp_seq",
+                      "mode": "add",
+                      "value": 4294957296
+                    },
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "payload",
+                        "mode": "replace",
+                        "preset": "tls_clienthello_yandex"
+                      },
+                      "left": {
+                        "kind": "send"
+                      }
+                    }
+                  },
+                  "right": {
+                    "kind": "duplicate",
+                    "left": {
+                      "kind": "tamper",
+                      "params": {
+                        "field": "tcp_seq",
+                        "mode": "add",
+                        "value": 4294957296
+                      },
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "payload",
+                          "mode": "replace",
+                          "preset": "tls_clienthello_yandex"
+                        },
+                        "left": {
+                          "kind": "send"
+                        }
+                      }
+                    },
+                    "right": {
+                      "kind": "duplicate",
+                      "left": {
+                        "kind": "tamper",
+                        "params": {
+                          "field": "tcp_seq",
+                          "mode": "add",
+                          "value": 4294957296
+                        },
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "payload",
+                            "mode": "replace",
+                            "preset": "tls_clienthello_yandex"
+                          },
+                          "left": {
+                            "kind": "send"
+                          }
+                        }
+                      },
+                      "right": {
+                        "kind": "duplicate",
+                        "left": {
+                          "kind": "tamper",
+                          "params": {
+                            "field": "tcp_seq",
+                            "mode": "add",
+                            "value": 4294957296
+                          },
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "payload",
+                              "mode": "replace",
+                              "preset": "tls_clienthello_yandex"
+                            },
+                            "left": {
+                              "kind": "send"
+                            }
+                          }
+                        },
+                        "right": {
+                          "kind": "duplicate",
+                          "left": {
+                            "kind": "tamper",
+                            "params": {
+                              "field": "tcp_seq",
+                              "mode": "add",
+                              "value": 4294957296
+                            },
+                            "left": {
+                              "kind": "tamper",
+                              "params": {
+                                "field": "payload",
+                                "mode": "replace",
+                                "preset": "tls_clienthello_yandex"
+                              },
+                              "left": {
+                                "kind": "send"
+                              }
+                            }
+                          },
+                          "right": {
+                            "kind": "tcp_overlap",
+                            "params": {
+                              "preset": "tls_cover_681",
+                              "offset": 1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
         {
           "rules": [
             {
