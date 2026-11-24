@@ -17,11 +17,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/discordproxy"
 	"github.com/fitting-1c/evasion/internal/gameproxy"
 	"github.com/fitting-1c/evasion/internal/netbind"
+	"github.com/fitting-1c/evasion/internal/proxy"
 	"github.com/fitting-1c/evasion/internal/windivert"
 	xproxy "golang.org/x/net/proxy"
 )
@@ -154,7 +157,11 @@ func startDiscordWatchProxy(parent context.Context, listen string, logger *slog.
 	ctx, cancel := context.WithCancel(parent)
 	p := &discordDirectProxy{Listen: ln.Addr().String(), cancel: cancel, done: make(chan struct{})}
 	dial := (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	server := &discordproxy.Server{Dial: dial, Passthrough: dial, NoReply: discordNoReply, Logger: logger}
+	server := &discordproxy.Server{Dial: dial, Passthrough: dial, NoReply: discordNoReply, Logger: logger, OnStall: func(host string) {
+		if report := discordStallReport.Load(); report != nil {
+			(*report)(host)
+		}
+	}}
 	go func() {
 		_ = server.Serve(ctx, ln)
 		close(p.done)
@@ -165,6 +172,37 @@ func startDiscordWatchProxy(parent context.Context, listen string, logger *slog.
 // discordNoReply — сколько ждать первого байта ответа узла Discord. Рукопожатие
 // у живого соединения укладывается в сотни миллисекунд.
 const discordNoReply = 5 * time.Second
+
+// discordStallReport — куда прокси сообщает о соединении, застрявшем в начале:
+// перехват засчитывает срыв текущей стратегии узла. Задаётся после сборки
+// провайдера стратегий.
+var discordStallReport atomic.Pointer[func(host string)]
+
+// newDiscordStallReport засчитывает срыв стратегии, действующей сейчас для
+// узла. Срывы по одному узлу чаще раза в 2 секунды сливаются в один: клиент
+// открывает соединения пачкой, и пачка не должна прокрутить всю ротацию.
+func newDiscordStallReport(provider proxy.StrategyProvider, reporter interface {
+	ReportFailure(sni string, failed core.StrategyID)
+}) func(host string) {
+	var mu sync.Mutex
+	last := map[string]time.Time{}
+	return func(host string) {
+		now := time.Now()
+		mu.Lock()
+		recent := now.Sub(last[host]) < 2*time.Second
+		if !recent {
+			last[host] = now
+		}
+		mu.Unlock()
+		if recent {
+			return
+		}
+		sel := provider.Select(proxy.ConnMeta{Host: host, SNI: host, Port: 443, IsClientHello: true})
+		if sel.Strategy != nil {
+			reporter.ReportFailure(host, sel.ID)
+		}
+	}
+}
 
 func (p *discordDirectProxy) Close() {
 	p.once.Do(func() {
