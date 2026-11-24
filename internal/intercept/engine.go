@@ -182,6 +182,7 @@ type Engine struct {
 	// поднимается сторожем из другой горутины, а читается в цикле на каждый
 	// пакет.
 	transparent atomic.Bool
+	async       *asyncRun
 }
 
 type FailureReporter interface {
@@ -201,7 +202,52 @@ type desyncRecord struct {
 const (
 	recentDesyncWindow   = 5 * time.Second
 	recentDesyncCapacity = 4096
+	maxAsyncWorkers      = 256
 )
+
+type receiveEvent struct {
+	pkt capture.Packet
+	err error
+}
+
+type asyncCompletion struct {
+	flowID uint64
+	finish func()
+}
+
+type pendingFlow struct {
+	queue []capture.Packet
+}
+
+type asyncRun struct {
+	ctx         context.Context
+	cancel      context.CancelFunc
+	completions chan asyncCompletion
+	mu          sync.Mutex
+	active      map[uint64]*pendingFlow
+	workerCount int
+	workers     sync.WaitGroup
+}
+
+func (r *asyncRun) start(flowID uint64, work func(context.Context) func()) bool {
+	if r == nil || r.workerCount >= maxAsyncWorkers {
+		return false
+	}
+	r.mu.Lock()
+	if r.active[flowID] != nil {
+		r.mu.Unlock()
+		return false
+	}
+	r.active[flowID] = &pendingFlow{}
+	r.mu.Unlock()
+	r.workerCount++
+	r.workers.Add(1)
+	go func() {
+		defer r.workers.Done()
+		r.completions <- asyncCompletion{flowID: flowID, finish: work(r.ctx)}
+	}()
+	return true
+}
 
 // New создаёт контур, проверив обязательные зависимости.
 func New(opts Options) (*Engine, error) {
@@ -254,26 +300,232 @@ func (e *Engine) Transparent() bool { return e.transparent.Load() }
 
 // Run ведёт цикл перехвата до ошибки источника или отмены контекста.
 //
-// Источник блокирует на Recv; отмена снаружи приходит закрытием источника
-// (у WinDivert закрытие handle разблокирует Recv ошибкой), а io.EOF —
-// штатное завершение синтетического и файлового источников.
+// Приёмная горутина копирует буфер источника; таблица потоков и callbacks
+// остаются во владении этой горутины. Задержанные планы завершаются через
+// очередь результатов, сохраняя FIFO-порядок пакетов одного потока.
 func (e *Engine) Run(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	state := &asyncRun{
+		ctx:         runCtx,
+		cancel:      cancel,
+		completions: make(chan asyncCompletion, maxAsyncWorkers),
+		active:      make(map[uint64]*pendingFlow),
+	}
+	e.async = state
+	defer func() {
+		cancel()
+		e.async = nil
+	}()
+
+	received := make(chan receiveEvent, 1)
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		defer close(received)
+		for {
+			pkt, err := e.src.Recv()
+			if err == nil {
+				pkt = clonePacket(pkt)
+			}
+			received <- receiveEvent{pkt: pkt, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	sourceDone := false
 	for {
-		pkt, err := e.src.Recv()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
+		if sourceDone && state.workerCount == 0 {
+			state.workers.Wait()
+			<-readerDone
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			e.stopAsyncRun(state, received, readerDone, true)
+			return ctx.Err()
+		case event, ok := <-received:
+			if !ok {
+				received = nil
+				sourceDone = true
+				continue
+			}
+			if event.err != nil {
+				received = nil
+				if errors.Is(event.err, io.EOF) {
+					sourceDone = true
+					continue
+				}
+				if ctx.Err() != nil {
+					e.stopAsyncRun(state, received, readerDone, true)
+					return ctx.Err()
+				}
+				err := fmt.Errorf("intercept: приём пакета: %w", event.err)
+				e.stopAsyncRun(state, received, readerDone, true)
+				return err
 			}
 			if ctx.Err() != nil {
+				e.forwardOrQueue(state, event.pkt)
+				e.stopAsyncRun(state, received, readerDone, true)
 				return ctx.Err()
 			}
-			return fmt.Errorf("intercept: приём пакета: %w", err)
-		}
-		e.handle(ctx, pkt)
-		if ctx.Err() != nil {
-			return ctx.Err()
+			if flowID, ok := packetFlowID(event.pkt); ok {
+				state.mu.Lock()
+				if pending := state.active[flowID]; pending != nil {
+					pending.queue = append(pending.queue, clonePacket(event.pkt))
+					state.mu.Unlock()
+					continue
+				}
+				state.mu.Unlock()
+			}
+			e.handle(runCtx, event.pkt)
+		case result := <-state.completions:
+			state.workerCount--
+			result.finish()
+			e.drainPending(state, result.flowID)
 		}
 	}
+}
+
+func (e *Engine) drainPending(state *asyncRun, flowID uint64) {
+	state.mu.Lock()
+	pending := state.active[flowID]
+	if pending == nil {
+		state.mu.Unlock()
+		return
+	}
+	delete(state.active, flowID)
+	state.mu.Unlock()
+	for i, pkt := range pending.queue {
+		state.mu.Lock()
+		if next := state.active[flowID]; next != nil {
+			next.queue = append(next.queue, pending.queue[i:]...)
+			state.mu.Unlock()
+			return
+		}
+		state.mu.Unlock()
+		e.handle(state.ctx, pkt)
+	}
+}
+
+func (e *Engine) stopAsyncRun(state *asyncRun, received <-chan receiveEvent, readerDone <-chan struct{}, stopSource bool) {
+	state.cancel()
+	waitReader := false
+	if stopSource {
+		if source, ok := e.src.(interface{ ShutdownReceive() error }); ok {
+			waitReader = source.ShutdownReceive() == nil
+		}
+	}
+
+	for state.workerCount > 0 {
+		select {
+		case result := <-state.completions:
+			state.workerCount--
+			result.finish()
+			e.forwardPending(state, result.flowID)
+		case event, ok := <-received:
+			if !ok {
+				received = nil
+				continue
+			}
+			if event.err == nil {
+				e.forwardOrQueue(state, event.pkt)
+			}
+		case <-readerDone:
+			readerDone = nil
+		}
+	}
+	state.workers.Wait()
+
+	if waitReader && readerDone != nil {
+		for readerDone != nil {
+			select {
+			case event, ok := <-received:
+				if !ok {
+					received = nil
+					continue
+				}
+				if event.err == nil {
+					e.forwardOrQueue(state, event.pkt)
+				}
+			case <-readerDone:
+				readerDone = nil
+			}
+		}
+	}
+	e.forwardAllPending(state)
+	for received != nil {
+		select {
+		case event, ok := <-received:
+			if !ok {
+				received = nil
+				continue
+			}
+			if event.err == nil {
+				e.forwardOrQueue(state, event.pkt)
+			}
+		default:
+			received = nil
+		}
+	}
+	e.forwardAllPending(state)
+}
+
+func (e *Engine) forwardAllPending(state *asyncRun) {
+	state.mu.Lock()
+	flowIDs := make([]uint64, 0, len(state.active))
+	for flowID := range state.active {
+		flowIDs = append(flowIDs, flowID)
+	}
+	state.mu.Unlock()
+	for _, flowID := range flowIDs {
+		e.forwardPending(state, flowID)
+	}
+}
+
+func (e *Engine) forwardOrQueue(state *asyncRun, pkt capture.Packet) {
+	if flowID, ok := packetFlowID(pkt); ok {
+		state.mu.Lock()
+		if pending := state.active[flowID]; pending != nil {
+			pending.queue = append(pending.queue, clonePacket(pkt))
+			state.mu.Unlock()
+			return
+		}
+		state.mu.Unlock()
+	}
+	e.forward(pkt)
+}
+
+func (e *Engine) forwardPending(state *asyncRun, flowID uint64) {
+	state.mu.Lock()
+	pending := state.active[flowID]
+	if pending == nil {
+		state.mu.Unlock()
+		return
+	}
+	delete(state.active, flowID)
+	state.mu.Unlock()
+	for _, pkt := range pending.queue {
+		e.forward(pkt)
+	}
+}
+
+func clonePacket(pkt capture.Packet) capture.Packet {
+	pkt.Data = append([]byte(nil), pkt.Data...)
+	return pkt
+}
+
+func packetFlowID(pkt capture.Packet) (uint64, bool) {
+	d, err := packet.Dissect(pkt.Data)
+	if err != nil || d.Protocol != packet.ProtoTCP {
+		return 0, false
+	}
+	key, ok := keyOf(d, pkt.Data)
+	if !ok {
+		return 0, false
+	}
+	return hashFlowKey(key), true
 }
 
 // handle обрабатывает один пакет.
@@ -486,10 +738,11 @@ func (e *Engine) applySingle(ctx context.Context, pkt capture.Packet, hello []by
 		e.forward(pkt)
 		return
 	}
-	if e.execDesync(ctx, pkt, hello, cuts, baseSeq, sni, localPort, flowID, false, 0) {
+	fallback := func() { e.forward(pkt) }
+	if e.execDesync(ctx, pkt, hello, cuts, baseSeq, sni, localPort, flowID, false, 0, fallback) {
 		// Десинк не отправлен (вне радиуса, несобираемо, неисполнимо) — оригинал
 		// пропускаем как есть.
-		e.forward(pkt)
+		fallback()
 	}
 }
 
@@ -539,10 +792,13 @@ func (e *Engine) applyAssembled(ctx context.Context, pkt capture.Packet, act flo
 			// целиком, иначе сервер примет cover как данные.
 			limit = max(limit, min(len(act.Hello), safeSegment))
 		}
-		if e.execDesync(ctx, pkt, act.Hello, cuts, act.BaseSeq, sni, localPort, flowID, true, limit) {
+		fallback := func() {
 			// Не отправлено (вне радиуса/неисполнимо) — досылаем всю склейку
 			// сырьём по исходным границам сегментов, байты не теряем.
 			e.emitHeldRange(ctx, pkt, act.Hello, act.BaseSeq, act.SegLens, 0, len(act.SegLens))
+		}
+		if e.execDesync(ctx, pkt, act.Hello, cuts, act.BaseSeq, sni, localPort, flowID, true, limit, fallback) {
+			fallback()
 		}
 		return
 	}
@@ -564,10 +820,13 @@ func (e *Engine) applyAssembled(ctx context.Context, pkt capture.Packet, act flo
 	// склейке — переводим в координаты куска.
 	span := act.Hello[segKoff:]
 	shiftCuts(cuts, segKoff)
-	if e.execDesync(ctx, pkt, span, cuts, act.BaseSeq+uint32(segKoff), sni, localPort, flowID, true, 0) {
+	fallback := func() {
 		// Десинк не отправлен — досылаем кусок сырьём по исходным границам
 		// сегментов (не одним пакетом сверх MTU).
 		e.emitHeldRange(ctx, pkt, act.Hello, act.BaseSeq, act.SegLens, segK, len(act.SegLens))
+	}
+	if e.execDesync(ctx, pkt, span, cuts, act.BaseSeq+uint32(segKoff), sni, localPort, flowID, true, 0, fallback) {
+		fallback()
 	}
 }
 
@@ -598,7 +857,7 @@ func strategyCutsSLD(s *strategy.Strategy) bool {
 	return false
 }
 
-func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []byte, cuts []core.CutPoint, baseSeq uint32, sni string, localPort uint16, flowID uint64, assembled bool, segmentLimit int) (forwardRaw bool) {
+func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []byte, cuts []core.CutPoint, baseSeq uint32, sni string, localPort uint16, flowID uint64, assembled bool, segmentLimit int, fallback func()) (forwardRaw bool) {
 	// Наблюдатель QUIC-only: факт TCP ClientHello по имени — признак того, что
 	// приложение на TCP работает (откат после блокировки QUIC состоялся).
 	// Зовётся ВСЕГДА, до выбора стратегии: трекер сам игнорирует имена, к
@@ -646,6 +905,12 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 		IsClientHello: true,
 		Cuts:          cuts,
 	}
+	delayPlan := e.async != nil && strategy.RequiredCapabilities(sel.Strategy).Has(core.CapDelay)
+	if delayPlan {
+		input.Payload = append([]byte(nil), input.Payload...)
+		input.Cuts = append([]core.CutPoint(nil), input.Cuts...)
+		tmpl = clonePacket(tmpl)
+	}
 	sink := e.sink
 	if e.desyncSink != nil {
 		if selected := e.desyncSink(sni); selected != nil {
@@ -678,55 +943,69 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 		conn.SetSegmentTailAligned(true)
 	}
 
-	err = e.exec.Execute(ctx, sel.Strategy, conn)
-	if err != nil && e.shortHelloFallback && !conn.Sent() && errors.Is(err, desync.ErrCutUnavailable) &&
-		strategy.RequiredCapabilities(sel.Strategy).Has(core.CapTCPOverlap) {
-		// ClientHello не длиннее cover'а (клиент без постквантового обмена:
-		// старый браузер, сторонний клиент) — перекрытие невозможно. Сырьём
-		// такой hello ушёл бы с открытым SNI, поэтому режем его внутри имени.
-		if conn, err = packetexec.NewConnAt(sink, input, tmpl, baseSeq); err == nil {
-			conn.SetSegmentLimit(segmentLimit)
-			err = e.exec.Execute(ctx, shortHelloFallback, conn)
-		}
-	}
-	if err != nil {
-		if conn != nil && conn.Sent() {
-			// Часть пакетов уже ушла: поток необратимо начат, пропускать
-			// оригинал нельзя — он лёг бы поверх уже отправленного. Это
-			// по-настоящему тревожный случай (полуотправленный поток), поэтому
-			// остаётся Warn.
-			e.log.Warn("исполнение прервано после отправки, оригинал не пропускаем",
-				"strategy", sel.ID, "err", err)
-			if e.obs != nil {
-				e.obs.OnStrategyFailed(flowID, sni, sel.ID, "exec_partial")
+	execute := func(execCtx context.Context) (error, bool) {
+		execErr := e.exec.Execute(execCtx, sel.Strategy, conn)
+		finalConn := conn
+		if execErr != nil && e.shortHelloFallback && !conn.Sent() && errors.Is(execErr, desync.ErrCutUnavailable) &&
+			strategy.RequiredCapabilities(sel.Strategy).Has(core.CapTCPOverlap) {
+			// ClientHello не длиннее cover'а (клиент без постквантового обмена:
+			// старый браузер, сторонний клиент) — перекрытие невозможно. Сырьём
+			// такой hello ушёл бы с открытым SNI, поэтому режем его внутри имени.
+			var buildErr error
+			finalConn, buildErr = packetexec.NewConnAt(sink, input, tmpl, baseSeq)
+			if buildErr != nil {
+				return buildErr, false
 			}
-			return false
+			finalConn.SetSegmentLimit(segmentLimit)
+			execErr = e.exec.Execute(execCtx, shortHelloFallback, finalConn)
 		}
-		// Ничего не ушло (неисполнимая на этом пакете стратегия: поле не того
-		// протокола, недоступная точка разреза): безопасно пропускаем оригинал
-		// как есть (1.6). Это штатный откат и ожидаемый исход для кандидатов
-		// генератора — Debug, а не Error, иначе поиск тонет в красном. Что
-		// стратегия не сработала, видно по её нулевой доле в оценке.
-		if e.obs != nil {
-			e.obs.OnStrategyFailed(flowID, sni, sel.ID, "exec_failed")
-		}
-		e.log.Debug("стратегия не применена, пропуск без изменений",
-			"strategy", sel.ID, "err", err)
-		return true
+		return execErr, finalConn.Sent()
 	}
 
-	// Успех: исполнитель отправил замену, оригинальный ClientHello не
-	// пропускаем — иначе DPI увидел бы и его.
-	//
-	// Debug, а не Info: строка пишется на КАЖДОЕ перехваченное соединение, и в
-	// реальном браузинге на Info залила бы журнал. В обычной работе значимы
-	// события автопилота (выбор, деградация) и тревоги, а не каждый ClientHello.
-	if e.obs != nil {
-		e.obs.OnStrategyApplied(flowID, sni, sel.ID)
+	finish := func(execErr error, sent bool) bool {
+		if execErr != nil {
+			if sent {
+				// Часть пакетов уже ушла: поток необратимо начат, пропускать
+				// оригинал нельзя — он лёг бы поверх уже отправленного. Это
+				// по-настоящему тревожный случай (полуотправленный поток), поэтому
+				// остаётся Warn.
+				e.log.Warn("исполнение прервано после отправки, оригинал не пропускаем",
+					"strategy", sel.ID, "err", execErr)
+				if e.obs != nil {
+					e.obs.OnStrategyFailed(flowID, sni, sel.ID, "exec_partial")
+				}
+				return false
+			}
+			// Ничего не ушло: безопасно пропускаем оригинал как есть.
+			if e.obs != nil {
+				e.obs.OnStrategyFailed(flowID, sni, sel.ID, "exec_failed")
+			}
+			e.log.Debug("стратегия не применена, пропуск без изменений",
+				"strategy", sel.ID, "err", execErr)
+			return true
+		}
+
+		if e.obs != nil {
+			e.obs.OnStrategyApplied(flowID, sni, sel.ID)
+		}
+		e.rememberDesync(tmpl, sni, localPort)
+		e.log.Debug("стратегия применена", "sni", sni, "strategy", sel.ID)
+		return false
 	}
-	e.rememberDesync(tmpl, sni, localPort)
-	e.log.Debug("стратегия применена", "sni", sni, "strategy", sel.ID)
-	return false
+
+	if delayPlan && e.async.start(flowID, func(execCtx context.Context) func() {
+		execErr, sent := execute(execCtx)
+		return func() {
+			if finish(execErr, sent) {
+				fallback()
+			}
+		}
+	}) {
+		return false
+	}
+
+	err, sent := execute(ctx)
+	return finish(err, sent)
 }
 
 func (e *Engine) rememberDesync(tmpl capture.Packet, sni string, localPort uint16) {

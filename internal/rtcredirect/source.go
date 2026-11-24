@@ -1,6 +1,8 @@
 package rtcredirect
 
 import (
+	"errors"
+
 	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
 )
@@ -35,4 +37,12 @@ func (s *Source) Recv() (capture.Packet, error) {
 	}
 	s.r.Apply(pkt.Data, pkt.Dir == core.DirectionOutbound)
 	return pkt, nil
+}
+
+func (s *Source) ShutdownReceive() error {
+	source, ok := s.inner.(interface{ ShutdownReceive() error })
+	if !ok {
+		return errors.New("rtcredirect: inner source cannot be stopped")
+	}
+	return source.ShutdownReceive()
 }
