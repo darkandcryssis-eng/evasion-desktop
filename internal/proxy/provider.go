@@ -203,6 +203,7 @@ type rotationState struct {
 	fallbackBypassEnabled bool
 	fallbackFailures      map[string]fallbackFailureState
 	onExhausted           func(string)
+	onAdvance             func(group, sni string, from, to core.StrategyID)
 	now                   func() time.Time
 }
 
@@ -345,7 +346,9 @@ func (p MultiGroupProvider) ReportFailure(sni string, failed core.StrategyID) {
 			p.rotation.mu.Unlock()
 			return
 		}
-		p.rotation.active[r.stateKey] = (index + 1) % len(r.sels)
+		next := (index + 1) % len(r.sels)
+		p.rotation.active[r.stateKey] = next
+		advanceHook := p.rotation.onAdvance
 		now := p.rotation.now()
 		advances := p.rotation.advances[r.stateKey]
 		cutoff := now.Add(-exhaustionWindow)
@@ -362,6 +365,9 @@ func (p MultiGroupProvider) ReportFailure(sni string, failed core.StrategyID) {
 			exhaustedHook = p.rotation.onExhausted
 		}
 		p.rotation.mu.Unlock()
+		if advanceHook != nil {
+			advanceHook(r.name, sni, failed, r.sels[next].ID)
+		}
 		if exhaustedHook != nil {
 			exhaustedHook(r.name)
 		}
@@ -448,6 +454,17 @@ func (p MultiGroupProvider) SetFallbackFailureBypass(enabled bool) {
 	}
 	p.rotation.mu.Lock()
 	p.rotation.fallbackBypassEnabled = enabled
+	p.rotation.mu.Unlock()
+}
+
+// SetOnAdvance устанавливает необязательный callback на каждую смену активной
+// стратегии группы. Вызывается вне внутренней блокировки.
+func (p MultiGroupProvider) SetOnAdvance(fn func(group, sni string, from, to core.StrategyID)) {
+	if p.rotation == nil {
+		return
+	}
+	p.rotation.mu.Lock()
+	p.rotation.onAdvance = fn
 	p.rotation.mu.Unlock()
 }
 
