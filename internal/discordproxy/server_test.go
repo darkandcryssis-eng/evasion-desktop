@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -284,7 +285,7 @@ func TestNoReplyDropsSilentUpstream(t *testing.T) {
 	if _, err = c.Read(buf); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = c.Write([]byte("hello"))
+	_, _ = c.Write([]byte("\x16\x03\x01\x00\x05hello"))
 	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
 	start := time.Now()
 	if _, err = c.Read(buf); err == nil || time.Since(start) > 2*time.Second {
@@ -309,7 +310,7 @@ func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
 				_, _ = c.Read(buf)
 				_, _ = c.Write([]byte("server flight"))
 				n, _ := c.Read(buf)
-				if string(buf[:n]) == "finished" {
+				if n > 0 && buf[0] == 23 {
 					_, _ = c.Write([]byte("ticket"))
 				}
 				_, _ = io.Copy(io.Discard, c)
@@ -337,7 +338,7 @@ func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
 		if _, err = io.ReadFull(c, buf); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = c.Write([]byte("hello"))
+		_, _ = c.Write([]byte("\x16\x03\x01\x00\x05hello"))
 		return c
 	}
 	// Клиент ответил на рукопожатие сервера — соединение живое, его не трогают.
@@ -347,17 +348,18 @@ func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
 	if _, err = alive.Read(buf); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = alive.Write([]byte("finished"))
+	_, _ = alive.Write([]byte("\x17\x03\x03\x00\x03fin"))
 	if _, err = alive.Read(buf); err != nil {
 		t.Fatal(err)
 	}
-	// Клиент завершил рукопожатие, а узел на это молчит — ответ заморожен.
+	// Узел прислал начало ответа и замолчал, клиент не может завершить
+	// рукопожатие (но успел отправить ChangeCipherSpec).
 	stuck := open()
 	defer stuck.Close()
 	if _, err = stuck.Read(buf); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = stuck.Write([]byte("request"))
+	_, _ = stuck.Write([]byte("\x14\x03\x03\x00\x01\x01"))
 	select {
 	case host := <-stalled:
 		if host != "discord.com" {
@@ -374,5 +376,26 @@ func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
 	case <-stalled:
 		t.Fatal("live connection reported as stalled")
 	default:
+	}
+}
+
+func TestTLSRecordsDetectsAppData(t *testing.T) {
+	var done atomic.Bool
+	r := &tlsRecords{done: &done}
+	hello := append([]byte{22, 3, 1, 0, 4}, 1, 2, 3, 4)
+	for _, b := range hello {
+		r.feed([]byte{b})
+	}
+	r.feed([]byte{20, 3, 3, 0, 1, 1})
+	if done.Load() {
+		t.Fatal("handshake records marked as finished")
+	}
+	r.feed([]byte{23, 3, 3})
+	if done.Load() {
+		t.Fatal("partial header marked as finished")
+	}
+	r.feed([]byte{0, 1, 9})
+	if !done.Load() {
+		t.Fatal("application data not detected")
 	}
 }

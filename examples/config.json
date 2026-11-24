@@ -105,6 +105,40 @@
                 "match": "client_hello"
               },
               "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_yandex",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
                 "kind": "duplicate",
                 "left": {
                   "kind": "tamper",
@@ -465,6 +499,40 @@
     },
     "discord_gateway": {
       "rotation": [
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_yandex",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
         {
           "rules": [
             {
@@ -841,6 +909,40 @@
                 "match": "client_hello"
               },
               "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_yandex",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
                 "kind": "duplicate",
                 "left": {
                   "kind": "tamper",
@@ -1201,6 +1303,40 @@
     },
     "discord_updates": {
       "rotation": [
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_yandex",
+                  "offset": 1
+                }
+              }
+            }
+          ]
+        },
         {
           "rules": [
             {
