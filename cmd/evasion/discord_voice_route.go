@@ -19,9 +19,14 @@ const maxVoiceRoutes = 128
 // voiceRouter выводит голос Discord из-под стороннего VPN. Голос идёт по UDP
 // напрямую из клиента, локальный прокси его не видит, а VPN-туннель его часто
 // не пропускает. Адрес голосового сервера узнаётся по первому пакету голоса
-// (IP discovery), ушедшему в туннель: на него ставится маршрут через
+// (IP discovery), ушедшему в туннель: на его сеть ставится маршрут через
 // физический адаптер, и повтор пакета вместе со всем голосом уходит мимо
 // туннеля, под голосовой десинк.
+//
+// Маршрут ставится на всю сеть /24 сервера, и сети запоминаются между
+// запусками: голосовые серверы Discord стоят пачками в одних и тех же сетях,
+// поэтому со временем маршрут уже стоит до первого пакета, и клиент не теряет
+// секунду на повтор запроса.
 type voiceRouter struct {
 	adapter netbind.Adapter
 	logger  *slog.Logger
@@ -31,10 +36,15 @@ type voiceRouter struct {
 	// journal — файл со списком поставленных маршрутов. Если движок убит и не
 	// снял их сам, следующий запуск снимает их по этому списку.
 	journal string
+	// learned — файл с сетями голосовых серверов, увиденными раньше.
+	learned string
 
 	mu     sync.Mutex
-	routes map[netip.Addr]voiceRoute
+	routes map[netip.Prefix]voiceRoute
 }
+
+// voiceNetworkBits — размер сети, на которую ставится маршрут.
+const voiceNetworkBits = 24
 
 type voiceRoute struct {
 	route netbind.HostRoute
@@ -48,10 +58,93 @@ func newVoiceRouter(adapter netbind.Adapter, logger *slog.Logger) *voiceRouter {
 		add:     netbind.HostRoute.Add,
 		remove:  netbind.HostRoute.Delete,
 		journal: filepath.Join(defaultStateDir, "voice-routes.txt"),
-		routes:  make(map[netip.Addr]voiceRoute),
+		learned: filepath.Join(defaultStateDir, "voice-networks.txt"),
+		routes:  make(map[netip.Prefix]voiceRoute),
 	}
 	r.removeStale()
 	return r
+}
+
+// Preload ставит маршруты на сети голосовых серверов, запомненные с прошлых
+// запусков.
+func (r *voiceRouter) Preload() {
+	networks := r.readLearned()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	placed := 0
+	for _, network := range networks {
+		if r.place(network) {
+			placed++
+		}
+	}
+	if placed > 0 {
+		r.saveJournal()
+		r.logger.Info("голос Discord: маршруты мимо VPN на известные сети голосовых серверов", "сетей", placed, "адаптер", r.adapter.Name)
+	}
+}
+
+func (r *voiceRouter) readLearned() []netip.Prefix {
+	data, err := os.ReadFile(r.learned)
+	if err != nil {
+		return nil
+	}
+	var out []netip.Prefix
+	for _, line := range strings.Fields(string(data)) {
+		if network, err := netip.ParsePrefix(line); err == nil && network.Bits() == voiceNetworkBits && routableVoiceAddr(network.Addr()) {
+			out = append(out, network.Masked())
+		}
+	}
+	return out
+}
+
+// remember дописывает сеть в список известных; самые давние вытесняются.
+func (r *voiceRouter) remember(network netip.Prefix) {
+	networks := r.readLearned()
+	kept := networks[:0]
+	for _, known := range networks {
+		if known != network {
+			kept = append(kept, known)
+		}
+	}
+	kept = append(kept, network)
+	if len(kept) > maxVoiceRoutes/2 {
+		kept = kept[len(kept)-maxVoiceRoutes/2:]
+	}
+	var b strings.Builder
+	for _, known := range kept {
+		b.WriteString(known.String() + "\n")
+	}
+	if err := os.MkdirAll(filepath.Dir(r.learned), 0o755); err == nil {
+		_ = os.WriteFile(r.learned, []byte(b.String()), 0o644)
+	}
+}
+
+// place ставит маршрут на сеть, если его ещё нет. Вызывается под r.mu.
+func (r *voiceRouter) place(network netip.Prefix) bool {
+	if _, ok := r.routes[network]; ok {
+		return true
+	}
+	route, err := netbind.NewHostRoute(r.adapter, network)
+	if err != nil {
+		r.logger.Warn("голос Discord: маршрут мимо VPN не собран", "сеть", network, "err", err)
+		return false
+	}
+	if len(r.routes) >= maxVoiceRoutes {
+		var oldest netip.Prefix
+		for candidate, entry := range r.routes {
+			if !oldest.IsValid() || entry.used.Before(r.routes[oldest].used) {
+				oldest = candidate
+			}
+		}
+		_ = r.remove(r.routes[oldest].route)
+		delete(r.routes, oldest)
+	}
+	if err := r.add(route); err != nil {
+		r.logger.Warn("голос Discord: маршрут мимо VPN не поставлен, голос останется в VPN", "сеть", network, "err", err)
+		return false
+	}
+	r.routes[network] = voiceRoute{route: route, used: time.Now()}
+	return true
 }
 
 // removeStale снимает маршруты, оставшиеся от прошлого запуска.
@@ -68,7 +161,13 @@ func (r *voiceRouter) removeStale() {
 			continue
 		}
 		var errDest, errGateway error
-		route.Dest, errDest = netip.ParseAddr(dest)
+		if route.Dest, errDest = netip.ParsePrefix(dest); errDest != nil {
+			// Прежний формат журнала: одиночный адрес.
+			var addr netip.Addr
+			if addr, errDest = netip.ParseAddr(dest); errDest == nil {
+				route.Dest = netip.PrefixFrom(addr, 32)
+			}
+		}
 		route.Gateway, errGateway = netip.ParseAddr(gateway)
 		if errDest != nil || errGateway != nil {
 			continue
@@ -113,44 +212,28 @@ func routableVoiceAddr(addr netip.Addr) bool {
 	return addr.Is4() && addr.IsGlobalUnicast() && !addr.IsPrivate() && !fakeIP.Contains(addr)
 }
 
-// Route ставит маршрут мимо VPN до голосового сервера addr. Сообщает, стоит ли
-// маршрут после вызова.
+// Route ставит маршрут мимо VPN до сети голосового сервера addr. Сообщает,
+// стоит ли маршрут после вызова.
 func (r *voiceRouter) Route(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	if !routableVoiceAddr(addr) {
 		r.logger.Warn("голос Discord: VPN подменил адрес сервера, вывести голос из туннеля нельзя", "адрес", addr)
 		return false
 	}
+	network := netip.PrefixFrom(addr, voiceNetworkBits).Masked()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := time.Now()
-	if existing, ok := r.routes[addr]; ok {
-		existing.used = now
-		r.routes[addr] = existing
+	if existing, ok := r.routes[network]; ok {
+		existing.used = time.Now()
+		r.routes[network] = existing
 		return true
 	}
-	route, err := netbind.NewHostRoute(r.adapter, addr)
-	if err != nil {
-		r.logger.Warn("голос Discord: маршрут мимо VPN не собран", "адрес", addr, "err", err)
+	if !r.place(network) {
 		return false
 	}
-	if len(r.routes) >= maxVoiceRoutes {
-		var oldest netip.Addr
-		for candidate, entry := range r.routes {
-			if !oldest.IsValid() || entry.used.Before(r.routes[oldest].used) {
-				oldest = candidate
-			}
-		}
-		_ = r.remove(r.routes[oldest].route)
-		delete(r.routes, oldest)
-	}
-	if err := r.add(route); err != nil {
-		r.logger.Warn("голос Discord: маршрут мимо VPN не поставлен, голос останется в VPN", "адрес", addr, "err", err)
-		return false
-	}
-	r.routes[addr] = voiceRoute{route: route, used: now}
 	r.saveJournal()
-	r.logger.Info("голос Discord выведен из VPN: маршрут через физический адаптер", "адрес", addr, "адаптер", r.adapter.Name)
+	r.remember(network)
+	r.logger.Info("голос Discord выведен из VPN: маршрут через физический адаптер", "сеть", network, "адаптер", r.adapter.Name)
 	return true
 }
 

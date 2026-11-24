@@ -57,14 +57,7 @@ func listAdapters() ([]Adapter, error) {
 					gateway = ip.Unmap()
 				}
 			}
-			var own netip.Addr
-			if a.FirstUnicastAddress != nil {
-				if ip, ok := netip.AddrFromSlice(a.FirstUnicastAddress.Address.IP()); ok {
-					own = ip.Unmap()
-				}
-			}
 			out = append(out, Adapter{
-				Addr:        own,
 				GatewayIP:   gateway,
 				Index:       a.IfIndex,
 				Name:        windows.UTF16PtrToString(a.FriendlyName),
@@ -125,7 +118,7 @@ func rawIPv4(addr netip.Addr) uint32 {
 
 func (r HostRoute) row() mibIPForwardRow {
 	return mibIPForwardRow{
-		Dest: rawIPv4(r.Dest), Mask: 0xFFFFFFFF, NextHop: rawIPv4(r.Gateway), IfIndex: r.IfIndex,
+		Dest: rawIPv4(r.Dest.Addr()), Mask: rawIPv4(r.Mask()), NextHop: rawIPv4(r.Gateway), IfIndex: r.IfIndex,
 		Type: mibIPRouteTypeIndirect, Proto: mibIPProtoNetMgmt,
 		// Метрика не меньше метрики интерфейса, иначе Windows отвергает строку.
 		Metric1: r.Metric, Metric2: metricUnused, Metric3: metricUnused, Metric4: metricUnused, Metric5: metricUnused,
@@ -160,7 +153,7 @@ func (r HostRoute) Delete() error {
 }
 
 func (r HostRoute) routeExe(verb string, extra ...string) (string, error) {
-	args := []string{verb, r.Dest.String(), "MASK", "255.255.255.255", r.Gateway.String()}
+	args := []string{verb, r.Dest.Addr().String(), "MASK", r.Mask().String(), r.Gateway.String()}
 	args = append(args, extra...)
 	args = append(args, "IF", strconv.FormatUint(uint64(r.IfIndex), 10))
 	cmd := exec.Command("route.exe", args...)
