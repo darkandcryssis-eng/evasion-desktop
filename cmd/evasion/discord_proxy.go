@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -124,7 +123,7 @@ func startDiscordDirectProxy(parent context.Context, ifIndex uint32, listen stri
 		Dial:        discordproxy.DialContextFunc(netbind.Dialer(ifIndex)),
 		Passthrough: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		Reroute: func(host string) bool {
-			return discordGatewayViaDefault.Load() && strings.EqualFold(strings.TrimSuffix(host, "."), discordGatewayHost)
+			return !discordDirectProven.Load()
 		},
 		Logger: logger,
 	}
@@ -185,30 +184,57 @@ func startDiscordSelfCheck(ctx context.Context, route netbind.Route, logger *slo
 				dial netbind.DialContextFunc
 			}{"мимо VPN", netbind.Dialer(route.Physical.Index)})
 		}
-		// Обмен с gateway идёт первым: по нему выбирается маршрут, а клиент
-		// Discord в это время уже подключается.
-		exchange := make([]error, len(paths))
-		for i, path := range paths {
-			exchange[i] = discordGatewayExchange(ctx, path.dial)
+		for _, path := range paths {
 			result := "ok: Hello, пинг и ответ на вход получены"
-			if exchange[i] != nil {
-				result = "СОРВАН: " + exchange[i].Error()
+			if err := discordGatewayExchange(ctx, path.dial); err != nil {
+				result = "СОРВАН: " + err.Error()
 			}
 			logger.Info("самопроверка Discord: обмен с gateway", "маршрут", path.name, "итог", result)
-		}
-		if route.Tunnel && exchange[1] != nil {
-			if exchange[0] == nil {
-				discordGatewayViaDefault.Store(true)
-				logger.Warn("gateway Discord мимо VPN не отвечает после рукопожатия: веду его через VPN")
-			} else {
-				logger.Warn("gateway Discord не отвечает ни по одному маршруту")
-			}
-		}
-		for _, path := range paths {
 			for _, host := range discordSelfCheckHosts {
 				logger.Info("самопроверка Discord", "узел", host, "маршрут", path.name, "итог", discordSelfCheck(ctx, path.dial, host))
 			}
-			logger.Info("самопроверка Discord: большая загрузка", "маршрут", path.name, "итог", discordDownloadCheck(ctx, path.dial))
+			download, _ := discordDownloadCheck(ctx, path.dial)
+			logger.Info("самопроверка Discord: большая загрузка", "маршрут", path.name, "итог", download)
+		}
+		if !route.Tunnel {
+			return
+		}
+		// При стороннем VPN прямой путь перепроверяется всё время работы:
+		// провайдер меняет правила на ходу, и маршрут Discord должен следовать
+		// за фактом, а не за проверкой при запуске.
+		direct := netbind.Dialer(route.Physical.Index)
+		var gate discordDirectGate
+		for {
+			err := discordGatewayExchange(ctx, direct)
+			reason := ""
+			if err != nil {
+				reason = "обмен с gateway: " + err.Error()
+			} else if download, ok := discordDownloadCheck(ctx, direct); !ok {
+				reason = "загрузка: " + download
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			proven, changed := gate.observe(reason == "")
+			discordDirectProven.Store(proven)
+			switch {
+			case changed && proven:
+				logger.Info("Discord: прямой путь мимо VPN прошёл полный обмен, новые соединения идут напрямую")
+			case changed:
+				logger.Warn("Discord: прямой путь мимо VPN перестал работать, соединения идут через VPN", "причина", reason)
+			case !proven && reason != "" && !gate.reported:
+				gate.reported = true
+				logger.Warn("Discord: прямой путь мимо VPN не проходит полный обмен, Discord идёт через VPN", "причина", reason)
+			}
+			wait := 2 * time.Minute
+			if reason == "" && !proven {
+				wait = 5 * time.Second
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
 		}
 	}()
 }
@@ -218,7 +244,7 @@ var discordAssetRef = regexp.MustCompile(`/assets/[A-Za-z0-9._-]+\.js`)
 // discordDownloadCheck качает страницу клиента и её самый первый скрипт.
 // Рукопожатие проходит и там, где DPI замораживает соединение после первых
 // килобайт ответа, поэтому считаем полученные байты, а не только соединение.
-func discordDownloadCheck(ctx context.Context, dial netbind.DialContextFunc) string {
+func discordDownloadCheck(ctx context.Context, dial netbind.DialContextFunc) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	transport := &http.Transport{Proxy: nil, DialContext: dial, ForceAttemptHTTP2: true, DisableCompression: true}
@@ -245,18 +271,18 @@ func discordDownloadCheck(ctx context.Context, dial netbind.DialContextFunc) str
 	start := time.Now()
 	page, pageBytes, err := fetch("https://discord.com/app")
 	if err != nil {
-		return fmt.Sprintf("страница оборвана на %d байт за %d мс: %v", pageBytes, time.Since(start).Milliseconds(), err)
+		return fmt.Sprintf("страница оборвана на %d байт за %d мс: %v", pageBytes, time.Since(start).Milliseconds(), err), false
 	}
 	asset := discordAssetRef.Find(page)
 	if asset == nil {
-		return fmt.Sprintf("страница ok (%d байт), скрипт в ней не найден", pageBytes)
+		return fmt.Sprintf("страница ok (%d байт), скрипт в ней не найден", pageBytes), true
 	}
 	start = time.Now()
 	_, assetBytes, err := fetch("https://discord.com" + string(asset))
 	if err != nil {
-		return fmt.Sprintf("страница ok (%d байт); скрипт ОБОРВАН на %d байт за %d мс: %v", pageBytes, assetBytes, time.Since(start).Milliseconds(), err)
+		return fmt.Sprintf("страница ok (%d байт); скрипт ОБОРВАН на %d байт за %d мс: %v", pageBytes, assetBytes, time.Since(start).Milliseconds(), err), false
 	}
-	return fmt.Sprintf("страница ok (%d байт); скрипт ok (%d байт за %d мс)", pageBytes, assetBytes, time.Since(start).Milliseconds())
+	return fmt.Sprintf("страница ok (%d байт); скрипт ok (%d байт за %d мс)", pageBytes, assetBytes, time.Since(start).Milliseconds()), true
 }
 
 func discordSelfCheck(ctx context.Context, dial netbind.DialContextFunc, host string) string {

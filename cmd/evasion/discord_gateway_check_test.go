@@ -36,3 +36,23 @@ func TestWSFrameHelpers(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscordDirectGate(t *testing.T) {
+	var gate discordDirectGate
+	steps := []struct{ ok, proven, changed bool }{
+		{true, false, false}, // одной проверки мало
+		{true, true, true},   // вторая подряд — прямой путь доказан
+		{true, true, false},
+		{false, false, true}, // первый срыв снимает сразу
+		{true, false, false},
+		{false, false, false}, // счёт подряд идущих сбрасывается
+		{true, false, false},
+		{true, true, true},
+	}
+	for i, step := range steps {
+		proven, changed := gate.observe(step.ok)
+		if proven != step.proven || changed != step.changed {
+			t.Fatalf("шаг %d: proven=%v changed=%v", i, proven, changed)
+		}
+	}
+}

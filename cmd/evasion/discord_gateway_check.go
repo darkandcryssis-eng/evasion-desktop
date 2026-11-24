@@ -20,10 +20,31 @@ import (
 
 const discordGatewayHost = "gateway.discord.gg"
 
-// discordGatewayViaDefault включается самопроверкой, когда обмен с gateway
-// через физический адаптер не проходит, а по маршруту по умолчанию (VPN)
-// проходит. Тогда локальный прокси ведёт gateway через VPN.
-var discordGatewayViaDefault atomic.Bool
+// discordDirectProven — прямой путь (физический адаптер под обходом) прошёл
+// полный обмен с Discord. Пока это не доказано, локальный прокси ведёт Discord
+// по маршруту по умолчанию: клиент стартует сразу по заведомо рабочему пути и
+// не ждёт, пока сорвётся непроверенный.
+var discordDirectProven atomic.Bool
+
+// discordDirectGate переводит Discord на прямой путь после двух проверок
+// подряд и снимает с него после первого же срыва.
+type discordDirectGate struct {
+	passes   int
+	reported bool
+}
+
+func (g *discordDirectGate) observe(ok bool) (proven, changed bool) {
+	was := g.passes >= 2
+	if ok {
+		if g.passes < 2 {
+			g.passes++
+		}
+	} else {
+		g.passes = 0
+	}
+	proven = g.passes >= 2
+	return proven, proven != was
+}
 
 // discordGatewayExchange повторяет начало сессии клиента: WebSocket, приём
 // Hello, пинг с ожиданием ответа, вход с заведомо неверным токеном и ожидание
