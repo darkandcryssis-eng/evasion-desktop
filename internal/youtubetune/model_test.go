@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fitting-1c/evasion/internal/config"
+	"github.com/fitting-1c/evasion/internal/strategy"
 )
 
 func score(ok bool) Score { return Score{Checks: []Check{{OK: ok}, {OK: ok}, {OK: ok}, {OK: ok}}} }
@@ -173,5 +174,16 @@ func TestYouTubeEssentialDomainCoverage(t *testing.T) {
 		if !IsYouTube(host) {
 			t.Errorf("essential YouTube endpoint is outside scope: %s", host)
 		}
+	}
+}
+
+// Ротация группы video — это профиль «current» автоподбора, а не повод его
+// отключать: иначе YouTube остаётся без проверки и запасного пути.
+func TestRotationKeepsVideoGroupValid(t *testing.T) {
+	c := config.Default()
+	c.Groups = map[string][]string{"video": {"youtube.com"}}
+	c.StrategiesRotation = map[string][]*strategy.Strategy{"video": {{}, {}}}
+	if err := ValidateVideoGroup(c); err != nil {
+		t.Fatal(err)
 	}
 }
