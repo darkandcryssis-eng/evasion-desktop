@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -184,8 +185,55 @@ func startDiscordSelfCheck(ctx context.Context, route netbind.Route, logger *slo
 			for _, host := range discordSelfCheckHosts {
 				logger.Info("самопроверка Discord", "узел", host, "маршрут", path.name, "итог", discordSelfCheck(ctx, path.dial, host))
 			}
+			logger.Info("самопроверка Discord: большая загрузка", "маршрут", path.name, "итог", discordDownloadCheck(ctx, path.dial))
 		}
 	}()
+}
+
+var discordAssetRef = regexp.MustCompile(`/assets/[A-Za-z0-9._-]+\.js`)
+
+// discordDownloadCheck качает страницу клиента и её самый первый скрипт.
+// Рукопожатие проходит и там, где DPI замораживает соединение после первых
+// килобайт ответа, поэтому считаем полученные байты, а не только соединение.
+func discordDownloadCheck(ctx context.Context, dial netbind.DialContextFunc) string {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	transport := &http.Transport{Proxy: nil, DialContext: dial, ForceAttemptHTTP2: true, DisableCompression: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+	fetch := func(url string) ([]byte, int64, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer resp.Body.Close()
+		head, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+		rest, restErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024*1024))
+		if err == nil {
+			err = restErr
+		}
+		return head, int64(len(head)) + rest, err
+	}
+	start := time.Now()
+	page, pageBytes, err := fetch("https://discord.com/app")
+	if err != nil {
+		return fmt.Sprintf("страница оборвана на %d байт за %d мс: %v", pageBytes, time.Since(start).Milliseconds(), err)
+	}
+	asset := discordAssetRef.Find(page)
+	if asset == nil {
+		return fmt.Sprintf("страница ok (%d байт), скрипт в ней не найден", pageBytes)
+	}
+	start = time.Now()
+	_, assetBytes, err := fetch("https://discord.com" + string(asset))
+	if err != nil {
+		return fmt.Sprintf("страница ok (%d байт); скрипт ОБОРВАН на %d байт за %d мс: %v", pageBytes, assetBytes, time.Since(start).Milliseconds(), err)
+	}
+	return fmt.Sprintf("страница ok (%d байт); скрипт ok (%d байт за %d мс)", pageBytes, assetBytes, time.Since(start).Milliseconds())
 }
 
 func discordSelfCheck(ctx context.Context, dial netbind.DialContextFunc, host string) string {
