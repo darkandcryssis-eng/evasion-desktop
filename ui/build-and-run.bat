@@ -55,10 +55,10 @@ if not exist "%WAILS%" (
 )
 
 REM --- 5. Сборка единого exe ---
-REM  Удаляем старый сгенерированный icon.ico: Wails пересоздаёт его из
-REM  build\appicon.png только если файла нет. Иначе остаётся иконка от первой
-REM  сборки, и новая не применяется.
-if exist "build\windows\icon.ico" del /q "build\windows\icon.ico"
+REM  tray_windows.go встраивает build\windows\icon.ico, а Wails создаёт его
+REM  позже, чем компилирует привязки. Кладём иконку заранее, как в release.yml.
+copy /y "assets\tray.ico" "build\windows\icon.ico" >nul
+if errorlevel 1 (echo [ошибка] не найден assets\tray.ico & pause & exit /b 1)
 echo [5/5] Собираю Evasion.exe (wails build)...
 "%WAILS%" build
 if errorlevel 1 (echo [ошибка] wails build не удался & pause & exit /b 1)
