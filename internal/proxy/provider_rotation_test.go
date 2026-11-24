@@ -171,9 +171,17 @@ func TestMultiGroupProviderReportFailureShiftsOnlySNI(t *testing.T) {
 	before := p.Select(meta).ID
 	otherMeta := ConnMeta{SNI: "two.discord.media", LocalPort: 12345}
 	otherBefore := p.Select(otherMeta).ID
+	_ = before
 	p.ReportFailure(meta.SNI)
-	if after := p.Select(meta).ID; after == before {
-		t.Fatalf("failure did not shift strategy for %s: %s", meta.SNI, after)
+	first := p.Select(meta).ID
+	for port := uint16(1000); port < 1020; port++ {
+		if got := p.Select(ConnMeta{SNI: meta.SNI, LocalPort: port}).ID; got != first {
+			t.Fatalf("after failure port %d got %s, want %s for every port", port, got, first)
+		}
+	}
+	p.ReportFailure(meta.SNI)
+	if second := p.Select(meta).ID; second == first {
+		t.Fatalf("second failure did not shift strategy for %s: %s", meta.SNI, second)
 	}
 	if after := p.Select(otherMeta).ID; after != otherBefore {
 		t.Fatalf("failure for %s shifted %s from %s to %s", meta.SNI, otherMeta.SNI, otherBefore, after)
