@@ -265,9 +265,11 @@ func startDiscordSelfCheck(ctx context.Context, route netbind.Route, logger *slo
 			for _, host := range discordSelfCheckHosts {
 				logger.Info("самопроверка Discord", "узел", host, "маршрут", path.name, "итог", discordSelfCheck(ctx, path.dial, host))
 			}
-			download, _ := discordDownloadCheck(ctx, path.dial)
+			download, downloaded := discordDownloadCheck(ctx, path.dial)
 			logger.Info("самопроверка Discord: большая загрузка", "маршрут", path.name, "итог", download)
-			discordUpdateSelfCheck(ctx, path.name, path.dial, logger)
+			// Подбор стратегии по срывам уместен только там, где проверка идёт
+			// под обходом; через VPN срыв к стратегиям отношения не имеет.
+			discordUpdateSelfCheck(ctx, path.name, path.dial, !route.Tunnel, downloaded, logger)
 		}
 		if !route.Tunnel {
 			return
@@ -423,8 +425,16 @@ func discordUpdateURL(body []byte) (string, error) {
 	return selected, nil
 }
 
-func discordUpdateSelfCheck(ctx context.Context, route string, dial netbind.DialContextFunc, logger *slog.Logger) {
-	retry := waitForDiscordStallReport(ctx)
+// discordAdoptStrategy переносит действующую стратегию одной группы на
+// другую; задаётся вместе с discordStallReport.
+var discordAdoptStrategy atomic.Pointer[func(from, to string) (core.StrategyID, bool)]
+
+// discordUpdateSelfCheck повторяет шаги модуля обновления Discord: манифест с
+// updates.discord.com и начало пакета. При adapt срыв засчитывается стратегии
+// узла и проверка идёт заново на следующей; webProven — большая загрузка с
+// discord.com только что прошла, и её стратегия пробуется первой.
+func discordUpdateSelfCheck(ctx context.Context, route string, dial netbind.DialContextFunc, adapt, webProven bool, logger *slog.Logger) {
+	retry := adapt && waitForDiscordStallReport(ctx)
 	if ctx.Err() != nil {
 		return
 	}
@@ -442,7 +452,20 @@ func discordUpdateSelfCheck(ctx context.Context, route string, dial netbind.Dial
 		if ok || !retry || attempt == attempts {
 			return
 		}
-		if report := discordStallReport.Load(); report != nil && *report != nil {
+		adopted := false
+		if attempt == 1 && webProven {
+			group := "discord_updates"
+			if host != "updates.discord.com" {
+				group = "discord_cdn"
+			}
+			if adopt := discordAdoptStrategy.Load(); adopt != nil {
+				var id core.StrategyID
+				if id, adopted = (*adopt)("discord_web", group); adopted {
+					logger.Info("самопроверка Discord: обновлению назначена стратегия, на которой прошла загрузка с discord.com", "группа", group, "strategy", id)
+				}
+			}
+		}
+		if report := discordStallReport.Load(); !adopted && report != nil && *report != nil {
 			(*report)(host)
 		}
 		timer := time.NewTimer(3 * time.Second)
@@ -488,7 +511,7 @@ func discordUpdateCheckAttempt(ctx context.Context, dial netbind.DialContextFunc
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport}
 	fetch := func(target, rangeHeader string, limit int64) ([]byte, time.Duration, error) {
-		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		requestCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
 		defer cancel()
 		start := time.Now()
 		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target, nil)
