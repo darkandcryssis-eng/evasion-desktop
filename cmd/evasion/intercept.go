@@ -505,6 +505,10 @@ func runIntercept(opts interceptOptions) error {
 		return err
 	}
 	if rotationProvider != nil {
+		if evolver := newDiscordEvolver(*rotationProvider, (&net.Dialer{}).DialContext, logger); evolver != nil {
+			evolver.restore()
+			go evolver.run(ctx)
+		}
 		stopRotationPersistence := startRotationPersistence(*rotationProvider, logger)
 		defer stopRotationPersistence()
 		active := rotationProvider.ActiveStrategies()

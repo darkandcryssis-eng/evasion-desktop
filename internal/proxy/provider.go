@@ -3,6 +3,7 @@ package proxy
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fitting-1c/evasion/internal/core"
@@ -205,7 +206,69 @@ type rotationState struct {
 	onExhausted           func(string)
 	onAdvance             func(group, sni string, from, to core.StrategyID)
 	now                   func() time.Time
+	// scores — счёт удач и срывов стратегий по группам; по нему ротация
+	// выбирает, куда уходить после срыва, и когда срыв можно переждать.
+	scores map[string]map[core.StrategyID]*strategyScore
+	// overrides — стратегия для точного имени узла в обход группы: на таком
+	// узле кандидат проверяется, не задевая остальной трафик группы.
+	overrides map[string]Selection
 }
+
+type strategyScore struct {
+	ok, fail float64
+	lastFail time.Time
+}
+
+// Score — счёт стратегии в группе.
+type Score struct {
+	OK   float64 `json:"ok"`
+	Fail float64 `json:"fail"`
+}
+
+// Rate — сглаженная доля удач; без наблюдений 0.5.
+func (s Score) Rate() float64 { return (s.OK + 1) / (s.OK + s.Fail + 2) }
+
+const (
+	// scoreMemory ограничивает вес прошлого: старые наблюдения затухают, и
+	// стратегия, переставшая работать, теряет счёт за десяток срывов.
+	scoreMemory = 20.0
+	// Стратегию с таким счётом одиночный срыв не сдвигает: у нестабильного
+	// фильтра срывается и лучшая, а уход с неё на худшую стоит дороже.
+	trustedRate     = 0.75
+	trustedOK       = 4.0
+	trustedFailSpan = 30 * time.Second
+)
+
+func (st *rotationState) scoreLocked(key string, id core.StrategyID) *strategyScore {
+	if st.scores == nil {
+		st.scores = make(map[string]map[core.StrategyID]*strategyScore)
+	}
+	group := st.scores[key]
+	if group == nil {
+		group = make(map[core.StrategyID]*strategyScore)
+		st.scores[key] = group
+	}
+	sc := group[id]
+	if sc == nil {
+		sc = &strategyScore{}
+		group[id] = sc
+	}
+	return sc
+}
+
+func (sc *strategyScore) add(ok bool) {
+	if ok {
+		sc.ok++
+	} else {
+		sc.fail++
+	}
+	if total := sc.ok + sc.fail; total > scoreMemory {
+		sc.ok *= scoreMemory / total
+		sc.fail *= scoreMemory / total
+	}
+}
+
+func (sc *strategyScore) rate() float64 { return Score{OK: sc.ok, Fail: sc.fail}.Rate() }
 
 type fallbackFailureState struct {
 	firstFailure time.Time
@@ -227,10 +290,14 @@ const (
 // Пустой срез недопустим: правило без стратегий отбрасывается конструктором.
 type groupRuleResolved struct {
 	matcher  HostMatcher
-	sels     []Selection
+	sels     *atomic.Pointer[[]Selection]
 	name     string
 	stateKey string
 }
+
+// list возвращает действующий список стратегий правила. Список заменяется
+// целиком и на месте не правится, поэтому читать его можно без замка.
+func (r groupRuleResolved) list() []Selection { return *r.sels.Load() }
 
 // NewMultiGroupProvider собирает провайдер из подгрупповых правил и
 // опционального запасного.
@@ -278,9 +345,11 @@ func NewMultiGroupProvider(rules []GroupRule, fallbackStrategy *strategy.Strateg
 			}
 			sels = append(sels, Selection{Strategy: s, ID: id})
 		}
+		list := new(atomic.Pointer[[]Selection])
+		list.Store(&sels)
 		out.rules = append(out.rules, groupRuleResolved{
 			matcher:  r.Matcher,
-			sels:     sels,
+			sels:     list,
 			name:     r.Name,
 			stateKey: ruleStateKey(r.Name, len(out.rules)),
 		})
@@ -309,15 +378,24 @@ func ruleStateKey(name string, index int) string {
 // Select идёт по подгрупповым правилам в их порядке; при промахе — к запасному.
 // Для группы всегда возвращается её текущая активная стратегия.
 func (p MultiGroupProvider) Select(meta ConnMeta) Selection {
+	if p.rotation != nil && meta.SNI != "" {
+		p.rotation.mu.Lock()
+		sel, ok := p.rotation.overrides[meta.SNI]
+		p.rotation.mu.Unlock()
+		if ok {
+			return sel
+		}
+	}
 	for _, r := range p.rules {
 		if r.matcher.Matches(meta.Host, meta.SNI) {
-			index := 0
-			if p.rotation != nil {
-				p.rotation.mu.Lock()
-				index = p.rotation.active[r.stateKey] % len(r.sels)
-				p.rotation.mu.Unlock()
+			if p.rotation == nil {
+				return r.list()[0]
 			}
-			return r.sels[index]
+			p.rotation.mu.Lock()
+			sels := r.list()
+			sel := sels[p.rotation.active[r.stateKey]%len(sels)]
+			p.rotation.mu.Unlock()
+			return sel
 		}
 	}
 	if p.hasFallback {
@@ -337,19 +415,38 @@ func (p MultiGroupProvider) ReportFailure(sni string, failed core.StrategyID) {
 		if !r.matcher.Matches("", sni) {
 			continue
 		}
-		if len(r.sels) <= 1 {
-			return
-		}
 		p.rotation.mu.Lock()
-		index := p.rotation.active[r.stateKey] % len(r.sels)
-		if r.sels[index].ID != failed {
+		if len(r.list()) <= 1 {
 			p.rotation.mu.Unlock()
 			return
 		}
-		next := (index + 1) % len(r.sels)
+		index := p.rotation.active[r.stateKey] % len(r.list())
+		if r.list()[index].ID != failed {
+			p.rotation.mu.Unlock()
+			return
+		}
+		now := p.rotation.now()
+		score := p.rotation.scoreLocked(r.stateKey, failed)
+		trusted := score.ok >= trustedOK && score.rate() >= trustedRate &&
+			now.Sub(score.lastFail) > trustedFailSpan
+		score.add(false)
+		score.lastFail = now
+		if trusted {
+			p.rotation.mu.Unlock()
+			return
+		}
+		// Уходим на стратегию с лучшим счётом; при равенстве — на следующую
+		// по порядку, так что без наблюдений это прежний перебор по кругу.
+		next := (index + 1) % len(r.list())
+		best := p.rotation.scoreLocked(r.stateKey, r.list()[next].ID).rate()
+		for step := 2; step < len(r.list()); step++ {
+			candidate := (index + step) % len(r.list())
+			if rate := p.rotation.scoreLocked(r.stateKey, r.list()[candidate].ID).rate(); rate > best {
+				next, best = candidate, rate
+			}
+		}
 		p.rotation.active[r.stateKey] = next
 		advanceHook := p.rotation.onAdvance
-		now := p.rotation.now()
 		advances := p.rotation.advances[r.stateKey]
 		cutoff := now.Add(-exhaustionWindow)
 		first := 0
@@ -360,13 +457,13 @@ func (p MultiGroupProvider) ReportFailure(sni string, failed core.StrategyID) {
 		advances = append(advances, now)
 		p.rotation.advances[r.stateKey] = advances
 		var exhaustedHook func(string)
-		if len(advances) >= len(r.sels) && !now.Before(p.rotation.exhausted[r.stateKey]) {
+		if len(advances) >= len(r.list()) && !now.Before(p.rotation.exhausted[r.stateKey]) {
 			p.rotation.exhausted[r.stateKey] = now.Add(exhaustionPeriod)
 			exhaustedHook = p.rotation.onExhausted
 		}
 		p.rotation.mu.Unlock()
 		if advanceHook != nil {
-			advanceHook(r.name, sni, failed, r.sels[next].ID)
+			advanceHook(r.name, sni, failed, r.list()[next].ID)
 		}
 		if exhaustedHook != nil {
 			exhaustedHook(r.name)
@@ -487,13 +584,187 @@ func (p MultiGroupProvider) ActiveStrategies() map[string]core.StrategyID {
 	}
 	p.rotation.mu.Lock()
 	defer p.rotation.mu.Unlock()
-	for _, r := range p.rules {
+	for i := range p.rules {
+		r := p.rules[i]
 		if r.name == "" {
 			continue
 		}
-		out[r.name] = r.sels[p.rotation.active[r.stateKey]%len(r.sels)].ID
+		out[r.name] = r.list()[p.rotation.active[r.stateKey]%len(r.list())].ID
 	}
 	return out
+}
+
+// ReportSuccess засчитывает стратегии удачный обмен с узлом.
+func (p MultiGroupProvider) ReportSuccess(sni string, id core.StrategyID) {
+	if p.rotation == nil || sni == "" || id == "" {
+		return
+	}
+	for _, r := range p.rules {
+		if r.matcher.Matches("", sni) {
+			p.Record(r.name, id, true)
+			return
+		}
+	}
+}
+
+// Record заносит исход проверки стратегии в счёт группы, не трогая выбор.
+func (p MultiGroupProvider) Record(group string, id core.StrategyID, ok bool) {
+	if p.rotation == nil || group == "" || id == "" {
+		return
+	}
+	for _, r := range p.rules {
+		if r.name != group {
+			continue
+		}
+		p.rotation.mu.Lock()
+		p.rotation.scoreLocked(r.stateKey, id).add(ok)
+		p.rotation.mu.Unlock()
+		return
+	}
+}
+
+// Scores возвращает счёт стратегий группы.
+func (p MultiGroupProvider) Scores(group string) map[core.StrategyID]Score {
+	out := make(map[core.StrategyID]Score)
+	if p.rotation == nil {
+		return out
+	}
+	for _, r := range p.rules {
+		if r.name != group {
+			continue
+		}
+		p.rotation.mu.Lock()
+		for id, sc := range p.rotation.scores[r.stateKey] {
+			out[id] = Score{OK: sc.ok, Fail: sc.fail}
+		}
+		p.rotation.mu.Unlock()
+		break
+	}
+	return out
+}
+
+// SetScore задаёт счёт стратегии в группе — для восстановления сохранённого.
+func (p MultiGroupProvider) SetScore(group string, id core.StrategyID, score Score) {
+	if p.rotation == nil || id == "" || score.OK < 0 || score.Fail < 0 {
+		return
+	}
+	for _, r := range p.rules {
+		if r.name != group {
+			continue
+		}
+		p.rotation.mu.Lock()
+		sc := p.rotation.scoreLocked(r.stateKey, id)
+		sc.ok, sc.fail = score.OK, score.Fail
+		p.rotation.mu.Unlock()
+		return
+	}
+}
+
+// Strategies возвращает стратегии группы в порядке ротации.
+func (p MultiGroupProvider) Strategies(group string) []Selection {
+	for _, r := range p.rules {
+		if r.name == group {
+			return append([]Selection(nil), r.list()...)
+		}
+	}
+	return nil
+}
+
+// AddStrategy дописывает стратегию в ротацию группы. Возвращает false, если
+// группы нет или такая стратегия в ней уже есть.
+func (p MultiGroupProvider) AddStrategy(group string, s *strategy.Strategy) (core.StrategyID, bool) {
+	if p.rotation == nil || group == "" || s == nil {
+		return "", false
+	}
+	id, err := strategy.ComputeID(s)
+	if err != nil {
+		return "", false
+	}
+	for _, r := range p.rules {
+		if r.name != group {
+			continue
+		}
+		p.rotation.mu.Lock()
+		defer p.rotation.mu.Unlock()
+		current := r.list()
+		for _, sel := range current {
+			if sel.ID == id {
+				return id, false
+			}
+		}
+		next := make([]Selection, len(current), len(current)+1)
+		copy(next, current)
+		next = append(next, Selection{Strategy: s, ID: id})
+		r.sels.Store(&next)
+		return id, true
+	}
+	return id, false
+}
+
+// RemoveStrategy убирает стратегию из ротации группы. Действующую и
+// последнюю оставшуюся не убирает.
+func (p MultiGroupProvider) RemoveStrategy(group string, id core.StrategyID) bool {
+	if p.rotation == nil || group == "" || id == "" {
+		return false
+	}
+	for _, r := range p.rules {
+		if r.name != group {
+			continue
+		}
+		p.rotation.mu.Lock()
+		defer p.rotation.mu.Unlock()
+		current := r.list()
+		active := p.rotation.active[r.stateKey] % len(current)
+		if len(current) <= 1 || current[active].ID == id {
+			return false
+		}
+		next := make([]Selection, 0, len(current))
+		for _, sel := range current {
+			if sel.ID != id {
+				next = append(next, sel)
+			}
+		}
+		if len(next) == len(current) {
+			return false
+		}
+		for j, sel := range next {
+			if sel.ID == current[active].ID {
+				p.rotation.active[r.stateKey] = j
+			}
+		}
+		r.sels.Store(&next)
+		delete(p.rotation.scores[r.stateKey], id)
+		return true
+	}
+	return false
+}
+
+// SetHostOverride назначает стратегию точному имени узла в обход его группы.
+func (p MultiGroupProvider) SetHostOverride(host string, s *strategy.Strategy) (core.StrategyID, bool) {
+	if p.rotation == nil || host == "" || s == nil {
+		return "", false
+	}
+	id, err := strategy.ComputeID(s)
+	if err != nil {
+		return "", false
+	}
+	p.rotation.mu.Lock()
+	if p.rotation.overrides == nil {
+		p.rotation.overrides = make(map[string]Selection)
+	}
+	p.rotation.overrides[host] = Selection{Strategy: s, ID: id}
+	p.rotation.mu.Unlock()
+	return id, true
+}
+
+// ClearHostOverride снимает назначение SetHostOverride.
+func (p MultiGroupProvider) ClearHostOverride(host string) {
+	if p.rotation == nil {
+		return
+	}
+	p.rotation.mu.Lock()
+	delete(p.rotation.overrides, host)
+	p.rotation.mu.Unlock()
 }
 
 // SetActive назначает известную стратегию группе; при неизвестной группе или
@@ -506,14 +777,13 @@ func (p MultiGroupProvider) SetActive(group string, id core.StrategyID) bool {
 		if r.name != group {
 			continue
 		}
-		for i, sel := range r.sels {
-			if sel.ID != id {
-				continue
+		p.rotation.mu.Lock()
+		defer p.rotation.mu.Unlock()
+		for i, sel := range r.list() {
+			if sel.ID == id {
+				p.rotation.active[r.stateKey] = i
+				return true
 			}
-			p.rotation.mu.Lock()
-			p.rotation.active[r.stateKey] = i
-			p.rotation.mu.Unlock()
-			return true
 		}
 		return false
 	}
@@ -531,15 +801,15 @@ func (p MultiGroupProvider) Rules() []GroupRuleInfo {
 	}
 	out := make([]GroupRuleInfo, 0, len(p.rules))
 	for _, r := range p.rules {
-		ids := make([]core.StrategyID, 0, len(r.sels))
-		for _, s := range r.sels {
-			ids = append(ids, s.ID)
-		}
 		active := 0
 		if p.rotation != nil {
 			p.rotation.mu.Lock()
-			active = p.rotation.active[r.stateKey] % len(r.sels)
+			active = p.rotation.active[r.stateKey] % len(r.list())
 			p.rotation.mu.Unlock()
+		}
+		ids := make([]core.StrategyID, 0, len(r.list()))
+		for _, s := range r.list() {
+			ids = append(ids, s.ID)
 		}
 		out = append(out, GroupRuleInfo{
 			Name:        r.name,
