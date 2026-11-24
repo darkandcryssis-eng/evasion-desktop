@@ -9,9 +9,11 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +28,83 @@ type Server struct {
 	Passthrough DialContextFunc
 	Logger      *slog.Logger
 	wg          sync.WaitGroup
+
+	statsMu sync.Mutex
+	stats   map[string]*hostStats
+	dirty   bool
+}
+
+// hostStats — что реально происходило с соединениями клиента к одному узлу.
+type hostStats struct {
+	opened, active, silent int
+	up, down               int64
+}
+
+func (s *Server) track(host string, fn func(*hostStats)) {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	if s.stats == nil {
+		s.stats = make(map[string]*hostStats)
+	}
+	st := s.stats[host]
+	if st == nil {
+		if len(s.stats) >= 256 {
+			return
+		}
+		st = &hostStats{}
+		s.stats[host] = st
+	}
+	fn(st)
+	s.dirty = true
+}
+
+// Summary возвращает сводку по узлам и сбрасывает признак изменений.
+// Пустая строка — с прошлого вызова ничего не менялось.
+func (s *Server) Summary() string {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	if !s.dirty {
+		return ""
+	}
+	s.dirty = false
+	hosts := make([]string, 0, len(s.stats))
+	for host := range s.stats {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	var b strings.Builder
+	for _, host := range hosts {
+		st := s.stats[host]
+		fmt.Fprintf(&b, "%s: соединений %d, открыто %d, без ответа %d, отправлено %d Б, получено %d Б\n",
+			host, st.opened, st.active, st.silent, st.up, st.down)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (s *Server) reportLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if summary := s.Summary(); summary != "" && s.Logger != nil {
+				s.Logger.Info("прокси Discord: соединения клиента", "узлы", summary)
+			}
+		}
+	}
+}
+
+type countingWriter struct {
+	w io.Writer
+	n *atomic.Int64
+}
+
+func (c countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n.Add(int64(n))
+	return n, err
 }
 
 func AllowedHost(host string) bool {
@@ -68,6 +147,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		}
 	}()
 	defer close(closed)
+	go s.reportLoop(ctx)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -130,14 +210,28 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	_ = client.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
 
+	host, _, _ := net.SplitHostPort(target)
+	var up, down atomic.Int64
+	s.track(host, func(st *hostStats) { st.opened++; st.active++ })
+	defer func() {
+		s.track(host, func(st *hostStats) {
+			st.active--
+			st.up += up.Load()
+			st.down += down.Load()
+			if up.Load() > 0 && down.Load() == 0 {
+				st.silent++
+			}
+		})
+	}()
+
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(upstream, reader)
+		_, _ = io.Copy(countingWriter{upstream, &up}, reader)
 		_ = upstream.Close()
 		_ = client.Close()
 		close(done)
 	}()
-	_, _ = io.Copy(client, upstream)
+	_, _ = io.Copy(countingWriter{client, &down}, upstream)
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done

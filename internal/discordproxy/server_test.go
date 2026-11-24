@@ -168,3 +168,41 @@ func TestPassthroughForOtherServices(t *testing.T) {
 		t.Fatalf("узел Discord: status=%d direct=%q", got, direct)
 	}
 }
+
+func TestSummaryCountsRelayedBytes(t *testing.T) {
+	echo := echoServer(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	server := &Server{Dial: func(context.Context, string, string) (net.Conn, error) { return net.Dial("tcp", echo) }}
+	served := make(chan struct{})
+	go func() { _ = server.Serve(ctx, ln); close(served) }()
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(conn, "CONNECT discord.com:443 HTTP/1.1\r\nHost: discord.com:443\r\n\r\n")
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	fmt.Fprint(conn, "ping")
+	if _, err = io.ReadFull(reader, make([]byte, 4)); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	cancel()
+	<-served
+	want := "discord.com: соединений 1, открыто 0, без ответа 0, отправлено 4 Б, получено 4 Б"
+	if got := server.Summary(); got != want {
+		t.Fatalf("сводка %q, ожидалась %q", got, want)
+	}
+	if got := server.Summary(); got != "" {
+		t.Fatalf("повторная сводка без изменений: %q", got)
+	}
+}
