@@ -585,17 +585,55 @@
                 "match": "client_hello"
               },
               "action": {
-                "kind": "fragment",
+                "kind": "tcp_overlap",
                 "params": {
-                  "proto": "tcp",
-                  "at": "inside_sni",
-                  "order": "reverse"
-                },
+                  "preset": "tls_cover_681"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "duplicate",
                 "left": {
-                  "kind": "send"
+                  "kind": "tamper",
+                  "params": {
+                    "field": "ipv4_ttl",
+                    "mode": "auto_ttl",
+                    "value": 1
+                  },
+                  "left": {
+                    "kind": "tamper",
+                    "params": {
+                      "field": "payload",
+                      "mode": "replace",
+                      "preset": "tls_clienthello_google"
+                    },
+                    "left": {
+                      "kind": "send"
+                    }
+                  }
                 },
                 "right": {
-                  "kind": "send"
+                  "kind": "fragment",
+                  "params": {
+                    "proto": "tcp",
+                    "at": "inside_sni",
+                    "order": "forward"
+                  },
+                  "left": {
+                    "kind": "send"
+                  },
+                  "right": {
+                    "kind": "send"
+                  }
                 }
               }
             }
@@ -658,16 +696,16 @@
                 "left": {
                   "kind": "tamper",
                   "params": {
-                    "field": "ipv4_ttl",
-                    "mode": "auto_ttl",
-                    "value": 1
+                    "field": "tcp_seq",
+                    "mode": "add",
+                    "value": 4294957296
                   },
                   "left": {
                     "kind": "tamper",
                     "params": {
                       "field": "payload",
                       "mode": "replace",
-                      "preset": "tls_clienthello_google"
+                      "preset": "tls_clienthello_apple"
                     },
                     "left": {
                       "kind": "send"
@@ -687,6 +725,46 @@
                   "right": {
                     "kind": "send"
                   }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "tcp_overlap",
+                "params": {
+                  "preset": "tls_cover_681_apple"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rules": [
+            {
+              "direction": "outbound",
+              "trigger": {
+                "match": "client_hello"
+              },
+              "action": {
+                "kind": "fragment",
+                "params": {
+                  "proto": "tcp",
+                  "at": "inside_sni",
+                  "order": "reverse"
+                },
+                "left": {
+                  "kind": "send"
+                },
+                "right": {
+                  "kind": "send"
                 }
               }
             }
