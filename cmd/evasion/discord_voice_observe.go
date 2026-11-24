@@ -83,6 +83,9 @@ type voiceControl struct {
 	router   *voiceRouter
 	sessions voiceSessions
 	logger   *slog.Logger
+	// reconnect обрывает сигнальные соединения голосовых серверов: клиент
+	// Discord сразу подключается к голосу заново, уже по новому пути.
+	reconnect func() int
 }
 
 // report пишет итог завершившегося сеанса и снимает маршруты, когда голос
@@ -106,11 +109,23 @@ func (c *voiceControl) report(v *voiceVerdict) {
 	}
 }
 
+// reportStalled разбирает сеанс, сорванный на месте: клиент сам сервер не
+// сменит, поэтому его голосовое подключение обрывается принудительно.
+func (c *voiceControl) reportStalled(v *voiceVerdict) {
+	if v == nil {
+		return
+	}
+	c.report(v)
+	if c.reconnect != nil {
+		c.logger.Warn("голос Discord: сервер молчит, подключение к голосу перезапущено", "соединений", c.reconnect())
+	}
+}
+
 // startVoiceObserver следит за голосом Discord при стороннем VPN и ведёт счёт
 // пакетов сеанса: по нему выбирается путь голоса, а журнал показывает, куда
 // голос уходит и отвечает ли сервер.
-func startVoiceObserver(ctx context.Context, route netbind.Route, router *voiceRouter, logger *slog.Logger) func() {
-	control := &voiceControl{route: route, router: router, logger: logger}
+func startVoiceObserver(ctx context.Context, route netbind.Route, router *voiceRouter, reconnect func() int, logger *slog.Logger) func() {
+	control := &voiceControl{route: route, router: router, logger: logger, reconnect: reconnect}
 	handle, err := windivert.Observe(voiceObserveFilter)
 	if err != nil {
 		logger.Warn("голос Discord: наблюдение недоступно, голос останется в VPN", "err", err)
@@ -162,6 +177,7 @@ func startVoiceObserver(ctx context.Context, route netbind.Route, router *voiceR
 			}
 			if addr.Outbound() {
 				control.sessions.count(dst, false)
+				control.reportStalled(control.sessions.stalled())
 			} else {
 				control.sessions.count(src, true)
 			}

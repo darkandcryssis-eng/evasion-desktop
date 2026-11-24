@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,7 +127,11 @@ func startDiscordDirectProxy(parent context.Context, route netbind.Route, listen
 		Logger:      logger,
 	}
 	voice := newVoiceRouter(route.Physical, logger)
-	stopVoice := startVoiceObserver(ctx, route, voice, logger)
+	stopVoice := startVoiceObserver(ctx, route, voice, func() int {
+		return server.Drop(func(host string) bool {
+			return strings.HasSuffix(strings.TrimSuffix(strings.ToLower(host), "."), ".discord.media")
+		})
+	}, logger)
 	go func() {
 		_ = server.Serve(ctx, ln)
 		stopVoice()

@@ -56,6 +56,43 @@ type voiceSessions struct {
 	server  netip.Addr
 	path    voicePath
 	in, out int
+	// judged — сеанс уже засчитан как сорванный, не дожидаясь следующего.
+	judged bool
+}
+
+// voiceDeadOutbound — сколько пакетов голоса должно уйти без единого ответа,
+// чтобы сеанс считался сорванным на месте (около двух секунд речи).
+const voiceDeadOutbound = 100
+
+// stalled засчитывает текущий сеанс как сорванный, если голос уходит, а сервер
+// молчит. Клиент Discord в таком сеансе может висеть долго и сам сервер не
+// менять, поэтому ждать следующего запроса нельзя. Срабатывает раз на сеанс.
+func (s *voiceSessions) stalled() *voiceVerdict {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active || s.judged || s.in > 0 || s.out < voiceDeadOutbound {
+		return nil
+	}
+	s.judged = true
+	return s.judge()
+}
+
+// judge подводит итог текущего сеанса и при серии срывов меняет путь.
+// Вызывается под s.mu.
+func (s *voiceSessions) judge() *voiceVerdict {
+	verdict := &voiceVerdict{server: s.server, path: s.path, in: s.in, out: s.out, alive: s.in >= voiceAliveInbound}
+	if verdict.alive {
+		s.fails[s.path] = 0
+	} else {
+		s.fails[s.path]++
+	}
+	if s.fails[s.prefer] >= voicePathFailures {
+		s.prefer = 1 - s.prefer
+		s.fails[s.prefer] = 0
+		verdict.switched = true
+	}
+	verdict.next = s.prefer
+	return verdict
 }
 
 // begin отмечает запрос IP discovery к серверу server. onTunnel — запрос шёл в
@@ -64,25 +101,16 @@ type voiceSessions struct {
 func (s *voiceSessions) begin(server netip.Addr, onTunnel bool) (voicePath, *voiceVerdict) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active && s.server == server {
+	// Повторный запрос к тому же серверу — тот же сеанс, пока он не засчитан
+	// как сорванный: после срыва клиент подключается заново, и это новый сеанс.
+	if s.active && s.server == server && !s.judged {
 		return s.path, nil
 	}
 	var verdict *voiceVerdict
-	if s.active {
-		verdict = &voiceVerdict{server: s.server, path: s.path, in: s.in, out: s.out, alive: s.in >= voiceAliveInbound}
-		if verdict.alive {
-			s.fails[s.path] = 0
-		} else {
-			s.fails[s.path]++
-		}
-		if s.fails[s.prefer] >= voicePathFailures {
-			s.prefer = 1 - s.prefer
-			s.fails[s.prefer] = 0
-			verdict.switched = true
-		}
-		verdict.next = s.prefer
+	if s.active && !s.judged {
+		verdict = s.judge()
 	}
-	s.active, s.server, s.in, s.out = true, server, 0, 0
+	s.active, s.server, s.in, s.out, s.judged = true, server, 0, 0, false
 	s.path = voiceDirect
 	if onTunnel {
 		s.path = s.prefer

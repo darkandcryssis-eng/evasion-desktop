@@ -32,6 +32,9 @@ type Server struct {
 	Logger  *slog.Logger
 	wg      sync.WaitGroup
 
+	connMu sync.Mutex
+	conns  map[net.Conn]activeConn
+
 	statsMu sync.Mutex
 	stats   map[string]*hostStats
 	dirty   bool
@@ -108,6 +111,42 @@ func (s *Server) reportLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+type activeConn struct {
+	host     string
+	upstream net.Conn
+}
+
+func (s *Server) register(host string, client, upstream net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conns == nil {
+		s.conns = make(map[net.Conn]activeConn)
+	}
+	s.conns[client] = activeConn{host: host, upstream: upstream}
+}
+
+func (s *Server) unregister(client net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	delete(s.conns, client)
+}
+
+// Drop обрывает открытые соединения к узлам, для которых match вернул true, и
+// возвращает их число. Клиент при этом сам подключается заново.
+func (s *Server) Drop(match func(host string) bool) int {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	dropped := 0
+	for client, conn := range s.conns {
+		if match(conn.host) {
+			_ = client.Close()
+			_ = conn.upstream.Close()
+			dropped++
+		}
+	}
+	return dropped
 }
 
 type countingWriter struct {
@@ -233,6 +272,8 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	_ = upstream.SetDeadline(time.Time{})
 
 	host, _, _ := net.SplitHostPort(target)
+	s.register(host, client, upstream)
+	defer s.unregister(client)
 	var up, down atomic.Int64
 	stats := s.track(host, func(st *hostStats) { st.opened++; st.active++ })
 	defer func() {

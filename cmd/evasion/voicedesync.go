@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/discordvoice"
 	"github.com/fitting-1c/evasion/internal/hops"
 	"github.com/fitting-1c/evasion/internal/packet"
+	"github.com/fitting-1c/evasion/internal/quic"
 	"github.com/fitting-1c/evasion/internal/quicfake"
 	"github.com/fitting-1c/evasion/internal/windivert"
 )
@@ -400,6 +402,36 @@ func buildVoiceDecoys(pkt capture.Packet, fool discordvoice.Fooling, ttl uint8, 
 	return out, true
 }
 
+// voiceCoverSNI — имя в поддельном QUIC Initial: разрешённый в РФ сайт с QUIC.
+const voiceCoverSNI = "vk.com"
+
+// buildVoiceCovers собирает подделки, которые идут ПЕРВЫМИ в потоке голоса:
+// настоящие датаграммы QUIC Initial к постороннему сайту, с верными суммами и
+// обычным TTL. В отличие от decoy с коротким TTL (не доходит до DPI, стоящего
+// дальше voiceDecoyTTL переходов) и с битой суммой (DPI, проверяющий суммы, его
+// не учитывает), такую подделку DPI видит гарантированно и относит поток к
+// QUIC. Сервер голоса чужой QUIC молча отбрасывает. Отказ сборки — пустой
+// результат: остальные decoy идут как раньше.
+func buildVoiceCovers(pkt capture.Packet, repeats int) []capture.Packet {
+	dcid := make([]byte, 8)
+	if _, err := rand.Read(dcid); err != nil {
+		return nil
+	}
+	initial, ok := quic.BuildClientInitial(voiceCoverSNI, dcid)
+	if !ok {
+		return nil
+	}
+	cover, err := discordvoice.BuildCover(pkt.Data, initial, voiceBadsumTTL)
+	if err != nil {
+		return nil
+	}
+	out := make([]capture.Packet, 0, repeats)
+	for range repeats {
+		out = append(out, capture.Packet{Data: cover, Dir: pkt.Dir, Reinject: pkt.Reinject})
+	}
+	return out
+}
+
 // voiceFakePayload строит нагрузку decoy длины n — той же, что у настоящего
 // IP discovery (иначе BuildDecoy откажет: смена длины потребовала бы правки
 // полей длины IP и UDP).
@@ -482,6 +514,7 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 
 		ttl := hops.Default.FakeTTL(voicePacketDestination(pkt), 1, voiceDecoyTTL)
 		if pkts, applied := buildVoiceDecoys(pkt, fool, ttl, voiceDecoyRepeats, payload); applied {
+			pkts = append(buildVoiceCovers(pkt, voiceDecoyRepeats), pkts...)
 			for _, p := range pkts {
 				if err := conn.Send(p); err != nil {
 					logger.Warn("десинк голоса: не удалось отправить пакет", "ошибка", err)

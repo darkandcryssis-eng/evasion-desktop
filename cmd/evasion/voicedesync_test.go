@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/discordvoice"
 	"github.com/fitting-1c/evasion/internal/packet"
+	"github.com/fitting-1c/evasion/internal/quic"
 )
 
 // udpDiscoveryPacket собирает исходящий IPv4+UDP пакет Discord IP discovery
@@ -428,6 +430,43 @@ func TestBuildVoiceDecoysSkipsForeignSTUN(t *testing.T) {
 	for _, port := range []uint16{3478, 19302} {
 		if _, applied := buildVoiceDecoys(udpSTUNPacket(t, port), discordvoice.FoolTTL, 6, 3, voicePayloadNeutral); applied {
 			t.Fatalf("STUN на порт %d — не Discord, трогать нельзя", port)
+		}
+	}
+}
+
+// TestVoiceCoversAreRealQUICInitials — подделки перед голосом: настоящий QUIC
+// Initial к постороннему сайту, к тому же адресату, с верными суммами и обычным TTL.
+func TestVoiceCoversAreRealQUICInitials(t *testing.T) {
+	pkt := udpDiscoveryPacket(t)
+	covers := buildVoiceCovers(pkt, 6)
+	if len(covers) != 6 {
+		t.Fatalf("подделок %d, ожидалось 6", len(covers))
+	}
+	orig, err := packet.Dissect(pkt.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, cover := range covers {
+		d, err := packet.Dissect(cover.Data)
+		if err != nil {
+			t.Fatalf("подделка %d не разбирается: %v", i, err)
+		}
+		payload, _ := d.Payload(cover.Data)
+		if sni, ok := quic.ExtractSNI(payload); !ok || sni != voiceCoverSNI {
+			t.Fatalf("подделка %d: SNI %q ok=%v", i, sni, ok)
+		}
+		ou, _ := orig.UDP(pkt.Data)
+		cu, _ := d.UDP(cover.Data)
+		if ou.DstPort() != cu.DstPort() || ou.SrcPort() != cu.SrcPort() {
+			t.Fatalf("подделка %d ушла бы другому адресату", i)
+		}
+		ip, ok := d.IPv4(cover.Data)
+		if !ok || ip.TTL() != voiceBadsumTTL {
+			t.Fatalf("подделка %d: TTL должен быть обычным", i)
+		}
+		fixed := append([]byte(nil), cover.Data...)
+		if !d.RecomputeChecksums(fixed) || !bytes.Equal(fixed, cover.Data) {
+			t.Fatalf("подделка %d: суммы неверны", i)
 		}
 	}
 }
