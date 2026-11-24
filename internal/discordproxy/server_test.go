@@ -381,7 +381,8 @@ func TestStalledHandshakeIsDroppedAndReported(t *testing.T) {
 
 func TestTLSRecordsDetectsAppData(t *testing.T) {
 	var done atomic.Bool
-	r := &tlsRecords{done: &done}
+	var down, flight atomic.Int64
+	r := &tlsRecords{done: &done, down: &down, flight: &flight}
 	hello := append([]byte{22, 3, 1, 0, 4}, 1, 2, 3, 4)
 	for _, b := range hello {
 		r.feed([]byte{b})
@@ -397,5 +398,58 @@ func TestTLSRecordsDetectsAppData(t *testing.T) {
 	r.feed([]byte{0, 1, 9})
 	if !done.Load() {
 		t.Fatal("application data not detected")
+	}
+}
+
+func TestSilenceAfterHandshakeIsDropped(t *testing.T) {
+	upstream, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		for {
+			c, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				buf := make([]byte, 16)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("server flight"))
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stalled := make(chan string, 1)
+	s := &Server{NoReply: 100 * time.Millisecond, OnStall: func(host string) { stalled <- host }, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Addr().String())
+	}}
+	go func() { _ = s.Serve(ctx, ln) }()
+	c, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = io.WriteString(c, "CONNECT discord.com:443 HTTP/1.1\r\nHost: discord.com:443\r\n\r\n")
+	buf := make([]byte, 39)
+	if _, err = io.ReadFull(c, buf); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Write([]byte("\x16\x03\x01\x00\x05hello"))
+	if _, err = c.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Write([]byte("\x14\x03\x03\x00\x01\x01\x17\x03\x03\x00\x03fin"))
+	select {
+	case <-stalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("silence after handshake not reported")
 	}
 }
