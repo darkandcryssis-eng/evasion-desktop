@@ -224,7 +224,7 @@ func (p *Processor) before(pkt capture.Packet, sink capture.PacketSink, stage in
 	if tcp {
 		fake = append([]byte(nil), pkt.Data...)
 		if p.Standalone && pl[0] == 22 {
-			fake = append(fake[:d.PayloadOff:d.PayloadOff], tlsfake.GoogleClientHello()...)
+			fake = append(fake[:d.PayloadOff:d.PayloadOff], tlsfake.FreshGoogleClientHello()...)
 		} else if p.Standalone && d.PayloadLen > 1400 {
 			fake = fake[:d.PayloadOff+1400]
 		}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/strategy"
+	"github.com/fitting-1c/evasion/internal/tlsfake"
 )
 
 // Помощники построения деревьев. Строим структуры напрямую, а не из JSON:
@@ -207,7 +208,7 @@ func TestBuildPlanFakePreset(t *testing.T) {
 	if !ok {
 		t.Fatal("пресет tls_clienthello_google не найден в реестре")
 	}
-	if !bytes.Equal(fake.Payload, want) {
+	if !tlsfake.EqualIgnoringRandom(fake.Payload, want) {
 		t.Fatalf("нагрузка фейка не равна пресету: %d байт против %d", len(fake.Payload), len(want))
 	}
 	// Фейк не должен нести настоящую нагрузку (SNI discord) — проверяем, что
