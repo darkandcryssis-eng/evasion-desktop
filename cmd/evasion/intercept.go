@@ -384,6 +384,15 @@ func runIntercept(opts interceptOptions) error {
 		report := newDiscordStallReport(provider, rotationProvider)
 		discordStallReport.Store(&report)
 		defer discordStallReport.Store(nil)
+		adopt := func(from, to string) (core.StrategyID, bool) {
+			id := rotationProvider.ActiveStrategies()[from]
+			if id == "" || rotationProvider.ActiveStrategies()[to] == id {
+				return id, false
+			}
+			return id, rotationProvider.SetActive(to, id)
+		}
+		discordAdoptStrategy.Store(&adopt)
+		defer discordAdoptStrategy.Store(nil)
 	}
 
 	var youtube *youtubeMux
