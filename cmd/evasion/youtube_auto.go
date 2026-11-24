@@ -142,7 +142,7 @@ func (p *youtubeMux) Select(m proxy.ConnMeta) proxy.Selection {
 	if name == "current" {
 		return p.base.Select(m)
 	}
-	if m.PayloadLength > 0 && m.PayloadLength <= 681 {
+	if m.PayloadLength > 0 && m.PayloadLength < strategy.MinOverlapPayload {
 		if name == "overlap" {
 			name = "split-forward"
 		}

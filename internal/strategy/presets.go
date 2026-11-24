@@ -126,3 +126,32 @@ func FakePreset(name string) ([]byte, bool) {
 // fillRandom заполняет срез криптостойкими случайными байтами. crypto/rand
 // с Go 1.24 не возвращает ошибок и на сотне байт стоит доли микросекунды.
 func fillRandom(b []byte) { _, _ = rand.Read(b) }
+
+// coverSNI — SNI каждого cover-пресета; по нему BuildCoverSized собирает
+// укороченный cover той же «личности» для коротких ClientHello.
+var coverSNI = map[string]string{
+	PresetTLSCover681:          "www.google.com",
+	PresetTLSCover681Apple:     "www.apple.com",
+	PresetTLSCover681Microsoft: "www.microsoft.com",
+	PresetTLSCover681Yandex:    "ya.ru",
+}
+
+// CoverPresetSized возвращает cover-пресет name, собранный ровно size байт.
+// false — пресет не cover или size меньше минимального для его SNI.
+func CoverPresetSized(name string, size int) ([]byte, bool) {
+	sni, ok := coverSNI[name]
+	if !ok {
+		return nil, false
+	}
+	return tlsfake.BuildCoverSized(sni, size)
+}
+
+// MinOverlapPayload — наименьшая длина ClientHello, к которой применим
+// tcp_overlap с любым cover-пресетом: cover обязан быть короче нагрузки.
+var MinOverlapPayload = func() int {
+	n := 0
+	for _, sni := range coverSNI {
+		n = max(n, tlsfake.MinCoverSize(sni))
+	}
+	return n + 1
+}()

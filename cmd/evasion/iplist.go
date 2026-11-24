@@ -5,6 +5,7 @@ import (
 
 	"github.com/fitting-1c/evasion/internal/iplist"
 	"github.com/fitting-1c/evasion/internal/proxy"
+	"github.com/fitting-1c/evasion/internal/strategy"
 )
 
 // ipListProvider добавляет к обычному выбору по имени сервера выбор по адресу
@@ -49,7 +50,7 @@ func (p *ipListProvider) Select(meta proxy.ConnMeta) proxy.Selection {
 		return selected
 	}
 	// Разрез по SNI возможен, только если SNI есть (к голому IP его часто нет).
-	if meta.SNI != "" && meta.PayloadLength <= 681 {
+	if meta.SNI != "" && meta.PayloadLength < strategy.MinOverlapPayload {
 		return p.small
 	}
 	return p.normal

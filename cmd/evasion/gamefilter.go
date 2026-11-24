@@ -73,7 +73,7 @@ func (p gameProvider) Select(meta proxy.ConnMeta) proxy.Selection {
 	if !p.processor.AllowTLS(meta.LocalPort, meta.Host, meta.Port) {
 		return proxy.Selection{}
 	}
-	if meta.PayloadLength <= 681 {
+	if meta.PayloadLength < strategy.MinOverlapPayload {
 		return p.smallSelection
 	}
 	return p.selection

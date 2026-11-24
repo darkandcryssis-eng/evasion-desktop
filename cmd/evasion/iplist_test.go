@@ -25,7 +25,7 @@ func TestIPListProvider(t *testing.T) {
 	if big.Strategy == nil {
 		t.Fatal("ClientHello к адресу из списка остался без стратегии")
 	}
-	listed.PayloadLength = 517
+	listed.PayloadLength = 300
 	small := p.Select(listed)
 	if small.Strategy == nil || small.ID == big.ID {
 		t.Fatal("короткий ClientHello должен получить свою стратегию")

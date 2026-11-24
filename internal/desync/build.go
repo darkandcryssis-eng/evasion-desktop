@@ -238,6 +238,13 @@ func (b *builder) walkTCPOverlap(u unit, p *strategy.TCPOverlapParams) ([]Op, er
 		}, nil
 	}
 	if M >= L {
+		// Короткий ClientHello (без постквантового key_share): собираем cover
+		// той же личности на байт короче нагрузки вместо отказа.
+		if sized, ok := strategy.CoverPresetSized(p.Preset, L-1); ok {
+			pattern, M = sized, len(sized)
+		}
+	}
+	if M >= L {
 		return nil, fmt.Errorf("%w: tcp_overlap cover %d байт >= нагрузки %d байт, перекрытие невозможно",
 			ErrCutUnavailable, M, L)
 	}

@@ -47,7 +47,7 @@ func TestGameProviderPreservesBaselineAndProcessScope(t *testing.T) {
 		want            string
 	}{
 		{"selected-game", "1.1.1.1", "game.example", 45000, 443, 1200, true, "large"},
-		{"short-game", "1.1.1.1", "game.example", 45000, 443, 500, true, "small"},
+		{"short-game", "1.1.1.1", "game.example", 45000, 443, 300, true, "small"},
 		{"discord-kept", "1.1.1.1", "discord.com", 45000, 443, 1200, true, "base"},
 		{"browser", "1.1.1.1", "game.example", 45000, 443, 1200, false, "none"},
 		{"private-game", "192.168.1.1", "game.example", 45000, 443, 1200, true, "none"},

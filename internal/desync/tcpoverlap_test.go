@@ -8,6 +8,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/strategy"
 	"github.com/fitting-1c/evasion/internal/tlsfake"
+	"github.com/fitting-1c/evasion/internal/tlsparse"
 )
 
 // overlapStrategy — стратегия с единственным правилом tcp_overlap на заданном
@@ -80,15 +81,11 @@ func TestTCPOverlapGeometry(t *testing.T) {
 // урезанную операцию: молчаливый зажим выглядел бы как применённая стратегия,
 // ничего не изменившая, и портил бы измерения (тот же запрет, что у разреза).
 func TestTCPOverlapEdgeUnavailable(t *testing.T) {
-	cover, _ := strategy.FakePreset(strategy.PresetTLSCover681)
-	M := len(cover)
-
 	cases := []struct {
 		name string
 		L    int
 	}{
-		{"M == L (нагрузка ровно с cover)", M},
-		{"M > L на 1 байт", M - 1},
+		{"cover не сжимается короче нагрузки", tlsfake.MinCoverSize("www.google.com")},
 		{"нагрузка много короче cover", 100},
 		{"пустая нагрузка L=0", 0},
 	}
@@ -197,6 +194,34 @@ func TestTCPSplitSeqOverlapRejectsUnsafeGeometry(t *testing.T) {
 		}
 		if !errors.Is(err, ErrCutUnavailable) {
 			t.Fatalf("offset=%d length=%d: %v", tc.offset, tc.length, err)
+		}
+	}
+}
+
+// TestTCPOverlapShortHelloShrinksCover — ClientHello не длиннее 681 байта
+// получает cover той же личности на байт короче нагрузки, а не отказ.
+func TestTCPOverlapShortHelloShrinksCover(t *testing.T) {
+	cover, _ := strategy.FakePreset(strategy.PresetTLSCover681Yandex)
+	for _, L := range []int{len(cover), len(cover) - 1, 517, strategy.MinOverlapPayload} {
+		payload := bytes.Repeat([]byte{0x7}, L)
+		plan, err := BuildPlan(overlapStrategy(strategy.PresetTLSCover681Yandex),
+			Input{Direction: core.DirectionOutbound, Payload: payload})
+		if err != nil {
+			t.Fatalf("L=%d: %v", L, err)
+		}
+		c := plan.Ops[0]
+		if len(c.Payload) != L-1 || c.StreamOffset != 1 {
+			t.Fatalf("L=%d: cover %d байт со смещением %d, ожидали %d и 1", L, len(c.Payload), c.StreamOffset, L-1)
+		}
+		ch, err := tlsparse.ParseClientHello(c.Payload)
+		if err != nil {
+			t.Fatalf("L=%d: укороченный cover не разбирается: %v", L, err)
+		}
+		if sni, _ := ch.SNI(c.Payload); string(sni) != "ya.ru" {
+			t.Fatalf("L=%d: SNI %q, ожидали ya.ru", L, sni)
+		}
+		if !bytes.Equal(plan.Ops[1].Payload, payload) || plan.Ops[1].StreamOffset != 0 {
+			t.Fatalf("L=%d: настоящая нагрузка искажена", L)
 		}
 	}
 }

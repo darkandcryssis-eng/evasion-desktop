@@ -9,6 +9,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/packetexec"
 	"github.com/fitting-1c/evasion/internal/proxy"
+	"github.com/fitting-1c/evasion/internal/strategy"
 	"github.com/fitting-1c/evasion/internal/windivert"
 	"log/slog"
 	"net/netip"
@@ -107,7 +108,7 @@ func (p *gameTLSProvider) Select(meta proxy.ConnMeta) proxy.Selection {
 		return proxy.Selection{}
 	}
 	i := max(0, min(2, p.processor.TLSLevel(meta.LocalPort, meta.Host, meta.Port)-1))
-	if meta.PayloadLength <= 681 {
+	if meta.PayloadLength < strategy.MinOverlapPayload {
 		return p.small[i]
 	}
 	return p.normal[i]
