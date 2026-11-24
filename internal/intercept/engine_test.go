@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +23,30 @@ import (
 	"github.com/fitting-1c/evasion/internal/strategy"
 	"github.com/fitting-1c/evasion/internal/tlsparse"
 )
+
+func TestPassiveRetransmitLogRateLimit(t *testing.T) {
+	now := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	var output bytes.Buffer
+	e := &Engine{
+		log: slog.New(slog.NewTextHandler(&output, nil)),
+		now: func() time.Time { return now },
+	}
+	e.logPassiveRetransmit("updates.discord.com", "strategy-a")
+	e.logPassiveRetransmit("updates.discord.com", "strategy-b")
+	e.logPassiveRetransmit("gateway.discord.gg", "strategy-c")
+	if got := strings.Count(output.String(), "повтор ClientHello"); got != 2 {
+		t.Fatalf("log lines after same-SNI retry = %d, want 2", got)
+	}
+	if !strings.Contains(output.String(), "strategy=strategy-a") {
+		t.Fatalf("applied strategy ID missing from log: %s", output.String())
+	}
+
+	now = now.Add(5 * time.Second)
+	e.logPassiveRetransmit("updates.discord.com", "strategy-b")
+	if got := strings.Count(output.String(), "повтор ClientHello"); got != 3 {
+		t.Fatalf("log lines after rate-limit window = %d, want 3", got)
+	}
+}
 
 const baseSeq = uint32(1000)
 

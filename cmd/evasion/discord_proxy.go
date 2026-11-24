@@ -13,9 +13,11 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -265,6 +267,7 @@ func startDiscordSelfCheck(ctx context.Context, route netbind.Route, logger *slo
 			}
 			download, _ := discordDownloadCheck(ctx, path.dial)
 			logger.Info("самопроверка Discord: большая загрузка", "маршрут", path.name, "итог", download)
+			discordUpdateSelfCheck(ctx, path.name, path.dial, logger)
 		}
 		if !route.Tunnel {
 			return
@@ -380,6 +383,160 @@ func discordDownloadCheck(ctx context.Context, dial netbind.DialContextFunc) (st
 		return fmt.Sprintf("страница ok (%d байт); скрипт ОБОРВАН на %d байт за %d мс: %v", pageBytes, assetBytes, time.Since(start).Milliseconds(), err), false
 	}
 	return fmt.Sprintf("страница ok (%d байт); скрипт ok (%d байт за %d мс)", pageBytes, assetBytes, time.Since(start).Milliseconds()), true
+}
+
+const (
+	discordUpdateManifestURL = "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64"
+	discordUpdatePackageSize = 1 << 20
+	discordUpdateMinBytes    = 64 << 10
+)
+
+func discordUpdateURL(body []byte) (string, error) {
+	var manifest struct {
+		Full struct {
+			URL string `json:"url"`
+		} `json:"full"`
+		Deltas []struct {
+			URL string `json:"url"`
+		} `json:"deltas"`
+	}
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return "", fmt.Errorf("не удалось разобрать манифест: %w", err)
+	}
+	selected := ""
+	for _, delta := range manifest.Deltas {
+		if candidate := strings.TrimSpace(delta.URL); candidate != "" {
+			selected = candidate
+			break
+		}
+	}
+	if selected == "" {
+		selected = strings.TrimSpace(manifest.Full.URL)
+	}
+	if selected == "" {
+		return "", errors.New("в манифесте нет URL пакета")
+	}
+	parsed, err := url.Parse(selected)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return "", fmt.Errorf("некорректный URL пакета %q", selected)
+	}
+	return selected, nil
+}
+
+func discordUpdateSelfCheck(ctx context.Context, route string, dial netbind.DialContextFunc, logger *slog.Logger) {
+	retry := waitForDiscordStallReport(ctx)
+	if ctx.Err() != nil {
+		return
+	}
+	attempts := 1
+	if retry {
+		attempts = 10
+	}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		result, host, ok := discordUpdateCheckAttempt(ctx, dial)
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Info("самопроверка Discord: обновление",
+			"маршрут", route, "итог", result, "попытка", attempt)
+		if ok || !retry || attempt == attempts {
+			return
+		}
+		if report := discordStallReport.Load(); report != nil && *report != nil {
+			(*report)(host)
+		}
+		timer := time.NewTimer(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func waitForDiscordStallReport(ctx context.Context) bool {
+	hasReporter := func() bool {
+		report := discordStallReport.Load()
+		return report != nil && *report != nil
+	}
+	if hasReporter() {
+		return true
+	}
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timeout.C:
+			return hasReporter()
+		case <-ticker.C:
+			if hasReporter() {
+				return true
+			}
+		}
+	}
+}
+
+func discordUpdateCheckAttempt(ctx context.Context, dial netbind.DialContextFunc) (string, string, bool) {
+	transport := &http.Transport{Proxy: nil, DialContext: dial, ForceAttemptHTTP2: true, DisableCompression: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+	fetch := func(target, rangeHeader string, limit int64) ([]byte, time.Duration, error) {
+		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		start := time.Now()
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target, nil)
+		if err != nil {
+			return nil, time.Since(start), err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36")
+		req.Header.Set("Accept-Encoding", "identity")
+		if rangeHeader != "" {
+			req.Header.Set("Range", rangeHeader)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, time.Since(start), err
+		}
+		defer resp.Body.Close()
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, limit))
+		elapsed := time.Since(start)
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return body, elapsed, fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		if readErr != nil {
+			return body, elapsed, readErr
+		}
+		return body, elapsed, nil
+	}
+
+	manifest, manifestTime, err := fetch(discordUpdateManifestURL, "", 1<<20)
+	if err != nil {
+		return fmt.Sprintf("манифест ошибка (%d байт за %d мс): %v", len(manifest), manifestTime.Milliseconds(), err), "updates.discord.com", false
+	}
+	packageURL, err := discordUpdateURL(manifest)
+	if err != nil {
+		return fmt.Sprintf("манифест ошибка (%d байт за %d мс): %v", len(manifest), manifestTime.Milliseconds(), err), "updates.discord.com", false
+	}
+	parsedURL, _ := url.Parse(packageURL)
+	packageHost := parsedURL.Hostname()
+
+	pkg, packageTime, err := fetch(packageURL, "bytes=0-1048575", discordUpdatePackageSize)
+	if err == nil && len(pkg) < discordUpdateMinBytes {
+		err = fmt.Errorf("прочитано меньше 64 КиБ")
+	}
+	if err != nil {
+		return fmt.Sprintf("манифест ok (%d байт за %d мс); пакет ошибка (%d байт за %d мс): %v",
+			len(manifest), manifestTime.Milliseconds(), len(pkg), packageTime.Milliseconds(), err), packageHost, false
+	}
+	return fmt.Sprintf("манифест ok (%d байт за %d мс); пакет ok (%d байт за %d мс)",
+		len(manifest), manifestTime.Milliseconds(), len(pkg), packageTime.Milliseconds()), packageHost, true
 }
 
 func discordSelfCheck(ctx context.Context, dial netbind.DialContextFunc, host string) string {
