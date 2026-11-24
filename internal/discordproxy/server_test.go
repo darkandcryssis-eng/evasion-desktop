@@ -195,6 +195,9 @@ func TestSummaryCountsRelayedBytes(t *testing.T) {
 	if _, err = io.ReadFull(reader, make([]byte, 4)); err != nil {
 		t.Fatal(err)
 	}
+	if live := server.Summary(); !strings.Contains(live, "открыто 1, без ответа 0, отправлено 4 Б, получено 4 Б, тишина 0 с") {
+		t.Fatalf("сводка по открытому соединению: %q", live)
+	}
 	conn.Close()
 	cancel()
 	<-served
