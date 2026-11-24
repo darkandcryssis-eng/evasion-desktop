@@ -526,6 +526,7 @@ func runIntercept(opts interceptOptions) error {
 		autoCtx, autoCancel := context.WithCancel(ctx)
 		autoDone := make(chan struct{})
 		monitor := newYouTubeRecovery(youtube, cfg, defaultStateDir)
+		monitor.log = logger
 		monitor.paused = engine.Transparent
 		if youtubeProfile != "" {
 			yt, err := startYouTubeTunnel(ctx, youtubeProfile, "", defaultYouTubeTunnelListen, defaultStateDir, true, false, logger)

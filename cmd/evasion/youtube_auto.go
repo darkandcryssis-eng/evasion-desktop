@@ -6,12 +6,15 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -346,6 +349,10 @@ type youtubeRecovery struct {
 	warm           string
 	media          string
 	lastScan       time.Time
+	// log получает по строке на каждую смену состояния: по ним видно, что
+	// автоподбор делал в момент, когда видео встало.
+	log        *slog.Logger
+	lastLogged string
 }
 
 // Verify both handshake shapes concurrently, retaining full probe timeouts.
@@ -646,6 +653,27 @@ func (a *youtubeRecovery) emit() {
 	a.state.PID = enginePID()
 	a.state.At = time.Now().UTC()
 	a.publish(a.state)
+	a.logState()
+}
+
+func (a *youtubeRecovery) logState() {
+	if a.log == nil || a.state.Phase == "checking" {
+		return
+	}
+	failed := make([]string, 0, len(a.state.Checks))
+	for _, check := range a.state.Checks {
+		if !check.OK {
+			failed = append(failed, fmt.Sprintf("%s:%s:%d", check.Target, check.Stage, check.Code))
+		}
+	}
+	sort.Strings(failed)
+	line := fmt.Sprintf("%s|%s|%s|%s", a.state.Phase, a.state.Profile, a.state.Route, strings.Join(failed, ","))
+	if line == a.lastLogged {
+		return
+	}
+	a.lastLogged = line
+	a.log.Info("YouTube: состояние автоподбора", "состояние", a.state.Phase, "профиль", a.state.Profile,
+		"маршрут", a.state.Route, "срывов", a.state.Failures, "не_прошли", strings.Join(failed, ","), "узел_видео", a.media)
 }
 func (a *youtubeRecovery) run(ctx context.Context) {
 	defer func() { a.setFallback(false); a.state.Phase = "stopped"; a.emit() }()
