@@ -292,7 +292,14 @@ func (p MultiGroupProvider) Select(meta ConnMeta) Selection {
 				offset = p.rotation.offset[meta.SNI]
 				p.rotation.mu.Unlock()
 			}
-			index := (rotationIndex(meta, len(r.sels)) + int(offset%uint32(len(r.sels)))) % len(r.sels)
+			base := rotationIndex(meta, len(r.sels))
+			if offset > 0 {
+				// После срыва выбор перестаёт зависеть от локального порта:
+				// все новые соединения к имени получают следующую стратегию,
+				// а не случайную из ротации (иначе могли бы попасть на ту же).
+				base = rotationIndex(ConnMeta{SNI: meta.SNI}, len(r.sels))
+			}
+			index := (base + int(offset%uint32(len(r.sels)))) % len(r.sels)
 			return r.sels[index]
 		}
 	}
