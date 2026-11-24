@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -8,7 +9,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fitting-1c/evasion/internal/capture"
+	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/netbind"
+	"github.com/fitting-1c/evasion/internal/packet"
+	"github.com/fitting-1c/evasion/internal/windivert"
 )
 
 func TestVoiceRouterAddsOnceSkipsFakeAndCleansUp(t *testing.T) {
@@ -93,5 +98,40 @@ func TestIsDiscordVoiceHost(t *testing.T) {
 		if got := isDiscordVoiceHost(host); got != want {
 			t.Errorf("%s: %v", host, got)
 		}
+	}
+}
+
+func TestRedirectVoiceDiscoveryRewritesSourceAndKeepsRequestLast(t *testing.T) {
+	payload := make([]byte, 74)
+	payload[1], payload[3] = 1, 70
+	raw := udpPacketV4(netip.MustParseAddrPort("172.19.0.1:50555"), netip.MustParseAddrPort("104.29.153.203:19304"), payload)
+	d, err := packet.Dissect(raw)
+	if err != nil || !d.RecomputeChecksums(raw) {
+		t.Fatalf("шаблон: %v", err)
+	}
+	var tunnel windivert.Address
+	tunnel = tunnel.WithInterface(31)
+	physical := netbind.Adapter{Index: 7, Addr: netip.MustParseAddr("192.168.0.180")}
+	out := redirectVoiceDiscovery(capture.Packet{Data: raw, Dir: core.DirectionOutbound, Reinject: tunnel}, physical)
+	if len(out) != 3*voiceDecoyRepeats+1 {
+		t.Fatalf("пакетов %d, ожидалось %d", len(out), 3*voiceDecoyRepeats+1)
+	}
+	last := out[len(out)-1]
+	event, ok := parseVoiceDiscovery(last.Data)
+	if !ok || event.response || event.src.String() != "192.168.0.180:50555" || event.dst.String() != "104.29.153.203:19304" {
+		t.Fatalf("настоящий запрос должен идти последним от адреса адаптера: %+v ok=%v", event, ok)
+	}
+	fixed := append([]byte(nil), last.Data...)
+	ld, _ := packet.Dissect(last.Data)
+	if !ld.RecomputeChecksums(fixed) || !bytes.Equal(fixed, last.Data) {
+		t.Fatal("суммы перенаправленного запроса неверны")
+	}
+	for i, p := range out {
+		if addr := p.Reinject.(windivert.Address); addr.IfIdx() != 7 {
+			t.Fatalf("пакет %d уйдёт не через физический адаптер: ifIdx=%d", i, addr.IfIdx())
+		}
+	}
+	if got := redirectVoiceDiscovery(capture.Packet{Data: raw, Dir: core.DirectionOutbound, Reinject: tunnel}, netbind.Adapter{Index: 7}); got != nil {
+		t.Fatal("без адреса адаптера перенаправлять нельзя")
 	}
 }

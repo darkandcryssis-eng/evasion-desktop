@@ -8,6 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fitting-1c/evasion/internal/capture"
+	"github.com/fitting-1c/evasion/internal/core"
+	"github.com/fitting-1c/evasion/internal/discordvoice"
+	"github.com/fitting-1c/evasion/internal/hops"
 	"github.com/fitting-1c/evasion/internal/netbind"
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/windivert"
@@ -200,6 +204,35 @@ func startVoiceObserver(ctx context.Context, route netbind.Route, router *voiceR
 	}
 }
 
+// redirectVoiceDiscovery пересобирает запрос IP discovery, пойманный в туннеле,
+// для отправки через физический адаптер: адрес отправителя заменяется адресом
+// адаптера, перед запросом ставятся те же подделки, что и в обычном голосовом
+// десинке (сам десинк этот пакет уже не увидит). Пустой результат — пересобрать
+// нельзя.
+func redirectVoiceDiscovery(pkt capture.Packet, physical netbind.Adapter) []capture.Packet {
+	addr, ok := pkt.Reinject.(windivert.Address)
+	if !ok || !physical.Addr.Is4() || physical.Index == 0 {
+		return nil
+	}
+	d, err := packet.Dissect(pkt.Data)
+	if err != nil || d.Version != packet.Version4 || len(pkt.Data) < 20 {
+		return nil
+	}
+	data := append([]byte(nil), pkt.Data...)
+	own := physical.Addr.As4()
+	copy(data[12:16], own[:])
+	if !d.RecomputeChecksums(data) {
+		return nil
+	}
+	direct := capture.Packet{Data: data, Dir: core.DirectionOutbound, Reinject: addr.WithInterface(physical.Index)}
+	ttl := hops.Default.FakeTTL(voicePacketDestination(direct), 1, voiceDecoyTTL)
+	decoys, applied := buildVoiceDecoys(direct, discordvoice.FoolTTL, ttl, voiceDecoyRepeats, voicePayloadQUIC)
+	if !applied {
+		return nil
+	}
+	return append(buildVoiceCovers(direct, voiceDecoyRepeats), decoys...)
+}
+
 // voiceGatePriority ставит заслон раньше остальных обработчиков движка.
 const voiceGatePriority = 1000
 
@@ -237,9 +270,24 @@ func startVoiceGate(ctx context.Context, control *voiceControl) func() {
 				control.report(verdict)
 				if path == voiceDirect {
 					if control.router.Route(server) {
+						// Запрос сразу уходит мимо VPN от адреса физического
+						// адаптера, вместе с подделками: ждать секунду, пока
+						// клиент сам его повторит, не нужно. Если пересобрать
+						// пакет нельзя, он отбрасывается, и уйдёт повтор.
+						redirected := redirectVoiceDiscovery(pkt, control.route.Physical)
+						for _, out := range redirected {
+							if err := handle.Send(out); err != nil {
+								logger.Warn("голос Discord: запрос мимо VPN не отправлен, уйдёт повтор клиента", "err", err)
+								break
+							}
+						}
 						held++
 						if held <= voiceObserveLogLimit {
-							logger.Info("голос Discord: запрос в туннель отброшен, повтор уйдёт мимо VPN", "куда", event.dst)
+							what := "запрос в туннель отброшен, повтор уйдёт мимо VPN"
+							if len(redirected) > 0 {
+								what = "запрос перенаправлен мимо VPN"
+							}
+							logger.Info("голос Discord: "+what, "куда", event.dst)
 						}
 						continue
 					}
