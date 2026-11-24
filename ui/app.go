@@ -257,8 +257,9 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 		}
 		a.engine.setDiscord("Перезапускаю Discord…")
 		at := time.Now()
-		a.engine.setDiscord(discordResult(restartDiscord(a.engine.discordProxyAddress())))
-		a.engine.note(fmt.Sprintf("Запуск: Discord перезапущен за %d мс", time.Since(at).Milliseconds()))
+		result := discordResult(restartDiscord(a.engine.discordProxyAddress()))
+		a.engine.setDiscord(result)
+		a.engine.note(fmt.Sprintf("Запуск: Discord перезапущен за %d мс. %s", time.Since(at).Milliseconds(), result))
 	}()
 	return nil
 }
@@ -306,7 +307,7 @@ func discordResult(result discordStartResult, err error) string {
 	}
 	message := "Discord запущен: " + result.Version + " (DoH выключен"
 	if result.Tunnel {
-		message += "; резервный маршрут"
+		message += "; через локальный прокси"
 	}
 	return message + ")"
 }

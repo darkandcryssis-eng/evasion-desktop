@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -202,7 +205,27 @@ func discordSelfCheck(ctx context.Context, dial netbind.DialContextFunc, host st
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return fmt.Sprintf("TLS сорван (%s, TCP %d мс): %v", remote, tcpTime, err)
 	}
-	return fmt.Sprintf("ok (%s, TCP %d мс, TLS %d мс)", remote, tcpTime, time.Since(start).Milliseconds())
+	result := fmt.Sprintf("ok (%s, TCP %d мс, TLS %d мс)", remote, tcpTime, time.Since(start).Milliseconds())
+	if host != "gateway.discord.gg" {
+		return result
+	}
+	// Для gateway одного TLS мало: клиент стоит на «Starting…», пока не
+	// поднимется WebSocket. Проверяем сам апгрейд.
+	request := "GET /?v=10&encoding=json HTTP/1.1\r\nHost: " + host + "\r\n" +
+		"Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: https://discord.com\r\n\r\n"
+	if _, err := io.WriteString(tlsConn, request); err != nil {
+		return result + "; WebSocket: запрос не отправлен: " + err.Error()
+	}
+	response, err := http.ReadResponse(bufio.NewReader(tlsConn), nil)
+	if err != nil {
+		return result + "; WebSocket: нет ответа: " + err.Error()
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		return fmt.Sprintf("%s; WebSocket ОТКАЗ: HTTP %d", result, response.StatusCode)
+	}
+	return result + "; WebSocket ok"
 }
 
 func (t *discordTunnel) Close() {
