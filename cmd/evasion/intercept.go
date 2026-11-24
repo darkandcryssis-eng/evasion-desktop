@@ -348,6 +348,9 @@ func runIntercept(opts interceptOptions) error {
 		rotationProvider.SetOnExhausted(func(group string) {
 			logger.Warn("все стратегии группы сорвались", "группа", group)
 		})
+		rotationProvider.SetOnAdvance(func(group, sni string, from, to core.StrategyID) {
+			logger.Info("ротация: смена стратегии после срыва", "группа", group, "sni", sni, "было", from, "стало", to)
+		})
 	}
 
 	var youtube *youtubeMux
