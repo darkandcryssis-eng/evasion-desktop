@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -20,22 +21,6 @@ func (m suffixMatcher) Matches(host, sni string) bool {
 		return false
 	}
 	return s[len(s)-len(m.sfx):] == m.sfx
-}
-
-// простая стратегия для тестов — пустая без правил, но корректная.
-func dummyStrategy(id string) *strategy.Strategy {
-	// Любая стратегия с минимальным валидным составом; ID вычислится из
-	// содержимого. Для теста ротации нам важно только, что ID разные.
-	return &strategy.Strategy{
-		Rules: []strategy.Rule{{
-			Direction: core.DirectionOutbound,
-			Trigger:   strategy.Trigger{Match: strategy.MatchClientHello},
-			Action:    &strategy.Action{Kind: core.ActionSend},
-			// id как label не передаётся; разность достигается через
-			// добавление tamper'а, но для теста используем Rotation у
-			// самого Rule — проще.
-		}},
-	}
 }
 
 // Создаёт N разных стратегий (с разным tamper полем для уникальности ID).
@@ -148,6 +133,93 @@ func TestMultiGroupProviderStrategiesPreferredOverStrategy(t *testing.T) {
 		if sel.ID == single.ID {
 			t.Fatal("при заданном Strategies, Strategy не должна использоваться")
 		}
+	}
+}
+
+func TestFallbackFailureBypassAndExpiry(t *testing.T) {
+	fallback := distinctStrategies(1)[0]
+	matcher := suffixMatcher{sfx: ".example.com"}
+	p, err := NewMultiGroupProvider(nil, fallback, matcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p.rotation.now = func() time.Time { return now }
+	p.SetFallbackFailureBypass(true)
+	meta := ConnMeta{SNI: "api.example.com", IsClientHello: true}
+
+	sel := p.Select(meta)
+	if sel.Strategy == nil {
+		t.Fatal("fallback should initially apply")
+	}
+	p.ReportFailure(meta.SNI, sel.ID)
+	if got := p.Select(meta); got.ID != sel.ID {
+		t.Fatal("one failure must not bypass the fallback")
+	}
+	p.ReportFailure(meta.SNI, sel.ID)
+	if got := p.Select(meta); got.Strategy != nil {
+		t.Fatal("two fallback failures should bypass this SNI")
+	}
+
+	now = now.Add(fallbackBypassDuration + time.Nanosecond)
+	if got := p.Select(meta); got.ID != sel.ID {
+		t.Fatal("expired bypass should allow fallback again")
+	}
+}
+
+func TestFallbackFailureWindowAndCapacity(t *testing.T) {
+	fallback := distinctStrategies(1)[0]
+	matcher := suffixMatcher{sfx: ".example.com"}
+	p, err := NewMultiGroupProvider(nil, fallback, matcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p.rotation.now = func() time.Time { return now }
+	p.SetFallbackFailureBypass(true)
+	first := p.Select(ConnMeta{SNI: "first.example.com", IsClientHello: true})
+	p.ReportFailure("first.example.com", first.ID)
+	now = now.Add(fallbackFailureWindow + time.Nanosecond)
+	p.ReportFailure("first.example.com", first.ID)
+	if got := p.Select(ConnMeta{SNI: "first.example.com", IsClientHello: true}); got.ID != first.ID {
+		t.Fatal("failures outside the window must not trigger bypass")
+	}
+
+	for i := 0; i < fallbackFailureStateCapacity+1; i++ {
+		sni := fmt.Sprintf("host-%d.example.com", i)
+		p.ReportFailure(sni, first.ID)
+	}
+	if got := len(p.rotation.fallbackFailures); got > fallbackFailureStateCapacity {
+		t.Fatalf("fallback failure map grew to %d entries", got)
+	}
+}
+
+func TestFallbackBypassDoesNotAffectGroupRules(t *testing.T) {
+	groupStrategy := distinctStrategies(1)[0]
+	fallbackStrategy := distinctStrategies(2)[1]
+	groupMatcher := suffixMatcher{sfx: ".example.com"}
+	fallbackMatcher := suffixMatcher{sfx: ".com"}
+	p, err := NewMultiGroupProvider(
+		[]GroupRule{{Name: "group", Matcher: groupMatcher, Strategy: groupStrategy}},
+		fallbackStrategy,
+		fallbackMatcher,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetFallbackFailureBypass(true)
+	meta := ConnMeta{SNI: "api.example.com", IsClientHello: true}
+	group := p.Select(meta)
+	if group.ID == "" || group.ID == p.fallback.sel.ID {
+		t.Fatal("group rule should take precedence over fallback")
+	}
+	p.ReportFailure(meta.SNI, group.ID)
+	p.ReportFailure(meta.SNI, group.ID)
+	if got := p.Select(meta); got.ID != group.ID {
+		t.Fatal("fallback bypass must not alter a matching group rule")
+	}
+	if len(p.rotation.fallbackFailures) != 0 {
+		t.Fatal("group failures must not be recorded as fallback failures")
 	}
 }
 

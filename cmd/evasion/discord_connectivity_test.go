@@ -15,6 +15,9 @@ func TestDiscordWebProfilePreservesSpecializedStrategies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, ok := cfg.Groups["discord"]; ok {
+		t.Fatal("duplicate discord group must be removed in favor of discord_web")
+	}
 	radius, err := cfg.DomainSet(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +48,10 @@ func TestDiscordWebProfilePreservesSpecializedStrategies(t *testing.T) {
 		if p.Select(proxy.ConnMeta{SNI: host, IsClientHello: true}).Strategy != nil {
 			t.Fatalf("out-of-scope strategy: %s", host)
 		}
+	}
+	reps, _ := sandboxCoverage(cfg.Groups, radius.Domains(), []string{"discord.com"})
+	if len(reps) != 1 || reps[0] != "discord.com" {
+		t.Fatalf("autopilot should probe the duplicate Discord radius once: %v", reps)
 	}
 	// Selecting only video must not activate any Discord rule.
 	video, _ := cfg.DomainSet([]string{"video"})

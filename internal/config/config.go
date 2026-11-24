@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/fitting-1c/evasion/internal/strategy"
@@ -54,6 +55,8 @@ type Config struct {
 	// поражения (1.6, 2.3): стратегия применяется только к соединениям,
 	// попадающим в выбранные группы.
 	Groups map[string][]string
+	// Radius задаёт режим применения резервной стратегии в intercept.
+	Radius RadiusConfig
 	// Strategy — стратегия по умолчанию режима прокси (этап 0, до появления
 	// policy на M6). nil допустимо: тогда прокси работает прозрачно.
 	//
@@ -179,9 +182,77 @@ type TransportFallbackEntry struct {
 	// SafeIP — IP, не блокированный провайдером и обслуживающий SNI
 	// доменов из Domains. Проверяется как IPv4/IPv6 текст; не резолвится.
 	SafeIP string
+	// SafeIPs — дополнительные кандидаты после SafeIP.
+	SafeIPs []string
 	// Domains — домены для этого IP. См. комментарий у устаревшего
 	// TransportFallback.Domains.
 	Domains []string
+}
+
+// Candidates возвращает уникальные IP в порядке предпочтения из конфига.
+func (e TransportFallbackEntry) Candidates() []string {
+	out := make([]string, 0, 1+len(e.SafeIPs))
+	seen := make(map[string]struct{}, cap(out))
+	candidates := make([]string, 0, 1+len(e.SafeIPs))
+	if e.SafeIP != "" {
+		candidates = append(candidates, e.SafeIP)
+	}
+	candidates = append(candidates, e.SafeIPs...)
+	for _, candidate := range candidates {
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+type RadiusMode string
+
+const (
+	RadiusGroups RadiusMode = "groups"
+	RadiusAll    RadiusMode = "all"
+)
+
+type RadiusConfig struct {
+	Mode    RadiusMode
+	Exclude []string
+}
+
+// ParseRadiusMode разбирает режим радиуса.
+func ParseRadiusMode(value string) (RadiusMode, error) {
+	switch RadiusMode(strings.ToLower(strings.TrimSpace(value))) {
+	case RadiusGroups:
+		return RadiusGroups, nil
+	case RadiusAll:
+		return RadiusAll, nil
+	default:
+		return "", fmt.Errorf("config: неизвестный radius.mode %q: допустимы groups, all", value)
+	}
+}
+
+func (r RadiusConfig) validate() error {
+	if r.Mode != RadiusGroups && r.Mode != RadiusAll {
+		return fmt.Errorf("config: неизвестный radius.mode %q: допустимы groups, all", r.Mode)
+	}
+	for i, domain := range r.Exclude {
+		if normalizeDomain(domain) == "" {
+			return fmt.Errorf("config: radius.exclude[%d] пуст", i)
+		}
+	}
+	return nil
+}
+
+// NewDomainSet создаёт нормализованный суффиксный matcher.
+func NewDomainSet(domains []string) *DomainSet {
+	normalized := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		if domain = normalizeDomain(domain); domain != "" {
+			normalized = append(normalized, domain)
+		}
+	}
+	return &DomainSet{domains: normalized}
 }
 
 // QUICMode — как движок поступает с QUIC к отслеживаемым группам (3.3).
@@ -222,6 +293,7 @@ func Default() *Config {
 		Listen:      DefaultListen,
 		BlockQUIC:   true,
 		QUICMode:    QUICBlock,
+		Radius:      RadiusConfig{Mode: RadiusGroups},
 		Autopilot:   DefaultAutopilot(),
 		Parallelism: DefaultParallelism(),
 		Budgets:     DefaultBudgets(),
@@ -239,6 +311,7 @@ type wire struct {
 	BlockQUIC       *bool                      `json:"block_quic"`
 	QUICMode        *string                    `json:"quic_mode"`
 	Groups          map[string][]string        `json:"groups"`
+	Radius          *radiusWire                `json:"radius"`
 	Strategy        json.RawMessage            `json:"strategy"`
 	Strategies      map[string]json.RawMessage `json:"strategies"`
 
@@ -263,6 +336,11 @@ type wire struct {
 	ControlTargets []string `json:"control_targets"`
 
 	TransportFallback *transportFallbackWire `json:"transport_fallback"`
+}
+
+type radiusWire struct {
+	Mode    *string  `json:"mode"`
+	Exclude []string `json:"exclude"`
 }
 
 // transportFallbackWire — проводная форма TransportFallback.
@@ -296,6 +374,7 @@ type transportFallbackWire struct {
 // transportFallbackEntryWire — проводная форма одной Entry (пара IP+домены).
 type transportFallbackEntryWire struct {
 	SafeIP  string   `json:"safe_ip"`
+	SafeIPs []string `json:"safe_ips"`
 	Domains []string `json:"domains"`
 }
 
@@ -357,6 +436,19 @@ func parse(data []byte) (*Config, error) {
 	// BlockQUIC держим согласованным с режимом для оставшихся читателей.
 	cfg.BlockQUIC = cfg.QUICMode == QUICBlock
 	cfg.Groups = normalizeGroups(w.Groups)
+	if w.Radius != nil {
+		cfg.Radius.Exclude = make([]string, len(w.Radius.Exclude))
+		for i, domain := range w.Radius.Exclude {
+			cfg.Radius.Exclude[i] = normalizeDomain(domain)
+		}
+		if w.Radius.Mode != nil {
+			mode, err := ParseRadiusMode(*w.Radius.Mode)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Radius.Mode = mode
+		}
+	}
 	cfg.Vantage = w.Vantage
 	cfg.Autopilot = w.Autopilot.apply(cfg.Autopilot)
 	cfg.ProbeTargets = w.ProbeTargets
@@ -378,9 +470,9 @@ func parse(data []byte) (*Config, error) {
 		case hasEntries:
 			tf.Entries = make([]TransportFallbackEntry, 0, len(w.TransportFallback.Entries))
 			for i, e := range w.TransportFallback.Entries {
-				if e.SafeIP == "" {
+				if e.SafeIP == "" && len(e.SafeIPs) == 0 {
 					return nil, fmt.Errorf(
-						"config: transport_fallback.entries[%d]: пустой safe_ip", i)
+						"config: transport_fallback.entries[%d]: пустые safe_ip и safe_ips", i)
 				}
 				if len(e.Domains) == 0 {
 					return nil, fmt.Errorf(
@@ -388,6 +480,7 @@ func parse(data []byte) (*Config, error) {
 				}
 				tf.Entries = append(tf.Entries, TransportFallbackEntry{
 					SafeIP:  e.SafeIP,
+					SafeIPs: e.SafeIPs,
 					Domains: e.Domains,
 				})
 			}
@@ -520,6 +613,9 @@ func (c *Config) validate() error {
 	if err := c.Autopilot.validate(); err != nil {
 		return err
 	}
+	if err := c.Radius.validate(); err != nil {
+		return err
+	}
 	if err := c.Parallelism.validate(); err != nil {
 		return err
 	}
@@ -548,7 +644,7 @@ func (c *Config) validate() error {
 // validate проверяет TransportFallback. При Enabled=false ничего не проверяет
 // — поля просто не используются. При Enabled=true требует непустой Entries
 // (парсер уже свернул старую форму safe_ip+domains в единственную Entry, если
-// задана), в каждой Entry — валидный SafeIP и непустой Domains.
+// задана), в каждой Entry — хотя бы один валидный candidate IP и непустой Domains.
 func (t TransportFallback) validate() error {
 	if !t.Enabled {
 		return nil
@@ -557,14 +653,17 @@ func (t TransportFallback) validate() error {
 		return fmt.Errorf("config: transport_fallback.enabled=true, но нет ни safe_ip+domains, ни entries")
 	}
 	for i, e := range t.Entries {
-		if e.SafeIP == "" {
+		candidates := e.Candidates()
+		if len(candidates) == 0 {
 			return fmt.Errorf(
-				"config: transport_fallback.entries[%d]: safe_ip пуст", i)
+				"config: transport_fallback.entries[%d]: safe_ip и safe_ips пусты", i)
 		}
-		if net.ParseIP(e.SafeIP) == nil {
-			return fmt.Errorf(
-				"config: transport_fallback.entries[%d].safe_ip %q — не IP",
-				i, e.SafeIP)
+		for _, candidate := range candidates {
+			if net.ParseIP(candidate) == nil {
+				return fmt.Errorf(
+					"config: transport_fallback.entries[%d] candidate %q — не IP",
+					i, candidate)
+			}
 		}
 		if len(e.Domains) == 0 {
 			return fmt.Errorf(

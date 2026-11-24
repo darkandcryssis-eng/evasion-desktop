@@ -155,18 +155,19 @@ type overrideInfo struct {
 
 // buildInterceptProvider собирает провайдера стратегий для режима intercept.
 //
-// Если cfg.Strategies пуст, возвращает обычный GroupProvider (одна стратегия
-// на весь радиус) — поведение прежнее. Если есть переопределения, собирает
+// Если cfg.Strategies пуст и радиус равен groups, возвращает обычный
+// GroupProvider (одна стратегия на выбранный радиус). Для all и при
+// переопределениях собирает
 // MultiGroupProvider: для каждой группы из cfg.Strategies, попавшей в
 // выбранный радиус (--groups), создаёт матчер по её доменам и привязывает её
-// стратегию; хосты вне любой подгруппы идут в fallback (общая Strategy).
+// стратегию; хосты вне любой подгруппы идут в fallback.
 //
 // Правила сортируются по имени группы — чтобы разные запуски давали один и
 // тот же порядок, и чтобы владелец мог понять, какая выиграет при пересечении
 // доменов (это не частый случай, но «первая по имени» — предсказуемо).
 func buildInterceptProvider(cfg *config.Config, radius *config.DomainSet, groupNames []string, defStrategy *strategy.Strategy, logger *slog.Logger) (proxy.StrategyProvider, []overrideInfo, error) {
 	// Поведение прежнее: без strategies работает одна общая стратегия.
-	if len(cfg.Strategies) == 0 {
+	if len(cfg.Strategies) == 0 && cfg.Radius.Mode != config.RadiusAll {
 		p, err := proxy.NewGroupProvider(defStrategy, radius)
 		return p, nil, err
 	}
@@ -226,11 +227,31 @@ func buildInterceptProvider(cfg *config.Config, radius *config.DomainSet, groupN
 		rules = append(rules, rule)
 	}
 
-	p, err := proxy.NewMultiGroupProvider(rules, defStrategy, radius)
+	var fallbackMatcher proxy.HostMatcher = radius
+	if cfg.Radius.Mode == config.RadiusAll {
+		fallbackMatcher = newAllRadiusMatcher(cfg.Radius.Exclude)
+	}
+	p, err := proxy.NewMultiGroupProvider(rules, defStrategy, fallbackMatcher)
 	if err != nil {
 		return nil, nil, err
 	}
+	if cfg.Radius.Mode == config.RadiusAll {
+		p.SetFallbackFailureBypass(true)
+	}
 	return p, infos, nil
+}
+
+type interceptOptions struct {
+	ctx                                         context.Context
+	cfg                                         *config.Config
+	domainSet                                   *config.DomainSet
+	groupNames                                  []string
+	logger                                      *slog.Logger
+	jsonOut, auto, search                       bool
+	voice                                       voiceMode
+	redirect                                    bool
+	ytStartProfile, discordProfile              string
+	youtubeProfile, telegramProfile, ipListPath string
 }
 
 // runIntercept запускает системный перехват этапа 1 через WinDivert.
@@ -244,7 +265,11 @@ func buildInterceptProvider(cfg *config.Config, radius *config.DomainSet, groupN
 // отдельно, чтобы при --groups отобрать те записи cfg.Strategies, которые
 // попадают в выбранный радиус, а остальные тихо пропустить (ошибкой это не
 // является: радиус выбирают, strategies — лишь способ разнести его).
-func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.DomainSet, groupNames []string, logger *slog.Logger, jsonOut, auto, search bool, voice voiceMode, redirect bool, ytStartProfile, discordProfile, youtubeProfile, telegramProfile, ipListPath string) error {
+func runIntercept(opts interceptOptions) error {
+	ctx, cfg, domainSet, groupNames, logger := opts.ctx, opts.cfg, opts.domainSet, opts.groupNames, opts.logger
+	jsonOut, auto, search, voice, redirect := opts.jsonOut, opts.auto, opts.search, opts.voice, opts.redirect
+	ytStartProfile, discordProfile := opts.ytStartProfile, opts.discordProfile
+	youtubeProfile, telegramProfile, ipListPath := opts.youtubeProfile, opts.telegramProfile, opts.ipListPath
 	if !auto {
 		domainSet, _ = prepareYouTubeAuto(cfg, domainSet, groupNames)
 	}
@@ -296,10 +321,7 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 		if redirect {
 			logger.Warn("--rtc-redirect не поддержан вместе с --auto, проигнорирован")
 		}
-		if ipListPath != "" {
-			logger.Warn("--ip-list не поддержан вместе с --auto, проигнорирован")
-		}
-		return runInterceptAuto(ctx, cfg, domainSet, logger, jsonOut, search, voice, discordListen)
+		return runInterceptAuto(ctx, cfg, domainSet, logger, jsonOut, search, voice, discordListen, ipListPath)
 	}
 	if search {
 		logger.Warn("--search действует только вместе с --auto, проигнорирован")
@@ -521,7 +543,7 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 		Auto:            false,
 		QUICBlock:       quicOn && cfg.QUICMode == config.QUICBlock,
 		QUICMode:        quicModeLabel(cfg.QUICMode, quicOn),
-		StrategyApplies: !domainSet.Empty(),
+		StrategyApplies: !domainSet.Empty() || (cfg.Radius.Mode == config.RadiusAll && strat != nil),
 		DiscordProxy:    discordListen,
 		YouTubeProxy:    youtubeListen,
 		Overrides:       overrideInfos,
@@ -599,7 +621,7 @@ const interceptReplan = 30 * time.Second
 // WinDivert и их взаимодействие в бою проверяются только на машине владельца.
 // На не-Windows windivert.Open возвращает ошибку (стаб), и команда честно
 // откажет.
-func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config.DomainSet, logger *slog.Logger, jsonOut, search bool, voice voiceMode, discordListen string) error {
+func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config.DomainSet, logger *slog.Logger, jsonOut, search bool, voice voiceMode, discordListen, ipListPath string) error {
 	if len(cfg.ProbeTargets) == 0 {
 		return fmt.Errorf("для --auto нужны probe_targets в конфиге: на них песочница подбирает стратегию")
 	}
@@ -651,6 +673,22 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 	// Горячая таблица продуктового пути: в неё контур публикует снимок, из неё
 	// продуктовый движок выбирает стратегию по SNI/радиусу.
 	hot := policy.NewTable()
+	var productProvider proxy.StrategyProvider = hot
+	ipListEntries := 0
+	if ipListPath != "" {
+		ips, err := iplist.Load(ipListPath)
+		if err != nil {
+			return fmt.Errorf("список IP %s: %w", ipListPath, err)
+		}
+		if n := ips.Len(); n > 0 && !cfg.Observe {
+			ipListEntries = n
+			productProvider, err = newIPListProvider(productProvider, ips)
+			if err != nil {
+				return err
+			}
+			logger.Info("свой список IP подключён", "записей", ipListEntries)
+		}
+	}
 
 	// Портфель — стартовые кандидаты как candidate. Действующей стратегии нет:
 	// на старте обвал (прозрачный пропуск, тревога), пока песочница не наберёт
@@ -800,7 +838,7 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 		Sink:          hProd,
 		DesyncSink:    sendYouTube,
 		Flows:         flow.NewTable(flowCapacity, flowTTL, intercept.TLSHelloDetector),
-		Provider:      hot,
+		Provider:      productProvider,
 		Exec:          packetexec.New(),
 		Parse:         intercept.TLSHelloParser,
 		Logger:        logger,
@@ -890,6 +928,7 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 		QUICBlock:       quicOn && cfg.QUICMode == config.QUICBlock,
 		QUICMode:        quicModeLabel(cfg.QUICMode, quicOn),
 		StrategyApplies: !domainSet.Empty(),
+		IPList:          ipListEntries,
 		DiscordProxy:    discordListen,
 	}
 	emitInterceptInfo(os.Stdout, info, jsonOut)

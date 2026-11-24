@@ -13,38 +13,24 @@ import (
 	"github.com/fitting-1c/evasion/internal/rtctrack"
 )
 
-const rtcStatusUsage = `evasion status --rtc — карта живучести RTC-серверов Discord
-
-Читает snapshot ` + "`state/rtctrack.json`" + ` и выводит таблицу: SNI сервера,
-сколько попыток было, сколько прошли TLS-рукопожатие, какова доля успеха,
-средний dwell живого соединения, итоговый score живучести (0..1000, выше =
-лучше). Snapshot движок пишет сам раз в минуту во время работы + при
-штатном shutdown.
-
-  evasion status --rtc              таблица (txt)
-  evasion status --rtc --json       машинно-читаемый
-  evasion status --rtc --top 10     только top-N по score (default: все)
-  evasion status --rtc --min 3      скрыть пары с observed < min (default: 1)
-`
-
 // rtcStatusInfo — машинно-читаемый формат.
 type rtcStatusInfo struct {
-	Path    string            `json:"path"`
-	SavedAt time.Time         `json:"saved_at,omitempty"`
-	Count   int               `json:"count"`
-	Entries []rtcStatusEntry  `json:"entries"`
+	Path    string           `json:"path"`
+	SavedAt time.Time        `json:"saved_at,omitempty"`
+	Count   int              `json:"count"`
+	Entries []rtcStatusEntry `json:"entries"`
 }
 
 type rtcStatusEntry struct {
-	SNI         string        `json:"sni"`
-	Port        uint16        `json:"port"`
-	Observed    int           `json:"observed"`
-	Settled     int           `json:"settled"`
-	Reset       int           `json:"reset"`
-	SuccessPct  int           `json:"success_permille"`
-	AvgDwellMs  int64         `json:"avg_dwell_ms"`
-	Score       int           `json:"score"`
-	LastAt      time.Time     `json:"last_at"`
+	SNI        string    `json:"sni"`
+	Port       uint16    `json:"port"`
+	Observed   int       `json:"observed"`
+	Settled    int       `json:"settled"`
+	Reset      int       `json:"reset"`
+	SuccessPct int       `json:"success_permille"`
+	AvgDwellMs int64     `json:"avg_dwell_ms"`
+	Score      int       `json:"score"`
+	LastAt     time.Time `json:"last_at"`
 }
 
 // rtcStatusCommand — обработка `evasion status --rtc`.

@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
+	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/fitting-1c/evasion/internal/config"
 	"github.com/fitting-1c/evasion/internal/hosts"
@@ -249,14 +254,27 @@ func applyFallback(f config.TransportFallback) (changed bool, err error) {
 		data = nil // пустой hosts — создадим с нуля
 	}
 	h := hosts.Parse(data)
+	if len(f.Entries) == 0 {
+		if !h.Remove(hostsBlockID) {
+			return false, nil
+		}
+		if err := writeHostsInPlace(systemHostsPath, h.Render()); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 
 	// Собираем все (IP, Host) пары из всех Entries по порядку.
 	// Entries уже заполнены парсером: либо из нового формата entries, либо
 	// свёрнуты из старого safe_ip+domains в одну Entry.
 	var entries []hosts.Entry
 	for _, e := range f.Entries {
+		candidates := e.Candidates()
+		if len(candidates) == 0 {
+			continue
+		}
 		for _, d := range e.Domains {
-			entries = append(entries, hosts.Entry{IP: e.SafeIP, Host: d})
+			entries = append(entries, hosts.Entry{IP: candidates[0], Host: d})
 		}
 	}
 
@@ -419,43 +437,170 @@ func removeHostsBlockRecord(id string) error {
 	return m.Remove(sysmanifest.KindHostsEntry, "hosts-block:"+id)
 }
 
+const (
+	transportFallbackProbeTimeout  = 3 * time.Second
+	transportFallbackCheckInterval = 10 * time.Minute
+)
 
+type fallbackCandidateProbe func(context.Context, string, string) error
 
-// applyTransportFallbackOnStart — автоприменение hosts-блока при старте
-// `evasion run`. Вызывается из runCommand только когда
-// cfg.TransportFallback.Enabled=true.
-//
-// Политика: применить при старте, НЕ снимать при остановке. Это осознано —
-// клиент (Discord) без hosts-подмены пойдёт на реальные IP, которые ISP режет,
-// и перестанет работать даже когда movok отработал и ушёл. Пользователь явно
-// снимает подмену через `evasion hosts clean`, когда она ему больше не нужна.
-//
-// Любая неудача на старте — фатальная: конфиг включил эту настройку, значит
-// пользователь ожидает её работы. Молча пропускать и запускать движок дальше
-// — это тот же класс «молчаливой потери наблюдаемости», от которого в проекте
-// уже страдали (ложная тревога обвала, вечный «подключается»).
-func applyTransportFallbackOnStart(f config.TransportFallback, logger interface{ Info(string, ...any) }) error {
-	if elev, checked := elevated(); checked && !elev {
-		return fmt.Errorf("transport_fallback включён, но нет прав администратора — hosts править нельзя")
-	}
-	changed, err := applyFallback(f)
+func probeTransportFallbackCandidate(ctx context.Context, ip, serverName string) error {
+	probeCtx, cancel := context.WithTimeout(ctx, transportFallbackProbeTimeout)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", net.JoinHostPort(ip, "443"))
 	if err != nil {
-		return fmt.Errorf("transport_fallback: %w", err)
+		return err
+	}
+	defer conn.Close()
+	tlsConn := tls.Client(conn, &tls.Config{
+		ServerName: serverName,
+		MinVersion: tls.VersionTLS12,
+	})
+	return tlsConn.HandshakeContext(probeCtx)
+}
+
+func selectHealthyTransportFallback(ctx context.Context, f config.TransportFallback, probe fallbackCandidateProbe) (config.TransportFallback, []config.TransportFallbackEntry) {
+	if probe == nil {
+		probe = probeTransportFallbackCandidate
+	}
+	selected := f
+	selected.Entries = nil
+	var unavailable []config.TransportFallbackEntry
+	for _, entry := range f.Entries {
+		candidates := entry.Candidates()
+		if len(candidates) == 0 || len(entry.Domains) == 0 {
+			unavailable = append(unavailable, entry)
+			continue
+		}
+		results := make([]error, len(candidates))
+		var wg sync.WaitGroup
+		for i, candidate := range candidates {
+			wg.Add(1)
+			go func(index int, ip string) {
+				defer wg.Done()
+				results[index] = probe(ctx, ip, entry.Domains[0])
+			}(i, candidate)
+		}
+		wg.Wait()
+		chosen := ""
+		for i, err := range results {
+			if err == nil {
+				chosen = candidates[i]
+				break
+			}
+		}
+		if chosen == "" {
+			// Проверка идёт до запуска десинка и может не пройти из-за самого DPI,
+			// поэтому оставляем первый адрес, как до появления safe_ips.
+			unavailable = append(unavailable, entry)
+			chosen = candidates[0]
+		}
+		selected.Entries = append(selected.Entries, config.TransportFallbackEntry{
+			SafeIP:  chosen,
+			Domains: entry.Domains,
+		})
+	}
+	return selected, unavailable
+}
+
+func warnUnavailableTransportFallback(entries []config.TransportFallbackEntry, logger *slog.Logger) {
+	for _, entry := range entries {
+		logger.Warn("transport_fallback: ни один кандидат не прошёл TCP/TLS-проверку, оставлен первый адрес",
+			"домены", entry.Domains)
+	}
+}
+
+func sameTransportFallbackSelection(a, b config.TransportFallback) bool {
+	if len(a.Entries) != len(b.Entries) {
+		return false
+	}
+	for i := range a.Entries {
+		if a.Entries[i].SafeIP != b.Entries[i].SafeIP || len(a.Entries[i].Domains) != len(b.Entries[i].Domains) {
+			return false
+		}
+		for j := range a.Entries[i].Domains {
+			if a.Entries[i].Domains[j] != b.Entries[i].Domains[j] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// applyTransportFallbackOnStart проверяет кандидатов и применяет hosts-блок.
+func applyTransportFallbackOnStart(ctx context.Context, f config.TransportFallback, logger *slog.Logger) (config.TransportFallback, error) {
+	return applyTransportFallbackOnStartWithProbe(ctx, f, logger, nil)
+}
+
+func applyTransportFallbackOnStartWithProbe(ctx context.Context, f config.TransportFallback, logger *slog.Logger, probe fallbackCandidateProbe) (config.TransportFallback, error) {
+	if elev, checked := elevated(); checked && !elev {
+		return config.TransportFallback{}, fmt.Errorf("transport_fallback включён, но нет прав администратора — hosts править нельзя")
+	}
+	selected, unavailable := selectHealthyTransportFallback(ctx, f, probe)
+	if err := ctx.Err(); err != nil {
+		return config.TransportFallback{}, err
+	}
+	warnUnavailableTransportFallback(unavailable, logger)
+	changed, err := applyFallback(selected)
+	if err != nil {
+		return config.TransportFallback{}, fmt.Errorf("transport_fallback: %w", err)
 	}
 	// Пишем в журнал системных изменений — одинаково для changed=true/false.
 	// Если блок там уже есть (прошлый запуск), Record его замещает с новым
 	// временем применения.
-	allDomains := transportFallbackDomains(f)
+	allDomains := transportFallbackDomains(selected)
 	if err := recordHostsBlockApplied(hostsBlockID, allDomains); err != nil {
 		logger.Info("transport_fallback: не удалось записать в журнал системных изменений",
 			"ошибка", err)
 	}
 	if changed {
 		logger.Info("transport_fallback: применён блок",
-			"id", hostsBlockID, "групп_IP", len(f.Entries), "доменов", len(allDomains))
+			"id", hostsBlockID, "групп_IP", len(selected.Entries), "доменов", len(allDomains))
 	} else {
 		logger.Info("transport_fallback: блок уже в hosts, пропуск",
-			"id", hostsBlockID, "групп_IP", len(f.Entries), "доменов", len(allDomains))
+			"id", hostsBlockID, "групп_IP", len(selected.Entries), "доменов", len(allDomains))
 	}
-	return nil
+	return selected, nil
+}
+
+func startTransportFallbackMonitor(ctx context.Context, f, current config.TransportFallback, logger *slog.Logger, probe fallbackCandidateProbe) func() {
+	monitorCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(transportFallbackCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-monitorCtx.Done():
+				return
+			case <-ticker.C:
+				next, unavailable := selectHealthyTransportFallback(monitorCtx, f, probe)
+				if monitorCtx.Err() != nil {
+					return
+				}
+				warnUnavailableTransportFallback(unavailable, logger)
+				if sameTransportFallbackSelection(current, next) {
+					continue
+				}
+				changed, err := applyFallback(next)
+				if err != nil {
+					logger.Warn("transport_fallback: не удалось обновить hosts-блок", "ошибка", err)
+					continue
+				}
+				if err := recordHostsBlockApplied(hostsBlockID, transportFallbackDomains(next)); err != nil {
+					logger.Warn("transport_fallback: не удалось обновить журнал системных изменений", "ошибка", err)
+				}
+				current = next
+				logger.Info("transport_fallback: кандидаты перепроверены",
+					"изменён", changed,
+					"групп_IP", len(next.Entries),
+					"доменов", len(transportFallbackDomains(next)))
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }

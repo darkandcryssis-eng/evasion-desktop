@@ -196,17 +196,29 @@ type MultiGroupProvider struct {
 }
 
 type rotationState struct {
-	mu          sync.Mutex
-	active      map[string]int
-	advances    map[string][]time.Time
-	exhausted   map[string]time.Time
-	onExhausted func(string)
-	now         func() time.Time
+	mu                    sync.Mutex
+	active                map[string]int
+	advances              map[string][]time.Time
+	exhausted             map[string]time.Time
+	fallbackBypassEnabled bool
+	fallbackFailures      map[string]fallbackFailureState
+	onExhausted           func(string)
+	now                   func() time.Time
+}
+
+type fallbackFailureState struct {
+	firstFailure time.Time
+	lastSeen     time.Time
+	failures     int
+	bypassUntil  time.Time
 }
 
 const (
-	exhaustionWindow = 2 * time.Minute
-	exhaustionPeriod = 2 * time.Minute
+	exhaustionWindow             = 2 * time.Minute
+	exhaustionPeriod             = 2 * time.Minute
+	fallbackFailureWindow        = 10 * time.Minute
+	fallbackBypassDuration       = 10 * time.Minute
+	fallbackFailureStateCapacity = 4096
 )
 
 // groupRuleResolved — правило с уже посчитанными идентификаторами стратегий.
@@ -231,10 +243,11 @@ type groupRuleResolved struct {
 // как и в NewGroupProvider: радиус неявно считать «всем» нельзя (1.6).
 func NewMultiGroupProvider(rules []GroupRule, fallbackStrategy *strategy.Strategy, fallbackMatcher HostMatcher) (MultiGroupProvider, error) {
 	out := MultiGroupProvider{rotation: &rotationState{
-		active:    make(map[string]int),
-		advances:  make(map[string][]time.Time),
-		exhausted: make(map[string]time.Time),
-		now:       time.Now,
+		active:           make(map[string]int),
+		advances:         make(map[string][]time.Time),
+		exhausted:        make(map[string]time.Time),
+		fallbackFailures: make(map[string]fallbackFailureState),
+		now:              time.Now,
 	}}
 	for _, r := range rules {
 		if r.Matcher == nil {
@@ -307,6 +320,9 @@ func (p MultiGroupProvider) Select(meta ConnMeta) Selection {
 		}
 	}
 	if p.hasFallback {
+		if p.fallbackBypassed(meta.SNI) {
+			return Selection{}
+		}
 		return p.fallback.Select(meta)
 	}
 	return Selection{}
@@ -351,6 +367,88 @@ func (p MultiGroupProvider) ReportFailure(sni string, failed core.StrategyID) {
 		}
 		return
 	}
+	if !p.hasFallback ||
+		p.fallback.sel.Strategy == nil || p.fallback.sel.ID != failed ||
+		!p.fallback.matcher.Matches("", sni) {
+		return
+	}
+	p.recordFallbackFailure(sni)
+}
+
+func (p MultiGroupProvider) fallbackBypassed(sni string) bool {
+	if sni == "" || p.rotation == nil {
+		return false
+	}
+	p.rotation.mu.Lock()
+	defer p.rotation.mu.Unlock()
+	if !p.rotation.fallbackBypassEnabled {
+		return false
+	}
+	state, ok := p.rotation.fallbackFailures[sni]
+	if !ok {
+		return false
+	}
+	now := p.rotation.now()
+	if now.Before(state.bypassUntil) {
+		return true
+	}
+	if !state.bypassUntil.IsZero() {
+		delete(p.rotation.fallbackFailures, sni)
+		return false
+	}
+	if now.Sub(state.firstFailure) > fallbackFailureWindow {
+		delete(p.rotation.fallbackFailures, sni)
+	}
+	return false
+}
+
+func (p MultiGroupProvider) recordFallbackFailure(sni string) {
+	p.rotation.mu.Lock()
+	defer p.rotation.mu.Unlock()
+	if !p.rotation.fallbackBypassEnabled {
+		return
+	}
+	now := p.rotation.now()
+	state, exists := p.rotation.fallbackFailures[sni]
+	if exists && !state.bypassUntil.IsZero() && !now.Before(state.bypassUntil) {
+		state = fallbackFailureState{}
+		exists = false
+	}
+	if exists && now.Sub(state.firstFailure) > fallbackFailureWindow {
+		state = fallbackFailureState{}
+		exists = false
+	}
+	if !exists && len(p.rotation.fallbackFailures) >= fallbackFailureStateCapacity {
+		oldestSNI := ""
+		var oldest time.Time
+		for key, candidate := range p.rotation.fallbackFailures {
+			if oldestSNI == "" || candidate.lastSeen.Before(oldest) {
+				oldestSNI = key
+				oldest = candidate.lastSeen
+			}
+		}
+		delete(p.rotation.fallbackFailures, oldestSNI)
+	}
+	if state.failures == 0 {
+		state.firstFailure = now
+	}
+	state.failures++
+	state.lastSeen = now
+	if state.failures >= 2 {
+		state.bypassUntil = now.Add(fallbackBypassDuration)
+	}
+	p.rotation.fallbackFailures[sni] = state
+}
+
+// SetFallbackFailureBypass включает временный обход для упавшего fallback-SNI.
+// По умолчанию выключено, чтобы не менять режим groups.
+func (p MultiGroupProvider) SetFallbackFailureBypass(enabled bool) {
+	if p.rotation == nil {
+		return
+	}
+	p.rotation.mu.Lock()
+	p.rotation.fallbackBypassEnabled = enabled
+	p.rotation.mu.Unlock()
 }
 
 // SetOnExhausted устанавливает необязательный callback. Он вызывается вне
