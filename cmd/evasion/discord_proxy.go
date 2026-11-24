@@ -115,7 +115,11 @@ func startDiscordDirectProxy(parent context.Context, ifIndex uint32, listen stri
 	}
 	ctx, cancel := context.WithCancel(parent)
 	p := &discordDirectProxy{Listen: ln.Addr().String(), cancel: cancel, done: make(chan struct{})}
-	server := &discordproxy.Server{Dial: discordproxy.DialContextFunc(netbind.Dialer(ifIndex)), Logger: logger}
+	server := &discordproxy.Server{
+		Dial:        discordproxy.DialContextFunc(netbind.Dialer(ifIndex)),
+		Passthrough: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		Logger:      logger,
+	}
 	go func() {
 		_ = server.Serve(ctx, ln)
 		close(p.done)
