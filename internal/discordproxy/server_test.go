@@ -453,3 +453,74 @@ func TestSilenceAfterHandshakeIsDropped(t *testing.T) {
 		t.Fatal("silence after handshake not reported")
 	}
 }
+
+func TestUnansweredRequestIsDropped(t *testing.T) {
+	upstream, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		for {
+			c, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				buf := make([]byte, 64)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("server flight"))
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("tickets"))
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stalled := make(chan string, 2)
+	s := &Server{NoReply: 100 * time.Millisecond, OnStall: func(host string) { stalled <- host }, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Addr().String())
+	}}
+	go func() { _ = s.Serve(ctx, ln) }()
+	open := func(request int) net.Conn {
+		c, err := net.Dial("tcp4", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(c, "CONNECT discord.com:443 HTTP/1.1\r\nHost: discord.com:443\r\n\r\n")
+		buf := make([]byte, 64)
+		if _, err = io.ReadFull(c, buf[:39]); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write([]byte("\x16\x03\x01\x00\x05hello"))
+		if _, err = c.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write([]byte("\x17\x03\x03\x00\x03fin"))
+		if _, err = c.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write(make([]byte, request))
+		return c
+	}
+	// Мелкая служебная запись без ответа — соединение простаивает, его не трогают.
+	idle := open(31)
+	defer idle.Close()
+	select {
+	case <-stalled:
+		t.Fatal("idle connection reported as stalled")
+	case <-time.After(700 * time.Millisecond):
+	}
+	busy := open(600)
+	defer busy.Close()
+	select {
+	case <-stalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("unanswered request not reported")
+	}
+}

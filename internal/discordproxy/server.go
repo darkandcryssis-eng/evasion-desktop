@@ -293,13 +293,14 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	}()
 
 	var lastUp, connDown, discard atomic.Int64
+	var pending atomic.Int64 // сколько клиент отправил после последнего байта от узла
 	var finished atomic.Bool // клиент отправил первую запись с данными приложения
 	var flight atomic.Int64  // сколько узел прислал к моменту, когда клиент завершил рукопожатие
 	records := &tlsRecords{done: &finished, down: &down, flight: &flight}
 	if s.NoReply > 0 {
 		watchCtx, stopWatch := context.WithCancel(ctx)
 		defer stopWatch()
-		go s.watch(watchCtx, host, &up, &down, &lastUp, &connDown, &flight, &finished, func() {
+		go s.watch(watchCtx, host, &up, &down, &lastUp, &connDown, &flight, &pending, &finished, func() {
 			_ = upstream.Close()
 			_ = client.Close()
 		})
@@ -307,12 +308,12 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(clientReply{countingWriter{upstream, &up, &stats.up, &lastUp}, records}, reader)
+		_, _ = io.Copy(clientReply{countingWriter{upstream, &up, &stats.up, &lastUp}, records, &pending}, reader)
 		_ = upstream.Close()
 		_ = client.Close()
 		close(done)
 	}()
-	_, _ = io.Copy(countingWriter{countingWriter{client, &down, &stats.down, &stats.lastDown}, &discard, &discard, &connDown}, upstream)
+	_, _ = io.Copy(serverReply{countingWriter{countingWriter{client, &down, &stats.down, &stats.lastDown}, &discard, &discard, &connDown}, &pending}, upstream)
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
@@ -363,12 +364,29 @@ func (t *tlsRecords) feed(p []byte) {
 type clientReply struct {
 	countingWriter
 	records *tlsRecords
+	pending *atomic.Int64
 }
 
 func (c clientReply) Write(p []byte) (int, error) {
 	c.records.feed(p)
+	c.pending.Add(int64(len(p)))
 	return c.countingWriter.Write(p)
 }
+
+type serverReply struct {
+	countingWriter
+	pending *atomic.Int64
+}
+
+func (r serverReply) Write(p []byte) (int, error) {
+	r.pending.Store(0)
+	return r.countingWriter.Write(p)
+}
+
+// requestBytes — отправленное клиентом без ответа крупнее этого считается
+// запросом, на который узел обязан ответить. Служебные записи (подтверждение
+// настроек HTTP/2, пинг) мельче и ответа не требуют.
+const requestBytes = 200
 
 // stallChecks — сколько интервалов NoReply соединение наблюдается: начало
 // обмена либо проходит за это время, либо уже не пройдёт.
@@ -377,12 +395,13 @@ const stallChecks = 6
 // watch обрывает соединение, застрявшее в начале обмена TLS:
 //   - узел не ответил на приветствие клиента;
 //   - узел начал отвечать и замолчал, не дав клиенту завершить рукопожатие;
-//   - клиент завершил рукопожатие, а узел после этого не прислал ни байта.
+//   - клиент завершил рукопожатие, а узел после этого не прислал ни байта;
+//   - узел не отвечает на первый запрос клиента после рукопожатия.
 //
 // Живой узел присылает свою часть рукопожатия разом, а на его завершение
 // сразу отвечает билетами сеанса и настройками HTTP/2, поэтому тишина в любой
 // из этих точек означает обмен, замороженный по дороге.
-func (s *Server) watch(ctx context.Context, host string, up, down, lastUp, lastDown, flight *atomic.Int64, finished *atomic.Bool, drop func()) {
+func (s *Server) watch(ctx context.Context, host string, up, down, lastUp, lastDown, flight, pending *atomic.Int64, finished *atomic.Bool, drop func()) {
 	ticker := time.NewTicker(s.NoReply / 2)
 	defer ticker.Stop()
 	for range stallChecks * 2 {
@@ -400,10 +419,14 @@ func (s *Server) watch(ctx context.Context, host string, up, down, lastUp, lastD
 		case got == 0:
 			reason = "узел не ответил"
 		case finished.Load():
-			if got > flight.Load() {
-				return
+			switch {
+			case got <= flight.Load():
+				reason = "узел молчит после рукопожатия"
+			case pending.Load() >= requestBytes:
+				reason = "узел не отвечает на запрос"
+			default:
+				continue
 			}
-			reason = "узел молчит после рукопожатия"
 		case time.Since(time.Unix(0, lastDown.Load())) >= s.NoReply:
 			reason = "ответ узла оборвался посреди рукопожатия"
 		default:
