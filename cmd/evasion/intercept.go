@@ -309,6 +309,9 @@ func runIntercept(opts interceptOptions) error {
 	}
 	discordForce := false
 	route := detectBypassRoute(logger)
+	if clearStaleSitePAC(windowsPACSettings{}, defaultDiscordTunnelListen) {
+		logger.Info("резерв сайтов: снят сценарий прокси, оставшийся от прошлого запуска")
+	}
 	startDiscordSelfCheck(ctx, route, logger)
 	if route.Tunnel && discordListen == "" {
 		dp, err := startDiscordDirectProxy(ctx, route, defaultDiscordTunnelListen, logger)
