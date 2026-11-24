@@ -60,7 +60,7 @@ type Handle struct {
 // Узкий фильтр — часть правила «уйти с пути» (4.2): движок видит только нужные
 // пакеты. Флаги нулевые: обычный режим перехвата с возможностью инъекции (не
 // sniff и не drop).
-func Open(filter string) (*Handle, error) { return openNetwork(filter, 0, 0) }
+func Open(filter string) (*Handle, error) { return openNetwork(scopeFilter(filter), 0, 0) }
 
 // Observe copies packets without delaying or suppressing originals.
 func OpenPriority(filter string, priority int16) (*Handle, error) {

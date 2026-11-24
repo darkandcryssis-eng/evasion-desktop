@@ -136,6 +136,9 @@ type interceptInfo struct {
 	QUICMode string `json:"quic_mode"`
 	// DiscordProxy — loopback HTTP CONNECT-прокси резервного маршрута Discord.
 	DiscordProxy string `json:"discord_proxy,omitempty"`
+	// DiscordProxyForce — Discord обязан идти через DiscordProxy: маршрут по
+	// умолчанию занят сторонним VPN, прокси ведёт мимо него.
+	DiscordProxyForce bool `json:"discord_proxy_force,omitempty"`
 	// YouTubeProxy — отдельный loopback CONNECT/PAC-прокси автоматического резерва YouTube.
 	YouTubeProxy string `json:"youtube_proxy,omitempty"`
 	// Overrides — подгрупповые переопределения стратегий (cfg.Strategies) в
@@ -302,6 +305,17 @@ func runIntercept(opts interceptOptions) error {
 			logger.Info("резервный маршрут Discord готов", "listen", discordListen)
 		}
 	}
+	discordForce := false
+	if route := detectBypassRoute(logger); route.Tunnel && discordListen == "" {
+		dp, err := startDiscordDirectProxy(ctx, route.Physical.Index, defaultDiscordTunnelListen, logger)
+		if err != nil {
+			logger.Error("прямой маршрут Discord мимо VPN недоступен", "err", err)
+		} else {
+			discordListen, discordForce = dp.Listen, true
+			defer dp.Close()
+			logger.Info("Discord пойдёт мимо VPN через физический адаптер", "listen", discordListen, "адаптер", route.Physical.Name)
+		}
+	}
 	if telegramProfile != "" {
 		tt, err := startTelegramTunnel(ctx, telegramProfile, "", defaultTelegramTunnelListen)
 		if err != nil {
@@ -321,7 +335,7 @@ func runIntercept(opts interceptOptions) error {
 		if redirect {
 			logger.Warn("--rtc-redirect не поддержан вместе с --auto, проигнорирован")
 		}
-		return runInterceptAuto(ctx, cfg, domainSet, logger, jsonOut, search, voice, discordListen, ipListPath)
+		return runInterceptAuto(ctx, cfg, domainSet, logger, jsonOut, search, voice, discordListen, discordForce, ipListPath)
 	}
 	if search {
 		logger.Warn("--search действует только вместе с --auto, проигнорирован")
@@ -539,18 +553,19 @@ func runIntercept(opts interceptOptions) error {
 	}()
 
 	info := interceptInfo{
-		Mode:            "intercept",
-		Filter:          filter,
-		Observe:         cfg.Observe,
-		Domains:         domainSet.Domains(),
-		Auto:            false,
-		QUICBlock:       quicOn && cfg.QUICMode == config.QUICBlock,
-		QUICMode:        quicModeLabel(cfg.QUICMode, quicOn),
-		StrategyApplies: !domainSet.Empty() || (cfg.Radius.Mode == config.RadiusAll && strat != nil),
-		DiscordProxy:    discordListen,
-		YouTubeProxy:    youtubeListen,
-		Overrides:       overrideInfos,
-		IPList:          ipEntries,
+		Mode:              "intercept",
+		Filter:            filter,
+		Observe:           cfg.Observe,
+		Domains:           domainSet.Domains(),
+		Auto:              false,
+		QUICBlock:         quicOn && cfg.QUICMode == config.QUICBlock,
+		QUICMode:          quicModeLabel(cfg.QUICMode, quicOn),
+		StrategyApplies:   !domainSet.Empty() || (cfg.Radius.Mode == config.RadiusAll && strat != nil),
+		DiscordProxy:      discordListen,
+		DiscordProxyForce: discordForce,
+		YouTubeProxy:      youtubeListen,
+		Overrides:         overrideInfos,
+		IPList:            ipEntries,
 	}
 	if s := cfg.Strategy; s != nil && !cfg.Observe {
 		info.StrategyID = s.ID.String()
@@ -624,7 +639,7 @@ const interceptReplan = 30 * time.Second
 // WinDivert и их взаимодействие в бою проверяются только на машине владельца.
 // На не-Windows windivert.Open возвращает ошибку (стаб), и команда честно
 // откажет.
-func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config.DomainSet, logger *slog.Logger, jsonOut, search bool, voice voiceMode, discordListen, ipListPath string) error {
+func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config.DomainSet, logger *slog.Logger, jsonOut, search bool, voice voiceMode, discordListen string, discordForce bool, ipListPath string) error {
 	if len(cfg.ProbeTargets) == 0 {
 		return fmt.Errorf("для --auto нужны probe_targets в конфиге: на них песочница подбирает стратегию")
 	}
@@ -923,16 +938,17 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 	}
 
 	info := interceptInfo{
-		Mode:            "intercept",
-		Filter:          prodFilter,
-		Observe:         cfg.Observe,
-		Domains:         domainSet.Domains(),
-		Auto:            true,
-		QUICBlock:       quicOn && cfg.QUICMode == config.QUICBlock,
-		QUICMode:        quicModeLabel(cfg.QUICMode, quicOn),
-		StrategyApplies: !domainSet.Empty(),
-		IPList:          ipListEntries,
-		DiscordProxy:    discordListen,
+		Mode:              "intercept",
+		Filter:            prodFilter,
+		Observe:           cfg.Observe,
+		Domains:           domainSet.Domains(),
+		Auto:              true,
+		QUICBlock:         quicOn && cfg.QUICMode == config.QUICBlock,
+		QUICMode:          quicModeLabel(cfg.QUICMode, quicOn),
+		StrategyApplies:   !domainSet.Empty(),
+		IPList:            ipListEntries,
+		DiscordProxy:      discordListen,
+		DiscordProxyForce: discordForce,
 	}
 	emitInterceptInfo(os.Stdout, info, jsonOut)
 

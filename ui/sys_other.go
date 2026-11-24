@@ -20,7 +20,7 @@ func pidAlive(int) bool              { return false }
 func beforeEngineStart()             {}
 func killStrayEngines()              {}
 func clearConflicts() conflictReport { return conflictReport{} }
-func restartDiscord(string) (discordStartResult, error) {
+func restartDiscord(string, bool) (discordStartResult, error) {
 	return discordStartResult{}, errWindowsOnly
 }
 func hostsFilePath() string { return "/etc/hosts" }

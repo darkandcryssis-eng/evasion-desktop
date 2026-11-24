@@ -31,7 +31,7 @@ func isElevated() (bool, bool)       { return true, true }
 func beforeEngineStart()             {}
 func killStrayEngines()              {}
 func clearConflicts() conflictReport { return conflictReport{} }
-func restartDiscord(string) (discordStartResult, error) {
+func restartDiscord(string, bool) (discordStartResult, error) {
 	return discordStartResult{}, errWindowsOnly
 }
 func hostsFilePath() string { return "/etc/hosts" }

@@ -120,6 +120,7 @@ type engineManager struct {
 	hello        *HelloStats
 	discord      string
 	discordProxy string
+	discordForce bool
 	logs         []LogLine
 	ready        chan struct{}
 	stopAsked    bool
@@ -236,6 +237,7 @@ func (m *engineManager) start(l layout, opts StartOptions, gameFlags ...string) 
 	m.opts = opts
 	m.lastErr, m.filter, m.quicMode, m.discord = "", "", "", ""
 	m.discordProxy = ""
+	m.discordForce = false
 	m.strategies = map[string]string{}
 	m.hello = nil
 	m.logs = nil
@@ -339,10 +341,12 @@ func (m *engineManager) setDiscord(msg string) {
 	m.mu.Unlock()
 }
 
-func (m *engineManager) discordProxyAddress() string {
+// discordProxyAddress возвращает адрес прокси Discord и признак того, что
+// он обязателен (маршрут по умолчанию занят сторонним VPN).
+func (m *engineManager) discordProxyAddress() (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.discordProxy
+	return m.discordProxy, m.discordForce
 }
 
 // interceptInfo — нужные оболочке поля строки запуска `run --json` (stdout).
@@ -350,6 +354,7 @@ type interceptInfo struct {
 	Filter       string `json:"filter"`
 	QUICMode     string `json:"quic_mode"`
 	DiscordProxy string `json:"discord_proxy"`
+	DiscordForce bool   `json:"discord_proxy_force"`
 	Overrides    []struct {
 		Group      string `json:"group"`
 		StrategyID string `json:"strategy_id"`
@@ -367,6 +372,7 @@ func (m *engineManager) readStdout(r io.Reader) {
 		m.mu.Lock()
 		m.filter, m.quicMode = info.Filter, info.QUICMode
 		m.discordProxy = info.DiscordProxy
+		m.discordForce = info.DiscordForce
 		for _, o := range info.Overrides {
 			if _, ok := m.strategies[o.Group]; !ok {
 				m.strategies[o.Group] = o.StrategyID
