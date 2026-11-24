@@ -159,13 +159,18 @@ func startDiscordWatchProxy(parent context.Context, listen string, logger *slog.
 	ctx, cancel := context.WithCancel(parent)
 	p := &discordDirectProxy{Listen: ln.Addr().String(), cancel: cancel, done: make(chan struct{})}
 	dial := (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	server := &discordproxy.Server{Dial: dial, Passthrough: dial, NoReply: discordNoReply, Logger: logger, OnStall: func(host string) {
+	// Узел Discord, который не открывается напрямую ни на одной стратегии,
+	// уходит в туннель WARP; сторонние узлы остаются на прямом пути.
+	reserve := newWARPRoute(defaultStateDir, dial, logger)
+	server := &discordproxy.Server{Dial: reserve.Dial, Passthrough: dial, NoReply: discordNoReply, Logger: logger, OnStall: func(host string) {
 		if report := discordStallReport.Load(); report != nil {
 			(*report)(host)
 		}
+		reserve.Stall(ctx, host)
 	}}
 	go func() {
 		_ = server.Serve(ctx, ln)
+		reserve.Close()
 		close(p.done)
 	}()
 	return p, nil
