@@ -26,8 +26,11 @@ type Server struct {
 	// сторонние узлы (капча, вложения, встраиваемые плееры) идут обычным
 	// маршрутом, а не обрываются.
 	Passthrough DialContextFunc
-	Logger      *slog.Logger
-	wg          sync.WaitGroup
+	// Reroute, если задан и вернул true, ведёт узел Discord через Passthrough:
+	// так вызывающий переводит узел на другой маршрут, когда прямой не работает.
+	Reroute func(host string) bool
+	Logger  *slog.Logger
+	wg      sync.WaitGroup
 
 	statsMu sync.Mutex
 	stats   map[string]*hostStats
@@ -210,6 +213,8 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 			writeError(client, http.StatusForbidden)
 			return
 		}
+		dial = s.Passthrough
+	} else if host, _, _ := net.SplitHostPort(target); s.Reroute != nil && s.Passthrough != nil && s.Reroute(host) {
 		dial = s.Passthrough
 	}
 	upstream, err := dial(ctx, "tcp", target)
