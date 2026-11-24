@@ -163,10 +163,16 @@ type countingWriter struct {
 	stamp *atomic.Int64
 }
 
+// Write засчитывает байты до записи: получатель может ответить раньше, чем
+// запись вернёт управление, и ответ не должен опередить счёт.
 func (c countingWriter) Write(p []byte) (int, error) {
+	c.n.Add(int64(len(p)))
+	c.total.Add(int64(len(p)))
 	n, err := c.w.Write(p)
-	c.n.Add(int64(n))
-	c.total.Add(int64(n))
+	if short := int64(len(p) - n); short > 0 {
+		c.n.Add(-short)
+		c.total.Add(-short)
+	}
 	if c.stamp != nil && n > 0 {
 		c.stamp.Store(time.Now().UnixNano())
 	}
