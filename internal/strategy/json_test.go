@@ -3,6 +3,8 @@ package strategy
 import (
 	"strings"
 	"testing"
+
+	"github.com/fitting-1c/evasion/internal/core"
 )
 
 func TestMarshalUnmarshalRoundTrip(t *testing.T) {
@@ -55,6 +57,40 @@ func TestUnmarshalHandWritten(t *testing.T) {
 	}
 	if s.ID == "" {
 		t.Fatal("идентификатор не вычислен")
+	}
+}
+
+func TestAutoTTLRoundTrip(t *testing.T) {
+	s := validStrategy()
+	s.Rules[0].Action = &Action{
+		Kind:   core.ActionTamper,
+		Params: &TamperParams{Field: FieldIPv6HopLimit, Mode: TamperAutoTTL, Value: 3},
+		Left:   leaf(core.ActionSend),
+	}
+	data, err := Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"mode":"auto_ttl"`) {
+		t.Fatalf("serialized mode missing: %s", data)
+	}
+	got, err := Unmarshal(data, DefaultLimits())
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	again, err := Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal after round-trip: %v", err)
+	}
+	if string(data) != string(again) {
+		t.Fatalf("serialization changed after round-trip:\n%s\n%s", data, again)
+	}
+	id, err := ComputeID(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != id {
+		t.Fatalf("round-trip ID = %q, want %q", got.ID, id)
 	}
 }
 

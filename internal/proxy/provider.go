@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"sync"
+
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/strategy"
 )
@@ -193,7 +195,15 @@ type MultiGroupProvider struct {
 	// hasFallback — задан ли запасной. GroupProvider — значение, zero
 	// неотличим от «общий радиус без стратегии»; флаг снимает двусмысленность.
 	hasFallback bool
+	rotation    *rotationState
 }
+
+type rotationState struct {
+	mu     sync.Mutex
+	offset map[string]uint32
+}
+
+const maxRotationOffsets = 4096
 
 // groupRuleResolved — правило с уже посчитанными идентификаторами стратегий.
 // Хранится срез Selection (1+ элемент) — для ротации в Select по хешу.
@@ -215,7 +225,7 @@ type groupRuleResolved struct {
 // то за пределами подгрупп обход не нужен. Если fallback.matcher nil — ошибка,
 // как и в NewGroupProvider: радиус неявно считать «всем» нельзя (1.6).
 func NewMultiGroupProvider(rules []GroupRule, fallbackStrategy *strategy.Strategy, fallbackMatcher HostMatcher) (MultiGroupProvider, error) {
-	out := MultiGroupProvider{}
+	out := MultiGroupProvider{rotation: &rotationState{offset: make(map[string]uint32)}}
 	for _, r := range rules {
 		if r.Matcher == nil {
 			continue
@@ -276,13 +286,41 @@ func (p MultiGroupProvider) Select(meta ConnMeta) Selection {
 			if len(r.sels) == 1 {
 				return r.sels[0]
 			}
-			return r.sels[rotationIndex(meta, len(r.sels))]
+			offset := uint32(0)
+			if p.rotation != nil && meta.SNI != "" {
+				p.rotation.mu.Lock()
+				offset = p.rotation.offset[meta.SNI]
+				p.rotation.mu.Unlock()
+			}
+			index := (rotationIndex(meta, len(r.sels)) + int(offset%uint32(len(r.sels)))) % len(r.sels)
+			return r.sels[index]
 		}
 	}
 	if p.hasFallback {
 		return p.fallback.Select(meta)
 	}
 	return Selection{}
+}
+
+func (p MultiGroupProvider) ReportFailure(sni string) {
+	if p.rotation == nil || sni == "" {
+		return
+	}
+	for _, r := range p.rules {
+		if !r.matcher.Matches("", sni) {
+			continue
+		}
+		if len(r.sels) <= 1 {
+			return
+		}
+		p.rotation.mu.Lock()
+		if len(p.rotation.offset) >= maxRotationOffsets {
+			clear(p.rotation.offset)
+		}
+		p.rotation.offset[sni]++
+		p.rotation.mu.Unlock()
+		return
+	}
 }
 
 // rotationIndex даёт стабильный индекс в [0, n) по метаданным соединения.

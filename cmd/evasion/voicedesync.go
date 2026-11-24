@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/discordvoice"
+	"github.com/fitting-1c/evasion/internal/hops"
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/quicfake"
 	"github.com/fitting-1c/evasion/internal/windivert"
@@ -478,7 +480,8 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 		}
 		dgrams++
 
-		if pkts, applied := buildVoiceDecoys(pkt, fool, voiceDecoyTTL, voiceDecoyRepeats, payload); applied {
+		ttl := hops.Default.FakeTTL(voicePacketDestination(pkt), 1, voiceDecoyTTL)
+		if pkts, applied := buildVoiceDecoys(pkt, fool, ttl, voiceDecoyRepeats, payload); applied {
 			for _, p := range pkts {
 				if err := conn.Send(p); err != nil {
 					logger.Warn("десинк голоса: не удалось отправить пакет", "ошибка", err)
@@ -515,4 +518,20 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 			return
 		}
 	}
+}
+
+func voicePacketDestination(pkt capture.Packet) netip.Addr {
+	d, err := packet.Dissect(pkt.Data)
+	if err != nil {
+		return netip.Addr{}
+	}
+	if h, ok := d.IPv4(pkt.Data); ok {
+		addr, _ := netip.AddrFromSlice(h.Dst())
+		return addr
+	}
+	if h, ok := d.IPv6(pkt.Data); ok {
+		addr, _ := netip.AddrFromSlice(h.Dst())
+		return addr
+	}
+	return netip.Addr{}
 }

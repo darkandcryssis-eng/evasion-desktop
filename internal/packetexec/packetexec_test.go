@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/desync"
+	"github.com/fitting-1c/evasion/internal/hops"
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/strategy"
 )
@@ -182,6 +185,116 @@ func TestFakeThenRealSamePosition(t *testing.T) {
 	if th1.Seq() != baseSeq {
 		t.Errorf("реальный пакет: ожидался seq %d (та же позиция 0), получено %d", baseSeq, th1.Seq())
 	}
+}
+
+func TestAutoTTLForIPv4AndIPv6(t *testing.T) {
+	oldDefault := hops.Default
+	t.Cleanup(func() { hops.Default = oldDefault })
+
+	table := hops.NewTable(8, time.Minute)
+	table.Observe(netip.MustParseAddr("93.184.216.34"), 50)
+	table.Observe(netip.MustParseAddr("2001:db8::34"), 50)
+	hops.Default = table
+
+	tests := []struct {
+		name string
+		pkt  []byte
+		dst  netip.Addr
+		want uint8
+		read func([]byte) uint8
+	}{
+		{
+			name: "IPv4",
+			pkt:  clientHelloPacketV4(t, tlsPayload, baseSeq),
+			dst:  netip.MustParseAddr("93.184.216.34"),
+			want: 13,
+			read: func(data []byte) uint8 {
+				d, _ := packet.Dissect(data)
+				h, _ := d.IPv4(data)
+				return h.TTL()
+			},
+		},
+		{
+			name: "IPv6",
+			pkt:  clientHelloPacketV6(t, tlsPayload, baseSeq),
+			dst:  netip.MustParseAddr("2001:db8::34"),
+			want: 13,
+			read: func(data []byte) uint8 {
+				d, _ := packet.Dissect(data)
+				h, _ := d.IPv6(data)
+				return h.HopLimit()
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			field := strategy.FieldIPv4TTL
+			if tc.dst.Is6() {
+				field = strategy.FieldIPv6HopLimit
+			}
+			sink := &capture.SyntheticSink{}
+			in := desync.Input{Direction: core.DirectionOutbound, Payload: tlsPayload, Ordinal: 1, IsClientHello: true}
+			conn, err := NewConn(sink, in, capture.Packet{Data: tc.pkt, Dir: core.DirectionOutbound})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := helloRule(tamper(strategy.TamperParams{Field: field, Mode: strategy.TamperAutoTTL, Value: 1}, send()))
+			if err := New().Execute(context.Background(), s, conn); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got := tc.read(sink.Sent()[0].Data); got != tc.want {
+				t.Fatalf("auto TTL = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAutoTTLFallbackWhenUnknown(t *testing.T) {
+	oldDefault := hops.Default
+	t.Cleanup(func() { hops.Default = oldDefault })
+	hops.Default = hops.NewTable(8, time.Minute)
+
+	sink := &capture.SyntheticSink{}
+	pkt := clientHelloPacketV4(t, tlsPayload, baseSeq)
+	in := desync.Input{Direction: core.DirectionOutbound, Payload: tlsPayload, Ordinal: 1, IsClientHello: true}
+	conn, err := NewConn(sink, in, capture.Packet{Data: pkt, Dir: core.DirectionOutbound})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := helloRule(tamper(strategy.TamperParams{Field: strategy.FieldIPv4TTL, Mode: strategy.TamperAutoTTL}, send()))
+	if err := New().Execute(context.Background(), s, conn); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	d, _ := packet.Dissect(sink.Sent()[0].Data)
+	h, _ := d.IPv4(sink.Sent()[0].Data)
+	if got := h.TTL(); got != hops.FallbackTTL {
+		t.Fatalf("fallback TTL = %d, want %d", got, hops.FallbackTTL)
+	}
+}
+
+func clientHelloPacketV6(t *testing.T, payload []byte, seq uint32) []byte {
+	t.Helper()
+	const ipLen, tcpLen = 40, 20
+	buf := make([]byte, ipLen+tcpLen+len(payload))
+	buf[0] = 0x60
+	binary.BigEndian.PutUint16(buf[4:6], uint16(tcpLen+len(payload)))
+	buf[6], buf[7] = byte(packet.ProtoTCP), 64
+	copy(buf[8:24], netip.MustParseAddr("2001:db8::1").AsSlice())
+	copy(buf[24:40], netip.MustParseAddr("2001:db8::34").AsSlice())
+	binary.BigEndian.PutUint16(buf[40:42], 50000)
+	binary.BigEndian.PutUint16(buf[42:44], 443)
+	binary.BigEndian.PutUint32(buf[44:48], seq)
+	buf[52], buf[53] = 0x50, 0x18
+	binary.BigEndian.PutUint16(buf[54:56], 65535)
+	copy(buf[60:], payload)
+	d, err := packet.Dissect(buf)
+	if err != nil {
+		t.Fatalf("разбор тестового IPv6 пакета: %v", err)
+	}
+	if !d.RecomputeChecksums(buf) {
+		t.Fatal("пересчёт сумм тестового IPv6 пакета не удался")
+	}
+	return buf
 }
 
 // TestChecksumCorruptFake — порча суммы даёт фейк с ЗАВЕДОМО неверной суммой

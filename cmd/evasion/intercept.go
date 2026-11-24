@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fitting-1c/evasion/internal/capture"
@@ -19,6 +20,8 @@ import (
 	"github.com/fitting-1c/evasion/internal/control"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/flow"
+	"github.com/fitting-1c/evasion/internal/hops"
+	"github.com/fitting-1c/evasion/internal/inbound"
 	"github.com/fitting-1c/evasion/internal/intercept"
 	"github.com/fitting-1c/evasion/internal/iplist"
 	"github.com/fitting-1c/evasion/internal/packet"
@@ -68,39 +71,6 @@ func openYouTubePacketSender(logger *slog.Logger) (func(string) capture.PacketSi
 // Параметры контура перехвата. В конфиг пока не вынесены: второго потребителя у
 // них нет, а значения консервативны. Вынести — когда понадобится настройка.
 const (
-	// interceptFilter — фильтр WinDivert: исходящие TCP к HTTPS-портам и не наши
-	// собственные инъекции. Узкий фильтр — часть правила «уйти с пути» (4.2):
-	// движок видит лишь начало TLS-соединений. "not impostor" исключает
-	// повторный перехват пакетов, которые движок сам инъектировал, чтобы они не
-	// шли по кругу.
-	//
-	// Порты: 443 — обычный HTTPS и голосовой RTC-гейтвей Discord. 2053, 2083,
-	// 2087, 2096, 8443 — «дружественные порты» Cloudflare для HTTPS; Discord
-	// использует их для RTC-соединений демонстрации экрана и части голоса
-	// (control-socket wss://*.discord.media:2083 и т.п.). Без них стрим шёл
-	// мимо движка, DPI видел SNI discord.media в открытую и рвал соединение
-	// (WS не получал OP_HELLO). На этих портах чужого трафика почти нет, а
-	// десинк всё равно применяется только к радиусу — остальное проходит
-	// прозрачно.
-	//
-	// Чистые ACK (без нагрузки и без SYN/FIN/RST) в userspace не поднимаются:
-	// движку решать по ним нечего (flow.Table пропускает пустые сегменты), а на
-	// скачивании (видео YouTube, CDN Discord) это основной поток исходящих
-	// пакетов — каждый шёл через Recv/Dissect/Send однопоточного цикла и
-	// добавлял задержку к ACK-клокингу TCP. SYN нужен, чтобы забыть
-	// переиспользованный кортеж, FIN/RST — чтобы закрыть запись потока.
-	interceptFilter = "outbound and tcp and " + interceptPorts + " and " + interceptSegments + " and not impostor"
-	// interceptFilterRedirect — фильтр при включённой переклейке RTC-портов
-	// (--rtc-redirect). К исходящим добавлены ВХОДЯЩИЕ с живого порта 8443:
-	// декоратор rtcredirect восстанавливает им исходный порт назначения, чтобы
-	// сокет приложения принял ответ. Исходящие на душимые порты он же уводит на
-	// 8443 ДО движка, поэтому движок видит их как обычный 8443 и десинкует как
-	// и всегда.
-	// Чистые ACK здесь НЕ отсекаются: rtcredirect переписывает порт назначения
-	// каждому исходящему сегменту потока, и ACK мимо него ушёл бы на старый порт.
-	interceptFilterRedirect = "((outbound and tcp and " + interceptPorts + ") or (inbound and tcp and tcp.SrcPort == 8443)) and not impostor"
-	// interceptPorts — HTTPS-порты радиуса (443 и «дружественные» Cloudflare).
-	interceptPorts = "(tcp.DstPort == 443 or tcp.DstPort == 2053 or tcp.DstPort == 2083 or tcp.DstPort == 2087 or tcp.DstPort == 2096 or tcp.DstPort == 8443)"
 	// interceptSegments — сегменты, по которым движок что-то решает: с данными
 	// или с флагами жизненного цикла потока.
 	interceptSegments = "(tcp.PayloadLength > 0 or tcp.Syn or tcp.Fin or tcp.Rst)"
@@ -118,6 +88,30 @@ const (
 	ksInterval      = 10 * time.Second
 	ksFailThreshold = 3
 )
+
+var (
+	interceptPortList = []uint16{443, 2053, 2083, 2087, 2096, 8443}
+	interceptPorts    = makePortPredicate("tcp.DstPort", interceptPortList)
+	// interceptFilter — фильтр WinDivert: исходящие TCP к HTTPS-портам и не наши
+	// собственные инъекции. Узкий фильтр оставляет движку только начало TLS-
+	// соединений; "not impostor" исключает повторный перехват своих инъекций.
+	interceptFilter = "outbound and tcp and " + interceptPorts + " and " + interceptSegments + " and not impostor"
+	// interceptFilterRedirect расширяет фильтр входящими с живого порта 8443:
+	// rtcredirect восстанавливает им исходный порт назначения. Чистые ACK не
+	// отсекаются, поскольку декоратору нужно переписать каждый исходящий сегмент.
+	interceptFilterRedirect = "((outbound and tcp and " + interceptPorts +
+		") or (inbound and tcp and tcp.SrcPort == 8443)) and not impostor"
+	inboundObserveFilter = "inbound and tcp and ((tcp.Syn and tcp.Ack) or tcp.Rst) and " +
+		makePortPredicate("tcp.SrcPort", interceptPortList)
+)
+
+func makePortPredicate(field string, ports []uint16) string {
+	parts := make([]string, len(ports))
+	for i, port := range ports {
+		parts[i] = fmt.Sprintf("%s == %d", field, port)
+	}
+	return "(" + strings.Join(parts, " or ") + ")"
+}
 
 // rtcRedirectFrom — душимые TSPU RTC-порты Cloudflare, которые при --rtc-redirect
 // уводятся на rtcRedirectTarget. Это измеренная карта (443/8443 живые, эти —
@@ -436,6 +430,8 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 	if err != nil {
 		return err
 	}
+	stopInbound := startInboundObserver(ctx, engine, logger)
+	defer stopInbound()
 
 	youtubeListen := ""
 	if youtube != nil {
@@ -528,6 +524,46 @@ func runIntercept(ctx context.Context, cfg *config.Config, domainSet *config.Dom
 		return err
 	}
 	return nil
+}
+
+func startInboundObserver(ctx context.Context, engine *intercept.Engine, logger *slog.Logger) func() {
+	handle, err := windivert.Observe(inboundObserveFilter)
+	if err != nil {
+		logger.Warn("наблюдение входящих TCP недоступно; TTL останется резервным", "ошибка", err)
+		return func() {}
+	}
+
+	observerCtx, cancel := context.WithCancel(ctx)
+	var closeOnce sync.Once
+	closeHandle := func() {
+		closeOnce.Do(func() { _ = handle.Close() })
+	}
+	done := make(chan struct{})
+	go func() {
+		defer closeHandle()
+		defer close(done)
+		loopDone := make(chan struct{})
+		watcherDone := make(chan struct{})
+		go func() {
+			defer close(watcherDone)
+			select {
+			case <-observerCtx.Done():
+				closeHandle()
+			case <-loopDone:
+			}
+		}()
+		err := inbound.Run(observerCtx, handle, hops.Default, engine.OnInboundRST)
+		close(loopDone)
+		<-watcherDone
+		if err != nil {
+			logger.Warn("наблюдение входящих TCP остановлено", "ошибка", err)
+		}
+	}()
+	return func() {
+		cancel()
+		closeHandle()
+		<-done
+	}
 }
 
 // interceptReplan — период пересчёта снимка контуром в режиме перехвата.

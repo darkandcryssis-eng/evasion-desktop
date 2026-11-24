@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -151,6 +152,8 @@ type Engine struct {
 	onPsv                 func(PassiveEvent)
 	obs                   Observer
 	block                 Blocklist
+	failureMu             sync.Mutex
+	recentDesync          map[desyncKey]desyncRecord
 
 	// Счётчики разбора ClientHello (принадлежат горутине Run, без синхронизации).
 	// Нужны наблюдаемости: отличить «десинк применён, но не помог» от «десинк
@@ -180,6 +183,25 @@ type Engine struct {
 	// пакет.
 	transparent atomic.Bool
 }
+
+type FailureReporter interface {
+	ReportFailure(sni string)
+}
+
+type desyncKey struct {
+	remote    netip.AddrPort
+	localPort uint16
+}
+
+type desyncRecord struct {
+	sni string
+	at  time.Time
+}
+
+const (
+	recentDesyncWindow   = 5 * time.Second
+	recentDesyncCapacity = 4096
+)
 
 // New создаёт контур, проверив обязательные зависимости.
 func New(opts Options) (*Engine, error) {
@@ -426,14 +448,24 @@ func (e *Engine) multisegReasonSummary() string {
 // (стратегия не выбрана) повтор не атрибутируется: цель не наша, наказывать
 // нечем. Разбор нагрузки здесь не горячий путь — повтор ClientHello редок.
 func (e *Engine) observePassive(hello []byte, flowID uint64) {
-	if e.onPsv == nil && e.obs == nil {
+	reporter, reportsFailures := e.prov.(FailureReporter)
+	if e.onPsv == nil && e.obs == nil && !reportsFailures {
 		return
 	}
 	sni, _, ok := e.parse(hello)
 	if !ok {
 		return
 	}
+	if e.onPsv == nil && e.obs == nil {
+		if reportsFailures {
+			reporter.ReportFailure(sni)
+		}
+		return
+	}
 	sel := e.prov.Select(proxy.ConnMeta{SNI: sni, IsClientHello: true})
+	if reportsFailures {
+		reporter.ReportFailure(sni)
+	}
 	if sel.Strategy == nil || sel.Target == "" {
 		return
 	}
@@ -692,8 +724,105 @@ func (e *Engine) execDesync(ctx context.Context, tmpl capture.Packet, payload []
 	if e.obs != nil {
 		e.obs.OnStrategyApplied(flowID, sni, sel.ID)
 	}
+	e.rememberDesync(tmpl, sni, localPort)
 	e.log.Debug("стратегия применена", "sni", sni, "strategy", sel.ID)
 	return false
+}
+
+func (e *Engine) rememberDesync(tmpl capture.Packet, sni string, localPort uint16) {
+	d, err := packet.Dissect(tmpl.Data)
+	if err != nil || d.Protocol != packet.ProtoTCP {
+		return
+	}
+	tcp, ok := d.TCP(tmpl.Data)
+	if !ok {
+		return
+	}
+	var remote netip.Addr
+	switch d.Version {
+	case packet.Version4:
+		ip, ok := d.IPv4(tmpl.Data)
+		if !ok {
+			return
+		}
+		remote, ok = netip.AddrFromSlice(ip.Dst())
+		if !ok {
+			return
+		}
+		remote = remote.Unmap()
+	case packet.Version6:
+		ip, ok := d.IPv6(tmpl.Data)
+		if !ok {
+			return
+		}
+		remote, ok = netip.AddrFromSlice(ip.Dst())
+		if !ok {
+			return
+		}
+	default:
+		return
+	}
+	e.rememberDesyncAt(desyncKey{remote: netip.AddrPortFrom(remote, tcp.DstPort()), localPort: localPort}, sni, e.now())
+}
+
+func (e *Engine) rememberDesyncAt(key desyncKey, sni string, now time.Time) {
+	if !key.remote.IsValid() || sni == "" {
+		return
+	}
+	e.failureMu.Lock()
+	defer e.failureMu.Unlock()
+	if e.recentDesync == nil {
+		e.recentDesync = make(map[desyncKey]desyncRecord)
+	}
+	e.pruneRecentDesync(now)
+	if _, exists := e.recentDesync[key]; !exists && len(e.recentDesync) >= recentDesyncCapacity {
+		var oldestKey desyncKey
+		var oldest time.Time
+		first := true
+		for candidate, record := range e.recentDesync {
+			if first || record.at.Before(oldest) {
+				oldestKey, oldest, first = candidate, record.at, false
+			}
+		}
+		delete(e.recentDesync, oldestKey)
+	}
+	e.recentDesync[key] = desyncRecord{sni: sni, at: now}
+}
+
+func (e *Engine) pruneRecentDesync(now time.Time) {
+	for key, record := range e.recentDesync {
+		if now.Sub(record.at) > recentDesyncWindow {
+			delete(e.recentDesync, key)
+		}
+	}
+}
+
+func (e *Engine) OnInboundRST(remote netip.AddrPort, localPort uint16) {
+	if e == nil || !remote.IsValid() {
+		return
+	}
+	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+	key := desyncKey{remote: remote, localPort: localPort}
+	now := time.Now()
+	if e.now != nil {
+		now = e.now()
+	}
+	e.failureMu.Lock()
+	e.pruneRecentDesync(now)
+	record, ok := e.recentDesync[key]
+	if ok {
+		delete(e.recentDesync, key)
+	}
+	e.failureMu.Unlock()
+	if !ok {
+		return
+	}
+	if reporter, ok := e.prov.(FailureReporter); ok {
+		reporter.ReportFailure(record.sni)
+	}
+	if e.log != nil {
+		e.log.Debug("RST после десинка, ротация стратегии", "sni", record.sni)
+	}
 }
 
 // rawPassthrough — стратегия без правил: BuildPlan разворачивает её в сквозной

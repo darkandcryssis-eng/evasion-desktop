@@ -77,6 +77,26 @@ func TestCapabilitiesSegmentationOnly(t *testing.T) {
 	}
 }
 
+func TestAutoTTLRejectedBySocketExecutor(t *testing.T) {
+	s := &strategy.Strategy{Rules: []strategy.Rule{{
+		Direction: core.DirectionOutbound,
+		Trigger:   strategy.Trigger{Match: strategy.MatchClientHello},
+		Action: &strategy.Action{
+			Kind:   core.ActionTamper,
+			Params: &strategy.TamperParams{Field: strategy.FieldIPv4TTL, Mode: strategy.TamperAutoTTL, Value: 1},
+			Left:   sendLeaf(),
+		},
+	}}}
+	w := &recordingWriter{}
+	err := New().Execute(context.Background(), s, NewConn(w, helloInput("client hello")))
+	if err == nil {
+		t.Fatal("socket executor accepted packet-only auto_ttl")
+	}
+	if len(w.writes) != 0 {
+		t.Fatalf("socket executor wrote packets before rejecting auto_ttl: %v", w.writes)
+	}
+}
+
 func TestExecuteSegments(t *testing.T) {
 	// Разрез на 15-м байте: SNI обычно попадает на эту границу в реальном
 	// ClientHello; здесь проверяем сам факт двух записей по границе.

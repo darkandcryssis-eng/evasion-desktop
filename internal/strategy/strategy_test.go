@@ -32,6 +32,37 @@ func TestValidateAcceptsValid(t *testing.T) {
 	}
 }
 
+func TestValidateAutoTTL(t *testing.T) {
+	for _, field := range []FieldID{FieldIPv4TTL, FieldIPv6HopLimit} {
+		s := validStrategy()
+		s.Rules[0].Action = &Action{
+			Kind:   core.ActionTamper,
+			Params: &TamperParams{Field: field, Mode: TamperAutoTTL, Value: 8},
+			Left:   leaf(core.ActionSend),
+		}
+		if err := Validate(s, DefaultLimits()); err != nil {
+			t.Errorf("valid auto_ttl for %s rejected: %v", field, err)
+		}
+	}
+	for _, tc := range []struct {
+		field FieldID
+		value uint64
+	}{
+		{FieldTCPWindow, 1},
+		{FieldIPv4TTL, 9},
+	} {
+		s := validStrategy()
+		s.Rules[0].Action = &Action{
+			Kind:   core.ActionTamper,
+			Params: &TamperParams{Field: tc.field, Mode: TamperAutoTTL, Value: tc.value},
+			Left:   leaf(core.ActionSend),
+		}
+		if err := Validate(s, DefaultLimits()); err == nil {
+			t.Errorf("invalid auto_ttl for %s (delta %d) accepted", tc.field, tc.value)
+		}
+	}
+}
+
 // codeOf извлекает код ValidationError или пустую строку.
 func codeOf(err error) string {
 	var ve *ValidationError

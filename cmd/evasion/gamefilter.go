@@ -78,6 +78,13 @@ func (p gameProvider) Select(meta proxy.ConnMeta) proxy.Selection {
 	}
 	return p.selection
 }
+
+func (p gameProvider) ReportFailure(sni string) {
+	if reporter, ok := p.base.(interface{ ReportFailure(string) }); ok {
+		reporter.ReportFailure(sni)
+	}
+}
+
 func originalTCPPort(port uint16) bool {
 	switch port {
 	case 443, 2053, 2083, 2087, 2096, 8443:

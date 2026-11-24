@@ -2,7 +2,9 @@ package packetexec
 
 import (
 	"fmt"
+	"net/netip"
 
+	"github.com/fitting-1c/evasion/internal/hops"
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/strategy"
 )
@@ -95,7 +97,11 @@ func applyEdit(d packet.Dissection, buf []byte, e strategy.TamperParams) error {
 		if !ok {
 			return fieldUnavailable(e.Field)
 		}
-		h.SetTTL(uint8(applyValue(e, uint64(h.TTL()))))
+		if e.Mode == strategy.TamperAutoTTL {
+			h.SetTTL(hops.Default.FakeTTL(netip.AddrFrom4([4]byte(h.Dst())), int(e.Value), hops.FallbackTTL))
+		} else {
+			h.SetTTL(uint8(applyValue(e, uint64(h.TTL()))))
+		}
 	case strategy.FieldIPv4ID:
 		h, ok := d.IPv4(buf)
 		if !ok {
@@ -133,7 +139,11 @@ func applyEdit(d packet.Dissection, buf []byte, e strategy.TamperParams) error {
 		if !ok {
 			return fieldUnavailable(e.Field)
 		}
-		h.SetHopLimit(uint8(applyValue(e, uint64(h.HopLimit()))))
+		if e.Mode == strategy.TamperAutoTTL {
+			h.SetHopLimit(hops.Default.FakeTTL(netip.AddrFrom16([16]byte(h.Dst())), int(e.Value), hops.FallbackTTL))
+		} else {
+			h.SetHopLimit(uint8(applyValue(e, uint64(h.HopLimit()))))
+		}
 	case strategy.FieldIPv6FlowLabel:
 		h, ok := d.IPv6(buf)
 		if !ok {

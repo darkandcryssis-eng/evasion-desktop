@@ -152,6 +152,13 @@ func (p *youtubeMux) Select(m proxy.ConnMeta) proxy.Selection {
 	}
 	return p.choices[name]
 }
+
+func (p *youtubeMux) ReportFailure(sni string) {
+	if reporter, ok := p.base.(interface{ ReportFailure(string) }); ok {
+		reporter.ReportFailure(sni)
+	}
+}
+
 func (p *youtubeMux) set(name string) { p.mu.Lock(); p.active = name; p.mu.Unlock() }
 func (p *youtubeMux) current() string { p.mu.Lock(); defer p.mu.Unlock(); return p.active }
 func (p *youtubeMux) mediaHost() (string, bool) {

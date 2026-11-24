@@ -3,6 +3,7 @@ package main
 import (
 	"net/netip"
 
+	"github.com/fitting-1c/evasion/internal/intercept"
 	"github.com/fitting-1c/evasion/internal/iplist"
 	"github.com/fitting-1c/evasion/internal/proxy"
 	"github.com/fitting-1c/evasion/internal/strategy"
@@ -54,4 +55,10 @@ func (p *ipListProvider) Select(meta proxy.ConnMeta) proxy.Selection {
 		return p.small
 	}
 	return p.normal
+}
+
+func (p *ipListProvider) ReportFailure(sni string) {
+	if reporter, ok := p.base.(intercept.FailureReporter); ok {
+		reporter.ReportFailure(sni)
+	}
 }
