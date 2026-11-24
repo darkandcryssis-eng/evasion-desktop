@@ -112,23 +112,37 @@ type discordDirectProxy struct {
 	once   sync.Once
 }
 
-func startDiscordDirectProxy(parent context.Context, ifIndex uint32, listen string, logger *slog.Logger) (*discordDirectProxy, error) {
+func startDiscordDirectProxy(parent context.Context, route netbind.Route, listen string, logger *slog.Logger) (*discordDirectProxy, error) {
 	ln, err := net.Listen("tcp4", listen)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось открыть локальный прокси Discord: %w", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
 	p := &discordDirectProxy{Listen: ln.Addr().String(), cancel: cancel, done: make(chan struct{})}
+	voice := newVoiceRouter(route.Physical, logger)
+	viaDefault := (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	// Сигнальное соединение голосового сервера привязано к интерфейсу VPN:
+	// маршрут мимо туннеля ставится на адрес сервера целиком, а из туннеля
+	// нужно вывести только голос (UDP), не трогая рабочий сигнальный канал.
+	viaTunnel := netbind.Dialer(route.Default.Index)
 	server := &discordproxy.Server{
-		Dial:        discordproxy.DialContextFunc(netbind.Dialer(ifIndex)),
-		Passthrough: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		Dial: discordproxy.DialContextFunc(netbind.Dialer(route.Physical.Index)),
+		Passthrough: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, _, _ := net.SplitHostPort(address)
+			if !isDiscordVoiceHost(host) {
+				return viaDefault(ctx, network, address)
+			}
+			voice.Ensure(ctx, host)
+			return viaTunnel(ctx, network, address)
+		},
 		Reroute: func(host string) bool {
-			return !discordDirectProven.Load()
+			return isDiscordVoiceHost(host) || !discordDirectProven.Load()
 		},
 		Logger: logger,
 	}
 	go func() {
 		_ = server.Serve(ctx, ln)
+		voice.Close()
 		close(p.done)
 	}()
 	return p, nil
