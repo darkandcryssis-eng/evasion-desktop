@@ -261,3 +261,26 @@ func TestWarmBestSkipsTopRankedTunnel(t *testing.T) {
 		t.Fatalf("warmed route = %q (ok=%v), want %q", candidate.id, ok, ws.id)
 	}
 }
+
+func TestWarmRebalancesFullMediaPoolForVerifiedBackup(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	candidates := routesFor(2, true)
+	primary, backup := candidates[0], candidates[1]
+	r.success(primary.id, time.Millisecond)
+	r.warm(2, true, primary)
+	r.pool.wg.Wait()
+
+	// Guardian verifies backup after primary already filled all 4 pool slots.
+	r.success(backup.id, 10*time.Millisecond)
+	r.warm(2, true, primary, backup)
+	r.pool.wg.Wait()
+
+	p, candidate, ok := r.takeWarm(context.Background(), 2, true, map[string]bool{primary.id: true})
+	if ok {
+		defer p.Close()
+	}
+	if !ok || candidate.id != backup.id {
+		t.Fatalf("warm backup = %q (ok=%v), want %q", candidate.id, ok, backup.id)
+	}
+}

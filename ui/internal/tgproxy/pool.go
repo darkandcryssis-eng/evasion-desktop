@@ -115,14 +115,50 @@ func (r *router) warm(dc int, media bool, candidates ...route) {
 	pool := r.pool
 	key := poolKey{dc, media}
 	pool.mu.Lock()
-	if pool.closed || pool.filling[key] || pool.count >= warmLimit || len(pool.idle[key]) >= warmPerRoute {
+	if pool.closed || pool.filling[key] {
 		pool.mu.Unlock()
 		return
 	}
-	count := min(warmPerRoute-len(pool.idle[key]), warmLimit-pool.count)
 	counts := make(map[string]int, len(warmable))
 	for _, item := range pool.idle[key] {
 		counts[item.route.id]++
+	}
+	var evicted []*warmPeer
+	if len(pool.idle[key]) >= warmPerRoute && len(warmable) > 1 {
+		missing := 0
+		for _, candidate := range warmable {
+			if counts[candidate.id] == 0 {
+				missing++
+			}
+		}
+		for range missing {
+			victim := -1
+			for i, item := range pool.idle[key] {
+				if counts[item.route.id] <= 1 {
+					continue
+				}
+				if victim < 0 || counts[item.route.id] > counts[pool.idle[key][victim].route.id] {
+					victim = i
+				}
+			}
+			if victim < 0 {
+				break
+			}
+			item := pool.idle[key][victim]
+			item.expiry.Stop()
+			pool.idle[key] = append(pool.idle[key][:victim], pool.idle[key][victim+1:]...)
+			pool.count--
+			counts[item.route.id]--
+			evicted = append(evicted, item)
+		}
+	}
+	count := min(warmPerRoute-len(pool.idle[key]), warmLimit-pool.count)
+	if count <= 0 {
+		pool.mu.Unlock()
+		for _, item := range evicted {
+			_ = item.p.Close()
+		}
+		return
 	}
 	plan := make([]route, 0, count)
 	for range count {
@@ -139,6 +175,9 @@ func (r *router) warm(dc int, media bool, candidates ...route) {
 	pool.count += count
 	pool.wg.Add(1)
 	pool.mu.Unlock()
+	for _, item := range evicted {
+		_ = item.p.Close()
+	}
 	go func() {
 		defer pool.wg.Done()
 		defer func() { pool.mu.Lock(); pool.filling[key] = false; pool.mu.Unlock() }()
