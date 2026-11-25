@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -199,6 +200,20 @@ func safeBuild(v string) string {
 	return ""
 }
 
+func currentBuild() string {
+	if b := safeBuild(appBuild); b != "" {
+		return b
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				return safeBuild(s.Value)
+			}
+		}
+	}
+	return ""
+}
+
 func reportRecoveryFailure(v string) string {
 	switch v {
 	case "partial_frame", "replay_limit", "switch_limit", "cancelled", "switch_timeout", "replacement_failed":
@@ -289,7 +304,7 @@ func (a *App) ExportDiagnosticReport() (string, error) {
 	}
 	report := buildSafeReport(string(engine.Phase), a.GetTelegramState(), a.GetServiceDiagnostics(), a.GetTelegramRoutes(), a.driverDiagnostic())
 	report.Version = safeVersion(appVersion)
-	report.Build = safeBuild(appBuild)
+	report.Build = currentBuild()
 	report.Elevated, _ = isElevated()
 	report.Engine = safeEngineReport(engine)
 	a.settingsMu.Lock()
