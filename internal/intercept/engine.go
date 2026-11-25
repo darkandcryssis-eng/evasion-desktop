@@ -1119,7 +1119,7 @@ func desyncKeyForPacket(tmpl capture.Packet) (desyncKey, bool) {
 }
 
 func (e *Engine) rememberDesyncAt(key desyncKey, sni string, strategyID core.StrategyID, now time.Time) {
-	if !key.remote.IsValid() || sni == "" || strategyID == "" {
+	if !key.remote.IsValid() || strategyID == "" {
 		return
 	}
 	e.failureMu.Lock()
