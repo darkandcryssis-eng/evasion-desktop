@@ -240,3 +240,30 @@ func TestResolveEndpointFallback(t *testing.T) {
 		t.Fatalf("ожидался IP на выходе, получен %q", host)
 	}
 }
+
+func TestOpenWithFallbackParallel(t *testing.T) {
+	acc := goodAccount(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 4 unreachable loopback ports probed in one parallel batch of 4 should
+	// finish in ~1 per-port timeout rather than 4x sequential.
+	start := time.Now()
+	tn, err := OpenWithFallbackParallel(ctx, Options{Account: acc}, []int{65531, 65532, 65533, 65534}, 150*time.Millisecond, 4)
+	if tn != nil {
+		_ = tn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected error when no peer responds")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("parallel batch probe took %v, expected well under 2s", elapsed)
+	}
+
+	// Cancelled context aborts immediately without waiting for perPortTimeout.
+	cctx, ccancel := context.WithCancel(context.Background())
+	ccancel()
+	if _, err := OpenWithFallbackParallel(cctx, Options{Account: acc}, []int{65531, 65532}, 5*time.Second, 2); err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
+}

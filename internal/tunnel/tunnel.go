@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -351,6 +352,115 @@ func OpenWithFallbackContext(ctx context.Context, opts Options, ports []int, per
 			return nil, ctx.Err()
 		}
 		logger.Debug("tunnel: порт не ответил", "port", port, "ошибка", err)
+	}
+	return nil, fmt.Errorf("tunnel: ни один из %d портов не ответил рукопожатием: %w", len(ports), lastErr)
+}
+
+// OpenWithFallbackParallel перебирает порты endpoint-а батчами по batchSize
+// одновременно: первый порт, ответивший WireGuard-рукопожатием, выигрывает,
+// остальные в батче немедленно закрываются. Укладывает перебор всех 41 портов
+// WARP в несколько секунд вместо минуты.
+func OpenWithFallbackParallel(ctx context.Context, opts Options, ports []int, perPortTimeout time.Duration, batchSize int) (*Tunnel, error) {
+	if batchSize <= 1 {
+		return OpenWithFallbackContext(ctx, opts, ports, perPortTimeout)
+	}
+	if opts.Account == nil {
+		return nil, fmt.Errorf("tunnel: не задан account")
+	}
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("tunnel: пустой список портов для перебора")
+	}
+	origEndpoint := opts.Account.PeerEndpoint
+	host, _, err := net.SplitHostPort(origEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("tunnel: endpoint %q не разбирается: %w", origEndpoint, err)
+	}
+	if _, err := netip.ParseAddr(host); err != nil {
+		resolved, rerr := resolveEndpoint(origEndpoint)
+		if rerr != nil {
+			return nil, rerr
+		}
+		host, _, _ = net.SplitHostPort(resolved)
+	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+
+	var lastErr error
+	for start := 0; start < len(ports); start += batchSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := start + batchSize
+		if end > len(ports) {
+			end = len(ports)
+		}
+		batch := ports[start:end]
+
+		bctx, bcancel := context.WithTimeout(ctx, perPortTimeout)
+		var (
+			mu       sync.Mutex
+			winner   *Tunnel
+			batchErr error
+			wg       sync.WaitGroup
+		)
+		for _, port := range batch {
+			wg.Add(1)
+			go func(p int) {
+				defer wg.Done()
+				if bctx.Err() != nil {
+					return
+				}
+				candidateAcc := *opts.Account
+				candidateAcc.PeerEndpoint = fmt.Sprintf("%s:%d", host, p)
+				candidateOpts := opts
+				candidateOpts.Account = &candidateAcc
+
+				tn, oerr := Open(candidateOpts)
+				if oerr != nil {
+					mu.Lock()
+					if batchErr == nil {
+						batchErr = oerr
+					}
+					mu.Unlock()
+					return
+				}
+				werr := tn.WaitHandshake(bctx)
+				if werr == nil {
+					mu.Lock()
+					if winner == nil {
+						winner = tn
+						bcancel()
+						mu.Unlock()
+						logger.Info("tunnel: рукопожатие прошло", "port", p)
+						return
+					}
+					mu.Unlock()
+					_ = tn.Close()
+					return
+				}
+				_ = tn.Close()
+				mu.Lock()
+				if batchErr == nil {
+					batchErr = werr
+				}
+				mu.Unlock()
+			}(port)
+		}
+		wg.Wait()
+		bcancel()
+
+		if winner != nil {
+			return winner, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if batchErr != nil {
+			lastErr = batchErr
+		}
 	}
 	return nil, fmt.Errorf("tunnel: ни один из %d портов не ответил рукопожатием: %w", len(ports), lastErr)
 }

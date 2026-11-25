@@ -270,10 +270,10 @@ func warpWorthy(err error) bool {
 // openWARP регистрирует устройство при первом обращении, подбирает порт, на
 // котором провайдер пропускает WARP, и проверяет туннель настоящим соединением.
 func openWARP(ctx context.Context, dir string, logger *slog.Logger) (warpDialer, error) {
-	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, logger)
+	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, 1, logger)
 }
 
-func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, logger *slog.Logger) (*tunnel.Tunnel, error) {
+func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, parallelBatch int, logger *slog.Logger) (*tunnel.Tunnel, error) {
 	path := filepath.Join(dir, stateFile)
 	acc, err := loadWARPAccount(path)
 	if err != nil {
@@ -300,8 +300,10 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 		}
 	}
 	started := time.Now()
+	ports := warpPorts(acc.PeerEndpoint)
+	logger.Info("резерв WARP: перебор портов", "портов", len(ports), "параллельно", max(1, parallelBatch), "пир", acc.PeerEndpoint)
 	quiet := slog.New(slog.DiscardHandler)
-	tn, err := tunnel.OpenWithFallbackContext(ctx, tunnel.Options{Account: acc, Logger: quiet}, warpPorts(acc.PeerEndpoint), portWait)
+	tn, err := tunnel.OpenWithFallbackParallel(ctx, tunnel.Options{Account: acc, Logger: quiet}, ports, portWait, parallelBatch)
 	if err != nil {
 		return nil, fmt.Errorf("провайдер не пропускает WARP ни на одном порту: %w", err)
 	}

@@ -18,9 +18,10 @@ import (
 const (
 	telegramCallTunnelFilter   = "outbound and udp and udp.DstPort != 443 and udp.DstPort != 53 and not loopback and not impostor"
 	telegramCallTunnelPriority = 150
-	telegramCallWARPTrigger    = 4
-	telegramCallWARPRetry      = 3 * time.Minute
-	telegramCallWARPPortWait   = 1200 * time.Millisecond
+	telegramCallWARPTrigger     = 4
+	telegramCallWARPRetry       = 3 * time.Minute
+	telegramCallWARPPortWait    = 1500 * time.Millisecond
+	telegramCallWARPBatch       = 8
 	telegramCallWARPStateFile   = "warp-telegram.json"
 	telegramCallWARPDeadPackets = 12
 	telegramCallWARPDeadWindow  = 10 * time.Second
@@ -106,7 +107,7 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 		logger:    logger,
 		now:       time.Now,
 		openTunnel: func(c context.Context) (tgUDPTunnel, error) {
-			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, logger)
+			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, logger)
 		},
 		openHandle: openTelegramCallTunnelHandle,
 		ctx:        ctx,
