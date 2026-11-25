@@ -13,6 +13,10 @@ import (
 )
 
 func fakeTelegram(t *testing.T, expected []byte) dialFunc {
+	return fakeTelegramReply(t, expected, expected)
+}
+
+func fakeTelegramReply(t *testing.T, expected, response []byte) dialFunc {
 	t.Helper()
 	return func(ctx context.Context, _ route) (peer, error) {
 		local, remote := net.Pipe()
@@ -41,14 +45,70 @@ func fakeTelegram(t *testing.T, expected []byte) dialFunc {
 			}
 			reversed := reverse(init[8:56])
 			enc := ctr(reversed[:32], reversed[32:])
-			enc.XORKeyStream(frame, frame)
-			if _, err := writeAll(remote, frame); err != nil {
+			reply := make([]byte, len(response))
+			enc.XORKeyStream(reply, response)
+			if _, err := writeAll(remote, reply); err != nil {
 				return
 			}
 			_, _ = io.Copy(io.Discard, remote)
 		}()
 		return &tcpPeer{local}, nil
 	}
+}
+
+func TestInvalidFirstUpstreamHeaderTriesAnotherRoute(t *testing.T) {
+	v := vectors(t)[0]
+	frame := unhex(t, v.Plain)
+	secret := unhex(t, v.Secret)
+	h, err := readHandshake(bytes.NewReader(unhex(t, v.ClientInit)), secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := routesFor(h.dc, h.media)[0]
+	good := routesFor(h.dc, h.media)[1]
+	badDial := fakeTelegramReply(t, frame, []byte{0, 0, 0, 0})
+	goodDial := fakeTelegram(t, frame)
+	s, err := New(Options{Secret: secret, Dial: func(ctx context.Context, candidate route) (peer, error) {
+		switch candidate.id {
+		case bad.id:
+			return badDial(ctx, candidate)
+		case good.id:
+			return goodDial(ctx, candidate)
+		default:
+			return nil, errors.New("unavailable in fixture")
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.router.success(bad.id, time.Millisecond)
+	s.router.success(good.id, 200*time.Millisecond)
+	if err := s.Start(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c, err := net.DialTimeout("tcp", s.Snapshot().Address, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := writeAll(c, append(unhex(t, v.ClientInit), unhex(t, v.ClientCipher)...)); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, len(frame))
+	if _, err := io.ReadFull(c, reply); err != nil || !bytes.Equal(reply, unhex(t, v.ClientReply)) {
+		t.Fatalf("client did not get the alternate route's valid reply: %x %v", reply, err)
+	}
+	if snap := s.Snapshot(); snap.Failures != 0 || snap.Switches != 0 || len(snap.Disconnects) != 0 {
+		t.Fatalf("malformed reply was accepted as an established route: %+v", snap)
+	}
+	for _, view := range s.Routes() {
+		if view.ID == bad.id && view.Code == "mtproto_error" {
+			return
+		}
+	}
+	t.Fatal("invalid first header was not counted as a protocol error on its route")
 }
 
 func TestLocalProxyRoundTripAndShutdown(t *testing.T) {

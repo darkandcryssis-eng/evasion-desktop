@@ -16,6 +16,9 @@ type SpeedSample struct {
 }
 
 type RouteStatus struct {
+	DC        int    `json:"dc"`
+	Media     bool   `json:"media"`
+	DownBPS   int64  `json:"downBps,omitempty"`
 	Code      string `json:"code"`
 	Reason    string `json:"reason"`
 	ID        string `json:"id"`
@@ -23,9 +26,59 @@ type RouteStatus struct {
 	Kind      string `json:"kind"`
 	Status    string `json:"status"`
 	LatencyMS int64  `json:"latencyMs"`
+	Stability int    `json:"stability"`
+	Drops     int    `json:"drops"`
 	Failures  int    `json:"failures"`
 	CheckedAt string `json:"checkedAt"`
 	RetryAt   string `json:"retryAt"`
+}
+
+type mediaDeliverySample struct {
+	start time.Time
+	last  time.Time
+	bytes int64
+}
+
+func (s *mediaDeliverySample) flush() int64 {
+	if s.start.IsZero() || s.bytes < 256<<10 {
+		return 0
+	}
+	elapsed := s.last.Sub(s.start)
+	if elapsed < 250*time.Millisecond {
+		elapsed = 250 * time.Millisecond
+	}
+	rate := int64(float64(s.bytes) / elapsed.Seconds())
+	*s = mediaDeliverySample{}
+	return rate
+}
+
+func (s *mediaDeliverySample) observe(now time.Time, delivered int) int64 {
+	if s.start.IsZero() || now.Sub(s.last) > 2*time.Second {
+		rate := s.flush()
+		*s = mediaDeliverySample{start: now, last: now}
+		return rate
+	}
+	s.last = now
+	s.bytes += int64(delivered)
+	elapsed := now.Sub(s.start)
+	if s.bytes < 256<<10 || elapsed < 250*time.Millisecond {
+		return 0
+	}
+	rate := int64(float64(s.bytes) / elapsed.Seconds())
+	*s = mediaDeliverySample{start: now, last: now}
+	return rate
+}
+
+func (r *router) recordMediaRate(id string, rate int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.health[id]
+	if h.mediaDownBPS == 0 {
+		h.mediaDownBPS = rate
+	} else {
+		h.mediaDownBPS += (rate - h.mediaDownBPS) / 4
+	}
+	r.health[id] = h
 }
 
 func (s *Server) measure() {
@@ -57,14 +110,28 @@ func (s *Server) measure() {
 }
 
 func (r *router) dialRoute(ctx context.Context, candidate route) (peer, error) {
+	p, _, err := r.dialRouteTimed(ctx, candidate, 0)
+	return p, err
+}
+
+func (r *router) dialRouteTimed(ctx context.Context, candidate route, timeout time.Duration) (peer, time.Duration, error) {
+	return r.dialRouteWithSlots(ctx, r.slots, candidate, timeout)
+}
+
+func (r *router) dialRouteWithSlots(ctx context.Context, slots chan struct{}, candidate route, timeout time.Duration) (peer, time.Duration, error) {
 	select {
-	case r.slots <- struct{}{}:
+	case slots <- struct{}{}:
 	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: %w", errDialQueue, ctx.Err())
+		return nil, 0, fmt.Errorf("%w: %w", errDialQueue, ctx.Err())
 	}
-	defer func() { <-r.slots }()
+	defer func() { <-slots }()
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %w", errDialQueue, err)
+		return nil, 0, fmt.Errorf("%w: %w", errDialQueue, err)
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	r.mu.Lock()
 	r.known[candidate.id] = candidate
@@ -82,9 +149,10 @@ func (r *router) dialRoute(ctx context.Context, candidate route) (peer, error) {
 		h.inflight--
 		r.health[candidate.id] = h
 		r.mu.Unlock()
-		return nil, errors.New("локальный VLESS-канал Telegram не настроен")
+		return nil, 0, errors.New("локальный VLESS-канал Telegram не настроен")
 	}
 	p, err := dial(ctx, candidate)
+	elapsed := time.Since(started)
 	r.mu.Lock()
 	h = r.health[candidate.id]
 	h.inflight--
@@ -94,23 +162,18 @@ func (r *router) dialRoute(ctx context.Context, candidate route) (peer, error) {
 			h.opened = true
 			h.code, h.reason = "", ""
 			if !h.success {
-				h.latency = time.Since(started)
+				h.latency = elapsed
 			}
 		}
 	}
 	r.health[candidate.id] = h
 	r.mu.Unlock()
-	return p, err
+	return p, elapsed, err
 }
 
 func (r *router) dialBackground(ctx context.Context, candidate route) (peer, error) {
-	select {
-	case r.background <- struct{}{}:
-	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: %w", errDialQueue, ctx.Err())
-	}
-	defer func() { <-r.background }()
-	return r.dialRoute(ctx, candidate)
+	p, _, err := r.dialRouteWithSlots(ctx, r.background, candidate, 0)
+	return p, err
 }
 
 func (r *router) snapshot() []RouteStatus {
@@ -130,7 +193,9 @@ func (r *router) snapshot() []RouteStatus {
 	now := time.Now()
 	for id, candidate := range r.known {
 		h := r.health[id]
-		v := RouteStatus{Code: h.code, Reason: h.reason, ID: id, Host: candidate.host, Kind: "WSS", Status: "untested", LatencyMS: h.latency.Milliseconds(), Failures: h.failures}
+		stabPct := int(stabilityScore(h, now)*100 + 0.5)
+		v := RouteStatus{Code: h.code, Reason: h.reason, ID: id, Host: candidate.host, Kind: "WSS", Status: "untested", LatencyMS: h.latency.Milliseconds(), Stability: stabPct, Drops: h.midStreamDrops, Failures: h.failures}
+		v.DC, v.Media, v.DownBPS = candidate.dc, candidate.media, h.mediaDownBPS
 		if candidate.address != "" && !candidate.tcp {
 			v.Kind = "WSS · фиксированный адрес"
 		}

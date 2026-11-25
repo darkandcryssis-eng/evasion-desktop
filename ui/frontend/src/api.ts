@@ -99,6 +99,23 @@ export type AppState = {
   ruGuard?: string[];
 };
 
+export type TelegramDisconnect = {
+  at: string;
+  route: string;
+  routeLabel: string;
+  transport: string;
+  dc: number;
+  media: boolean;
+  stage: string;
+  cause: string;
+  detail?: string;
+  durationMs: number;
+  bytesUp: number;
+  bytesDown: number;
+  recovered: boolean;
+  replacementRoute?: string;
+};
+
 export type TelegramState = {
 	 speeds: SpeedSample[];
   community: boolean;
@@ -113,12 +130,14 @@ export type TelegramState = {
   bytesUp: number;
   bytesDown: number;
   failures: number;
+  switches?: number;
   rejected: number;
   route: string;
   dialMs: number;
   lastDataAt: string;
   error: string;
   logs: LogLine[];
+  disconnects?: TelegramDisconnect[];
 };
 
 export type CustomIPs = { text: string; count: number; path: string };
@@ -138,7 +157,7 @@ export type DoctorCheck = { id: string; status: string; reason: string };
 export type SpeedSample = { at: string; up: number; down: number };
 export type ServiceStep = { id: string; status: string; ms: number; code: string; detail: string; advice: string };
 export type ServiceDiagnostic = { id: string; name: string; status: string; summary: string; advice: string; checkedAt: string; steps: ServiceStep[] };
-export type TelegramRoute = { id: string; host: string; kind: string; status: string; code: string; reason: string; latencyMs: number; failures: number; checkedAt: string; retryAt: string };
+export type TelegramRoute = { id: string; host: string; kind: string; status: string; code: string; reason: string; latencyMs: number; failures: number; stability?: number; drops?: number; checkedAt: string; retryAt: string };
 
 export type PortfolioHolder = {
   strategy_id: string;
@@ -160,7 +179,7 @@ const arr = <T,>(v: T[] | null | undefined): T[] => (Array.isArray(v) ? v : []);
 function normState(s: AppState): AppState {
   if (!s) return s;
   const engine = { ...s.engine, strategies: arr(s.engine?.strategies), logs: arr(s.engine?.logs) };
-  const telegram = s.telegram ? { ...s.telegram, logs: arr(s.telegram.logs), speeds: arr(s.telegram.speeds) } : s.telegram;
+  const telegram = s.telegram ? { ...s.telegram, logs: arr(s.telegram.logs), speeds: arr(s.telegram.speeds), disconnects: arr(s.telegram.disconnects) } : s.telegram;
   return { ...s, engine, telegram, ruGuard: arr(s.ruGuard) };
 }
 function normGame(v: GameFilterView): GameFilterView {
@@ -193,7 +212,7 @@ export const api = {
 	getTelegramRoutes: (): Promise<TelegramRoute[]> => GetTelegramRoutes().then((v) => arr(v as TelegramRoute[])),
 	checkTelegramRoutes: (): Promise<TelegramRoute[]> => CheckTelegramRoutes().then((v) => arr(v as TelegramRoute[])),
 	exportDiagnosticReport: (): Promise<string> => ExportDiagnosticReport(),
-  getTelegramState: (): Promise<TelegramState> => (GetTelegramState() as Promise<TelegramState>).then((t) => (t ? { ...t, logs: arr(t.logs), speeds: arr(t.speeds) } : t)),
+  getTelegramState: (): Promise<TelegramState> => (GetTelegramState() as Promise<TelegramState>).then((t) => (t ? { ...t, logs: arr(t.logs), speeds: arr(t.speeds), disconnects: arr(t.disconnects) } : t)),
   startTelegramProxy: (port = 0): Promise<void> => StartTelegramProxy(port),
   stopTelegramProxy: (): Promise<void> => StopTelegramProxy(),
   connectWithTelegram: (options: StartOptions, telegram: boolean): Promise<void> => ConnectWithTelegram(options as never, telegram),

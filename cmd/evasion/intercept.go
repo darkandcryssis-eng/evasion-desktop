@@ -34,6 +34,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/sandbox"
 	"github.com/fitting-1c/evasion/internal/store"
 	"github.com/fitting-1c/evasion/internal/strategy"
+	"github.com/fitting-1c/evasion/internal/telegramtune"
 	"github.com/fitting-1c/evasion/internal/vantage"
 	"github.com/fitting-1c/evasion/internal/windivert"
 	"github.com/fitting-1c/evasion/internal/youtubetune"
@@ -147,6 +148,8 @@ type interceptInfo struct {
 	Overrides []overrideInfo `json:"overrides,omitempty"`
 	// IPList — число применяемых записей пользовательского списка IP (--ip-list).
 	IPList int `json:"ip_list,omitempty"`
+	// TelegramBypassProfile — активный профиль обхода DPI для адресов Telegram.
+	TelegramBypassProfile string `json:"telegram_bypass_profile,omitempty"`
 }
 
 // overrideInfo — одно подгрупповое правило: имя группы и идентификатор её
@@ -424,6 +427,19 @@ func runIntercept(opts interceptOptions) error {
 			logger.Info("свой список IP подключён", "записей", ipEntries)
 		}
 	}
+	var tgBypass *telegramtune.Provider
+	if !cfg.Observe {
+		tgBypass, err = telegramtune.NewProvider(provider)
+		if err != nil {
+			return err
+		}
+		tgBypass.SetOnAdvance(func(fromName, toName string, fromID, toID core.StrategyID, sni string) {
+			logger.Info("Telegram DPI: автоподбор стратегии", "было", fromName, "стало", toName, "sni", sni, "from_id", fromID, "to_id", toID)
+		})
+		stopTelegramRotation := startTelegramRotationPersistence(tgBypass, logger)
+		defer stopTelegramRotation()
+		provider = tgBypass
+	}
 	// Диагностика: периодически печатаем топ SNI в пределах радиуса. Нужна,
 	// когда что-то в радиусе не работает (например, голос Discord виснет), а
 	// по счётчикам engine видно только количество ClientHello — не имена. Чужие
@@ -619,20 +635,25 @@ func runIntercept(opts interceptOptions) error {
 		_ = handle.Close()
 	}()
 
+	tgProfile := ""
+	if tgBypass != nil {
+		tgProfile, _ = tgBypass.ActiveProfile()
+	}
 	info := interceptInfo{
-		Mode:              "intercept",
-		Filter:            filter,
-		Observe:           cfg.Observe,
-		Domains:           domainSet.Domains(),
-		Auto:              false,
-		QUICBlock:         quicOn && cfg.QUICMode == config.QUICBlock,
-		QUICMode:          quicModeLabel(cfg.QUICMode, quicOn),
-		StrategyApplies:   !domainSet.Empty() || (cfg.Radius.Mode == config.RadiusAll && strat != nil),
-		DiscordProxy:      discordListen,
-		DiscordProxyForce: discordForce,
-		YouTubeProxy:      youtubeListen,
-		Overrides:         overrideInfos,
-		IPList:            ipEntries,
+		Mode:                  "intercept",
+		Filter:                filter,
+		Observe:               cfg.Observe,
+		Domains:               domainSet.Domains(),
+		Auto:                  false,
+		QUICBlock:             quicOn && cfg.QUICMode == config.QUICBlock,
+		QUICMode:              quicModeLabel(cfg.QUICMode, quicOn),
+		StrategyApplies:       !domainSet.Empty() || (cfg.Radius.Mode == config.RadiusAll && strat != nil),
+		DiscordProxy:          discordListen,
+		DiscordProxyForce:     discordForce,
+		YouTubeProxy:          youtubeListen,
+		Overrides:             overrideInfos,
+		IPList:                ipEntries,
+		TelegramBypassProfile: tgProfile,
 	}
 	if s := cfg.Strategy; s != nil && !cfg.Observe {
 		info.StrategyID = s.ID.String()
@@ -773,6 +794,19 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 			}
 			logger.Info("свой список IP подключён", "записей", ipListEntries)
 		}
+	}
+	var tgBypass *telegramtune.Provider
+	if !cfg.Observe {
+		tgBypass, err = telegramtune.NewProvider(productProvider)
+		if err != nil {
+			return err
+		}
+		tgBypass.SetOnAdvance(func(fromName, toName string, fromID, toID core.StrategyID, sni string) {
+			logger.Info("Telegram DPI: автоподбор стратегии", "было", fromName, "стало", toName, "sni", sni, "from_id", fromID, "to_id", toID)
+		})
+		stopTelegramRotation := startTelegramRotationPersistence(tgBypass, logger)
+		defer stopTelegramRotation()
+		productProvider = tgBypass
 	}
 
 	// Портфель — стартовые кандидаты как candidate. Действующей стратегии нет:
@@ -923,8 +957,9 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 		Sink:          hProd,
 		DesyncSink:    sendYouTube,
 		Flows:         flow.NewTable(flowCapacity, flowTTL, intercept.TLSHelloDetector),
-		Provider:      productProvider,
-		Exec:          packetexec.New(),
+		Provider:              productProvider,
+		IncludePacketMetadata: true,
+		Exec:                  packetexec.New(),
 		Parse:         intercept.TLSHelloParser,
 		Logger:        logger,
 		OnStall:       reportSiteStall,
@@ -1005,18 +1040,23 @@ func runInterceptAuto(ctx context.Context, cfg *config.Config, domainSet *config
 		})
 	}
 
+	tgProfile := ""
+	if tgBypass != nil {
+		tgProfile, _ = tgBypass.ActiveProfile()
+	}
 	info := interceptInfo{
-		Mode:              "intercept",
-		Filter:            prodFilter,
-		Observe:           cfg.Observe,
-		Domains:           domainSet.Domains(),
-		Auto:              true,
-		QUICBlock:         quicOn && cfg.QUICMode == config.QUICBlock,
-		QUICMode:          quicModeLabel(cfg.QUICMode, quicOn),
-		StrategyApplies:   !domainSet.Empty(),
-		IPList:            ipListEntries,
-		DiscordProxy:      discordListen,
-		DiscordProxyForce: discordForce,
+		Mode:                  "intercept",
+		Filter:                prodFilter,
+		Observe:               cfg.Observe,
+		Domains:               domainSet.Domains(),
+		Auto:                  true,
+		QUICBlock:             quicOn && cfg.QUICMode == config.QUICBlock,
+		QUICMode:              quicModeLabel(cfg.QUICMode, quicOn),
+		StrategyApplies:       !domainSet.Empty(),
+		IPList:                ipListEntries,
+		DiscordProxy:          discordListen,
+		DiscordProxyForce:     discordForce,
+		TelegramBypassProfile: tgProfile,
 	}
 	emitInterceptInfo(os.Stdout, info, jsonOut)
 
@@ -1293,5 +1333,8 @@ func emitInterceptInfo(w *os.File, info interceptInfo, jsonOut bool) {
 	}
 	if info.IPList > 0 {
 		fmt.Fprintf(w, "свой список IP: %d записей — обход по адресу назначения\n", info.IPList)
+	}
+	if info.TelegramBypassProfile != "" {
+		fmt.Fprintf(w, "Telegram DPI: авто-профиль %s\n", info.TelegramBypassProfile)
 	}
 }

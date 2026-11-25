@@ -32,35 +32,44 @@ type route struct {
 	media             bool
 }
 type routeHealth struct {
-	preferred bool
-	code      string
-	reason    string
-	inflight  int
-	checked   time.Time
-	opened    bool
-	failures  int
-	retryAt   time.Time
-	latency   time.Duration
-	success   bool
+	preferred        bool
+	code             string
+	reason           string
+	inflight         int
+	checked          time.Time
+	opened           bool
+	failures         int
+	totalFailures    int
+	successes        int
+	midStreamDrops   int
+	consecutiveDrops int
+	lastDropAt       time.Time
+	ewmaLifetime     time.Duration
+	mediaDownBPS     int64
+	retryAt          time.Time
+	latency          time.Duration
+	success          bool
 }
 type dialFunc func(context.Context, route) (peer, error)
 type router struct {
-	cache      *routeCache
-	pool       *warmPool
-	domains    *domainPool
-	mu         sync.Mutex
-	health     map[string]routeHealth
-	known      map[string]route
-	dial       dialFunc
-	tunnel     dialFunc
-	slots      chan struct{}
-	background chan struct{}
-	community  bool
-	rotation   uint64
+	cache          *routeCache
+	pool           *warmPool
+	domains        *domainPool
+	mu             sync.Mutex
+	health         map[string]routeHealth
+	known          map[string]route
+	preferTLSUntil map[poolKey]time.Time
+	dial           dialFunc
+	tunnel         dialFunc
+	slots          chan struct{}
+	failover       chan struct{}
+	background     chan struct{}
+	community      bool
+	rotation       uint64
 }
 
 func newRouter(dial dialFunc, community ...bool) *router {
-	r := &router{pool: newWarmPool(), domains: newDomainPool(), health: map[string]routeHealth{}, known: map[string]route{}, slots: make(chan struct{}, 8), background: make(chan struct{}, 3)}
+	r := &router{pool: newWarmPool(), domains: newDomainPool(), health: map[string]routeHealth{}, known: map[string]route{}, preferTLSUntil: map[poolKey]time.Time{}, slots: make(chan struct{}, 8), failover: make(chan struct{}, 8), background: make(chan struct{}, 3)}
 	r.community = len(community) > 0 && community[0]
 	if dial == nil {
 		dial = newNetworkDialer(&tls.Config{MinVersion: tls.VersionTLS12, ClientSessionCache: tls.NewLRUClientSessionCache(64)})
@@ -108,6 +117,10 @@ func tunnelRoute(dc int, media bool) route {
 	return (route{id: fmt.Sprintf("vless:dc%d", dc), address: net.JoinHostPort(dcIPs[dc], "443"), tcp: true, tunnel: true, dc: dc, media: media}).scoped()
 }
 
+func (c route) isEncryptedWSS() bool {
+	return !c.tcp && !c.plain
+}
+
 func routesFor(dc int, media bool) []route {
 	hostDC := dc
 	if dc == 203 {
@@ -116,6 +129,11 @@ func routesFor(dc int, media bool) []route {
 	hosts := []string{fmt.Sprintf("kws%d.web.telegram.org", hostDC)}
 	if media {
 		hosts = append([]string{fmt.Sprintf("kws%d-1.web.telegram.org", hostDC)}, hosts...)
+	}
+	// WebZ WebSocket-over-TLS endpoints as additional official WSS fallback targets.
+	hosts = append(hosts, fmt.Sprintf("zws%d.web.telegram.org", hostDC))
+	if media {
+		hosts = append(hosts, fmt.Sprintf("zws%d-1.web.telegram.org", hostDC))
 	}
 	var candidates []route
 	for _, host := range hosts {
@@ -148,6 +166,7 @@ func (r *router) failure(id string, cause ...error) {
 		h.code, h.reason = routeFailure(cause[0])
 	}
 	h.failures++
+	h.totalFailures++
 	h.checked = time.Now()
 	h.opened = false
 	h.success = false
@@ -163,11 +182,82 @@ func (r *router) failure(id string, cause ...error) {
 	r.health[id] = h
 }
 
+// recordDrop records an unexpected mid-stream disconnect on an already-open
+// route, penalizing its stability score and activating WSS-over-TLS fallback
+// when a non-TLS transport (raw TCP or plain WS) breaks.
+func (r *router) recordDrop(candidate route, duration time.Duration, cause error) {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.health[candidate.id]
+	h.code, h.reason = routeFailure(cause)
+	h.failures++
+	h.totalFailures++
+	h.midStreamDrops++
+	h.consecutiveDrops++
+	h.lastDropAt = now
+	h.checked = now
+	h.opened = false
+	h.success = false
+	h.preferred = false
+	if duration > 0 {
+		if h.ewmaLifetime == 0 {
+			h.ewmaLifetime = duration
+		} else {
+			h.ewmaLifetime = (h.ewmaLifetime*3 + duration) / 4
+		}
+	}
+	// Escalate cooldown more aggressively for repeat mid-stream droppers (up to 60s).
+	delay := 4 * time.Second << min(h.consecutiveDrops-1, 4)
+	if delay > 60*time.Second {
+		delay = 60 * time.Second
+	}
+	h.retryAt = now.Add(delay)
+	r.health[candidate.id] = h
+	if !candidate.isEncryptedWSS() && candidate.dc != 0 {
+		r.preferTLSUntil[poolKey{candidate.dc, candidate.media}] = now.Add(5 * time.Minute)
+	}
+	if r.cache != nil {
+		r.cache.forget(candidate.id)
+	}
+}
+
+// recordCleanSession updates session longevity stats when a connection closes
+// cleanly, rewarding routes that hold long-lived sessions without breaks.
+func (r *router) recordCleanSession(id string, duration time.Duration) {
+	if duration <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.health[id]
+	if h.ewmaLifetime == 0 {
+		h.ewmaLifetime = duration
+	} else {
+		h.ewmaLifetime = (h.ewmaLifetime*3 + duration) / 4
+	}
+	if duration >= 30*time.Second {
+		h.consecutiveDrops = 0
+	}
+	r.health[id] = h
+	if r.cache != nil {
+		if candidate, ok := r.known[id]; ok && h.success {
+			r.cache.rememberWithStats(candidate, h.latency, h.successes, h.midStreamDrops, h.ewmaLifetime)
+		}
+	}
+}
+
+func (r *router) tlsFallbackActiveLocked(dc int, media bool, now time.Time) bool {
+	until, ok := r.preferTLSUntil[poolKey{dc, media}]
+	return ok && now.Before(until)
+}
+
 func (r *router) success(id string, latency time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	h := r.health[id]
 	h.failures = 0
+	h.successes++
 	h.retryAt = time.Time{}
 	h.success = true
 	h.code, h.reason = "", ""
@@ -185,7 +275,7 @@ func (r *router) success(id string, latency time.Duration) {
 		r.domains.prefer(candidate.dc, strings.TrimPrefix(candidate.host, fmt.Sprintf("kws%d.", candidate.dc)))
 	}
 	if r.cache != nil {
-		r.cache.remember(candidate, latency)
+		r.cache.rememberWithStats(candidate, h.latency, h.successes, h.midStreamDrops, h.ewmaLifetime)
 	}
 }
 
@@ -197,45 +287,108 @@ func (r *router) connect(ctx context.Context, dc int, media bool) (peer, route, 
 // ответа, поэтому прогретый пул пропускается (там чаще всего тот же маршрут),
 // а сам avoid исключается из гонки, если есть другие маршруты.
 func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid string) (peer, route, time.Duration, error) {
+	if avoid == "" {
+		return r.connectAvoidSet(ctx, dc, media, nil)
+	}
+	return r.connectAvoidSet(ctx, dc, media, map[string]bool{avoid: true})
+}
+
+func (r *router) connectAvoidSet(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, time.Duration, error) {
+	return r.connectWithSlots(ctx, dc, media, avoid, false, r.slots, 4*time.Second)
+}
+
+func (r *router) connectFailover(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, time.Duration, error) {
+	return r.connectWithSlots(ctx, dc, media, avoid, true, r.failover, 2500*time.Millisecond)
+}
+
+func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid map[string]bool, failover bool, slots chan struct{}, dialTimeout time.Duration) (peer, route, time.Duration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, route{}, 0, err
 	}
 	started := time.Now()
-	if avoid == "" {
-		if p, c, ok := r.takeWarm(ctx, dc, media); ok {
+	if len(avoid) == 0 || failover {
+		if p, c, ok := r.takeWarm(ctx, dc, media, avoid); ok {
 			return p, c, time.Since(started), nil
 		}
 	}
 	var failures []string
 	candidates := routesFor(dc, media)
+	now := time.Now()
 	r.mu.Lock()
+	preferTLS := r.tlsFallbackActiveLocked(dc, media, now)
 	if r.community {
 		domains := r.domains.forDC(dc)
 		start := int(r.rotation % uint64(len(domains)))
 		r.rotation++
-		var relays []route
-		for pass := range 2 {
-			for i := range domains {
-				domain := domains[(start+i)%len(domains)]
-				if pass == 0 {
-					relays = append(relays, plainRelayRoute(dc, media, domain))
-				} else {
-					relays = append(relays, relayRoute(dc, media, domain))
+		var secureRelays, plainRelays []route
+		for i := range domains {
+			domain := domains[(start+i)%len(domains)]
+			secureRelays = append(secureRelays, relayRoute(dc, media, domain))
+			plainRelays = append(plainRelays, plainRelayRoute(dc, media, domain))
+		}
+		sortRelays := func(list []route) {
+			sort.SliceStable(list, func(i, j int) bool {
+				return routeBefore(list[i], list[j], r.health[list[i].id], r.health[list[j].id], false, now)
+			})
+		}
+		sortRelays(secureRelays)
+		sortRelays(plainRelays)
+		// Reserve 2 of the 8 relay slots for plain ws:// (either on cold start
+		// or whenever a verified plain backup exists) so TLS-only failures can
+		// still fall back to a working plain WebSocket relay.
+		secureCap := 6
+		if preferTLS {
+			hasVerifiedPlain := false
+			for _, candidate := range plainRelays {
+				if !now.Before(r.health[candidate.id].retryAt) && routeRank(r.health[candidate.id]) > 0 {
+					hasVerifiedPlain = true
+					break
 				}
 			}
+			if !hasVerifiedPlain {
+				secureCap = 8
+			}
 		}
-		sort.SliceStable(relays, func(i, j int) bool { return routeRank(r.health[relays[i].id]) > routeRank(r.health[relays[j].id]) })
-		count := 0
-		for _, candidate := range relays {
-			if time.Now().Before(r.health[candidate.id].retryAt) {
+		var picked []route
+		for _, candidate := range secureRelays {
+			if now.Before(r.health[candidate.id].retryAt) {
 				continue
 			}
-			candidates = append(candidates, candidate)
-			count++
-			if count == 8 {
+			picked = append(picked, candidate)
+			if len(picked) == secureCap {
 				break
 			}
 		}
+		for _, candidate := range plainRelays {
+			if len(picked) >= 8 {
+				break
+			}
+			if now.Before(r.health[candidate.id].retryAt) {
+				continue
+			}
+			picked = append(picked, candidate)
+		}
+		if len(picked) < 8 {
+			for _, candidate := range secureRelays {
+				if len(picked) >= 8 {
+					break
+				}
+				if now.Before(r.health[candidate.id].retryAt) {
+					continue
+				}
+				dup := false
+				for _, p := range picked {
+					if p.id == candidate.id {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					picked = append(picked, candidate)
+				}
+			}
+		}
+		candidates = append(candidates, picked...)
 	}
 	candidates = append(candidates, tcpRoute(dc, media))
 	if r.tunnel != nil {
@@ -243,26 +396,26 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 	}
 	var available []route
 	for _, candidate := range candidates {
-		if !time.Now().Before(r.health[candidate.id].retryAt) {
+		if !now.Before(r.health[candidate.id].retryAt) {
 			available = append(available, candidate)
 		}
 	}
 	sort.SliceStable(available, func(i, j int) bool {
-		a, b := r.health[available[i].id], r.health[available[j].id]
-		if routeRank(a) != routeRank(b) {
-			return routeRank(a) > routeRank(b)
-		}
-		return routeRank(a) > 0 && a.latency < b.latency
+		ci, cj := available[i], available[j]
+		return routeBefore(ci, cj, r.health[ci.id], r.health[cj.id], preferTLS, now)
 	})
-	if avoid != "" {
+	if len(avoid) > 0 {
 		others := available[:0:0]
 		for _, candidate := range available {
-			if candidate.id != avoid {
+			if !avoid[candidate.id] {
 				others = append(others, candidate)
 			}
 		}
 		if len(others) > 0 {
 			available = others
+		} else if failover || len(avoid) > 1 {
+			r.mu.Unlock()
+			return nil, route{}, 0, errors.New("no alternative Telegram routes available")
 		}
 	}
 	r.mu.Unlock()
@@ -275,30 +428,42 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 	results := make(chan result, len(available))
 	raceCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	plainOrder, secureOrder := 0, 0
+	wssOrder, plainOrder, secureOrder := 0, 0, 0
 	for i, candidate := range available {
-		delay := time.Duration(i) * 75 * time.Millisecond
+		delay := time.Duration(wssOrder) * 75 * time.Millisecond
+		if !candidate.community && !candidate.tcp && !candidate.tunnel {
+			wssOrder++
+		}
 		if candidate.community {
 			if candidate.plain {
-				delay = 75*time.Millisecond + time.Duration(plainOrder)*50*time.Millisecond
+				base := 500 * time.Millisecond
+				if preferTLS {
+					base = 900 * time.Millisecond
+				}
+				delay = base + time.Duration(plainOrder)*75*time.Millisecond
 				plainOrder++
 			} else {
-				delay = 500*time.Millisecond + time.Duration(secureOrder)*75*time.Millisecond
+				delay = 180*time.Millisecond + time.Duration(secureOrder)*75*time.Millisecond
 				secureOrder++
 			}
 		}
 		if candidate.tcp {
-			delay = 300 * time.Millisecond
+			delay = 350 * time.Millisecond
+			if preferTLS {
+				delay = 1000 * time.Millisecond
+			}
 		}
 		if candidate.tunnel {
 			delay = 250 * time.Millisecond
 		}
 		go func(i int, candidate route, delay time.Duration) {
 			r.mu.Lock()
-			verified := routeRank(r.health[candidate.id]) > 0
+			h := r.health[candidate.id]
 			r.mu.Unlock()
-			if verified {
+			if routeRank(h) > 0 && (h.success || !preferTLS || candidate.isEncryptedWSS()) {
 				delay = time.Duration(i) * 75 * time.Millisecond
+			} else if preferTLS {
+				delay = max(delay, time.Duration(i)*75*time.Millisecond)
 			}
 			timer := time.NewTimer(delay)
 			select {
@@ -308,14 +473,11 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 				return
 			case <-timer.C:
 			}
-			started := time.Now()
-			attemptCtx, attemptCancel := context.WithTimeout(raceCtx, 4*time.Second)
-			p, err := r.dialRoute(attemptCtx, candidate)
-			attemptCancel()
+			p, elapsed, err := r.dialRouteWithSlots(raceCtx, slots, candidate, dialTimeout)
 			if err != nil && raceCtx.Err() == nil {
 				r.failure(candidate.id, err)
 			}
-			results <- result{p: p, route: candidate, elapsed: time.Since(started), err: err}
+			results <- result{p: p, route: candidate, elapsed: elapsed, err: err}
 		}(i, candidate, delay)
 	}
 	for remaining := len(available); remaining > 0; remaining-- {
@@ -446,32 +608,102 @@ func routeRank(h routeHealth) int {
 	return 0
 }
 
-// bestCandidates возвращает до n маршрутов в порядке здоровья и латентности,
+// stabilityScore returns a [0.01, 1.0] score prioritizing connection stability
+// and session longevity over raw handshake speed.
+func stabilityScore(h routeHealth, now time.Time) float64 {
+	if h.successes == 0 && h.totalFailures == 0 && h.midStreamDrops == 0 {
+		if h.preferred {
+			return 0.70
+		}
+		return 0.50
+	}
+	penalties := float64(h.totalFailures) + float64(h.midStreamDrops)*2.0
+	score := (float64(h.successes) + 1.0) / (float64(h.successes) + penalties + 2.0)
+	if !h.lastDropAt.IsZero() {
+		age := now.Sub(h.lastDropAt)
+		if age >= 0 && age < 10*time.Minute {
+			decay := 1.0 - float64(age)/float64(10*time.Minute)
+			score -= 0.25 * decay * float64(min(max(h.consecutiveDrops, 1), 3))
+		}
+	}
+	if h.ewmaLifetime >= 60*time.Second {
+		score += 0.10
+	} else if h.ewmaLifetime >= 20*time.Second {
+		score += 0.05
+	}
+	if score < 0.01 {
+		return 0.01
+	}
+	if score > 1.0 {
+		return 1.0
+	}
+	return score
+}
+
+// routeScore combines stability (dominant) and latency (secondary tie-breaker).
+func routeScore(h routeHealth, now time.Time) float64 {
+	stab := stabilityScore(h, now)
+	latMS := float64(h.latency.Milliseconds())
+	if latMS < 0 {
+		latMS = 0
+	}
+	if latMS > 2000 {
+		latMS = 2000
+	}
+	return stab*1000.0 - latMS*0.1
+}
+
+func routeBefore(a, b route, ha, hb routeHealth, preferTLS bool, now time.Time) bool {
+	if ha.success != hb.success {
+		return ha.success
+	}
+	if preferTLS && a.isEncryptedWSS() != b.isEncryptedWSS() {
+		return a.isEncryptedWSS()
+	}
+	if routeRank(ha) != routeRank(hb) {
+		return routeRank(ha) > routeRank(hb)
+	}
+	sa, sb := routeScore(ha, now), routeScore(hb, now)
+	if a.media && b.media && ha.success && hb.success {
+		sa += mediaRouteBonus(ha)
+		sb += mediaRouteBonus(hb)
+	}
+	if sa != sb {
+		return sa > sb
+	}
+	return routeRank(ha) > 0 && ha.latency < hb.latency
+}
+
+func mediaRouteBonus(h routeHealth) float64 {
+	rate := float64(h.mediaDownBPS)
+	return 120 * rate / (rate + (256 << 10))
+}
+
+// bestCandidates возвращает до n маршрутов в порядке стабильности и латентности,
 // пропуская те, что ещё отдыхают после сбоя.
 func (r *router) bestCandidates(dc int, media bool, n int) []route {
 	candidates := routesFor(dc, media)
+	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	preferTLS := r.tlsFallbackActiveLocked(dc, media, now)
 	if r.community {
 		var relays []route
 		for _, domain := range r.domains.forDC(dc) {
 			relays = append(relays, communityRoutes(dc, media, domain)...)
 		}
-		candidates = append(relays, candidates...)
+		candidates = append(candidates, relays...)
 	}
 	if r.tunnel != nil {
 		candidates = append([]route{tunnelRoute(dc, media)}, candidates...)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
-		a, b := r.health[candidates[i].id], r.health[candidates[j].id]
-		if routeRank(a) != routeRank(b) {
-			return routeRank(a) > routeRank(b)
-		}
-		return routeRank(a) > 0 && a.latency < b.latency
+		ci, cj := candidates[i], candidates[j]
+		return routeBefore(ci, cj, r.health[ci.id], r.health[cj.id], preferTLS, now)
 	})
 	var out []route
 	for _, candidate := range candidates {
-		if time.Now().Before(r.health[candidate.id].retryAt) {
+		if now.Before(r.health[candidate.id].retryAt) {
 			continue
 		}
 		out = append(out, candidate)
@@ -501,21 +733,49 @@ func (r *router) probeRoutes(ctx context.Context, dc int, media bool, n int) {
 
 // warmBest пополняет тёплый пул по лучшему проверенному маршруту.
 func (r *router) warmBest(dc int, media bool) {
-	best := r.bestCandidates(dc, media, 1)
+	count := 1
+	if media {
+		count = 2
+	}
+	candidates := r.bestCandidates(dc, media, count+2)
+	if len(candidates) == 0 {
+		return
+	}
+	best := make([]route, 0, count)
+	r.mu.Lock()
+	for _, candidate := range candidates {
+		if candidate.tcp {
+			continue
+		}
+		h := r.health[candidate.id]
+		if len(best) == 0 {
+			if routeRank(h) <= 0 {
+				continue
+			}
+		} else if !h.success {
+			continue
+		}
+		best = append(best, candidate)
+		if len(best) == count {
+			break
+		}
+	}
+	r.mu.Unlock()
 	if len(best) == 0 {
 		return
 	}
-	r.mu.Lock()
-	verified := routeRank(r.health[best[0].id]) > 0
-	r.mu.Unlock()
-	if !verified {
-		return
-	}
-	r.warm(dc, media, best[0])
+	r.warm(dc, media, best...)
 }
 
 func (r *router) latencyHint(id string) time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.health[id].latency
+}
+
+func (r *router) isVerified(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.health[id]
+	return h.success && h.failures == 0
 }

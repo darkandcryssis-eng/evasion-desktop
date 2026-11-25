@@ -44,7 +44,7 @@ func peerAlive(p peer) bool {
 	return true
 }
 
-func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route, bool) {
+func (r *router) takeWarm(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, bool) {
 	pool := r.pool
 	key := poolKey{dc, media}
 	for ctx.Err() == nil {
@@ -54,8 +54,31 @@ func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route,
 			pool.mu.Unlock()
 			return nil, route{}, false
 		}
-		item := items[0]
-		pool.idle[key] = items[1:]
+		index := -1
+		r.mu.Lock()
+		now := time.Now()
+		preferTLS := r.tlsFallbackActiveLocked(dc, media, now)
+		for i, item := range items {
+			a := item.route
+			if avoid[a.id] {
+				continue
+			}
+			if index < 0 || (media && routeBefore(a, items[index].route, r.health[a.id], r.health[items[index].route.id], preferTLS, now)) {
+				index = i
+			}
+			if !media {
+				break
+			}
+		}
+		r.mu.Unlock()
+		if index < 0 {
+			pool.mu.Unlock()
+			return nil, route{}, false
+		}
+		item := items[index]
+		copy(items[index:], items[index+1:])
+		items[len(items)-1] = nil
+		pool.idle[key] = items[:len(items)-1]
 		pool.count--
 		item.expiry.Stop()
 		pool.mu.Unlock()
@@ -68,33 +91,97 @@ func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route,
 		}
 		candidate := item.route
 		candidate.fromPool = true
-		r.warm(dc, media, item.route)
+		if media {
+			r.warmBest(dc, media)
+		} else {
+			r.warm(dc, media, item.route)
+		}
 		return item.p, candidate, true
 	}
 	return nil, route{}, false
 }
 
 // Warm sockets contain no client init, auth key or user request. Each is used once.
-func (r *router) warm(dc int, media bool, candidate route) {
-	if candidate.tcp {
+func (r *router) warm(dc int, media bool, candidates ...route) {
+	var warmable []route
+	for _, candidate := range candidates {
+		if !candidate.tcp {
+			warmable = append(warmable, candidate)
+		}
+	}
+	if len(warmable) == 0 {
 		return
 	}
 	pool := r.pool
 	key := poolKey{dc, media}
 	pool.mu.Lock()
-	if pool.closed || pool.filling[key] || pool.count >= warmLimit || len(pool.idle[key]) >= warmPerRoute {
+	if pool.closed || pool.filling[key] {
 		pool.mu.Unlock()
 		return
 	}
+	counts := make(map[string]int, len(warmable))
+	for _, item := range pool.idle[key] {
+		counts[item.route.id]++
+	}
+	var evicted []*warmPeer
+	if len(pool.idle[key]) >= warmPerRoute && len(warmable) > 1 {
+		missing := 0
+		for _, candidate := range warmable {
+			if counts[candidate.id] == 0 {
+				missing++
+			}
+		}
+		for range missing {
+			victim := -1
+			for i, item := range pool.idle[key] {
+				if counts[item.route.id] <= 1 {
+					continue
+				}
+				if victim < 0 || counts[item.route.id] > counts[pool.idle[key][victim].route.id] {
+					victim = i
+				}
+			}
+			if victim < 0 {
+				break
+			}
+			item := pool.idle[key][victim]
+			item.expiry.Stop()
+			pool.idle[key] = append(pool.idle[key][:victim], pool.idle[key][victim+1:]...)
+			pool.count--
+			counts[item.route.id]--
+			evicted = append(evicted, item)
+		}
+	}
 	count := min(warmPerRoute-len(pool.idle[key]), warmLimit-pool.count)
+	if count <= 0 {
+		pool.mu.Unlock()
+		for _, item := range evicted {
+			_ = item.p.Close()
+		}
+		return
+	}
+	plan := make([]route, 0, count)
+	for range count {
+		best := warmable[0]
+		for _, candidate := range warmable[1:] {
+			if counts[candidate.id] < counts[best.id] {
+				best = candidate
+			}
+		}
+		counts[best.id]++
+		plan = append(plan, best)
+	}
 	pool.filling[key] = true
 	pool.count += count
 	pool.wg.Add(1)
 	pool.mu.Unlock()
+	for _, item := range evicted {
+		_ = item.p.Close()
+	}
 	go func() {
 		defer pool.wg.Done()
 		defer func() { pool.mu.Lock(); pool.filling[key] = false; pool.mu.Unlock() }()
-		for range count {
+		for _, candidate := range plan {
 			select {
 			case pool.workers <- struct{}{}:
 			case <-pool.ctx.Done():

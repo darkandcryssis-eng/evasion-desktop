@@ -1,0 +1,557 @@
+package tgproxy
+
+import (
+	"bytes"
+	"context"
+	"crypto/cipher"
+	"crypto/sha256"
+	"errors"
+	"io"
+	"net"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestStabilitySelectionBeatsLatency(t *testing.T) {
+	r := newRouter(nil)
+	candidates := routesFor(2, false)
+	flaky := candidates[0]
+	stable := candidates[1]
+	r.known[flaky.id] = flaky
+	r.known[stable.id] = stable
+
+	// Flaky route is much faster (20ms) but dropped mid-stream twice.
+	r.success(flaky.id, 20*time.Millisecond)
+	r.recordDrop(flaky, 10*time.Second, syscall.ECONNRESET)
+	r.success(flaky.id, 20*time.Millisecond)
+	r.recordDrop(flaky, 12*time.Second, syscall.ECONNRESET)
+	// Even after recovering with a fast probe, its history still shows drops.
+	r.success(flaky.id, 20*time.Millisecond)
+
+	// Stable route is slower (250ms) but has held clean sessions without drops.
+	r.success(stable.id, 250*time.Millisecond)
+	r.recordCleanSession(stable.id, 2*time.Minute)
+
+	best := r.bestCandidates(2, false, 2)
+	if len(best) < 2 {
+		t.Fatalf("expected at least 2 candidates, got %d", len(best))
+	}
+	if best[0].id != stable.id {
+		t.Fatalf("expected stable route %s ahead of flaky route %s, got %s", stable.id, flaky.id, best[0].id)
+	}
+}
+
+func TestVerifiedMediaPrefersMeasuredFasterRoute(t *testing.T) {
+	now := time.Now()
+	a, b := route{media: true}, route{media: true}
+	fast := routeHealth{success: true, latency: 200 * time.Millisecond, mediaDownBPS: 2 << 20}
+	slow := routeHealth{success: true, latency: 20 * time.Millisecond, mediaDownBPS: 128 << 10}
+	if !routeBefore(a, b, fast, slow, false, now) {
+		t.Fatal("lower latency beat measured media delivery speed")
+	}
+	fast.success = false
+	if routeBefore(a, b, fast, slow, false, now) {
+		t.Fatal("unverified route beat verified route")
+	}
+	fast.success = true
+	a.media, b.media = false, false
+	if routeBefore(a, b, fast, slow, false, now) {
+		t.Fatal("media delivery speed affected a non-media route")
+	}
+}
+
+func TestMediaDeliverySampleDiscardsIdleWindows(t *testing.T) {
+	now := time.Now()
+	var sample mediaDeliverySample
+	if rate := sample.observe(now, 16<<10); rate != 0 {
+		t.Fatalf("first chunk generated a rate: %d", rate)
+	}
+	if rate := sample.observe(now.Add(3*time.Second), 256<<10); rate != 0 {
+		t.Fatalf("idle period generated a rate: %d", rate)
+	}
+	if rate := sample.observe(now.Add(3500*time.Millisecond), 256<<10); rate != 512<<10 {
+		t.Fatalf("delivery rate = %d, want %d", rate, 512<<10)
+	}
+}
+
+func TestMediaDeliverySampleFlushesFastBursts(t *testing.T) {
+	now := time.Now()
+	var sample mediaDeliverySample
+	if rate := sample.observe(now, 16<<10); rate != 0 {
+		t.Fatalf("first chunk generated a rate: %d", rate)
+	}
+	// Fast route delivers 512 KiB in 100 ms (< 250 ms window).
+	if rate := sample.observe(now.Add(100*time.Millisecond), 512<<10); rate != 0 {
+		t.Fatalf("expected burst under 250ms to buffer, got %d", rate)
+	}
+	// After >2s of silence, the completed fast burst is credited rather than dropped.
+	if rate := sample.observe(now.Add(3*time.Second), 16<<10); rate != 2048<<10 {
+		t.Fatalf("fast burst rate = %d, want %d", rate, 2048<<10)
+	}
+}
+
+func TestNonTLSBreakTriggersWSSOverTLSFallback(t *testing.T) {
+	r := newRouter(nil, true)
+	rawTCP := tcpRoute(2, false)
+	wss := routesFor(2, false)[0]
+	r.known[rawTCP.id] = rawTCP
+	r.known[wss.id] = wss
+
+	r.success(rawTCP.id, 15*time.Millisecond)
+	r.success(wss.id, 180*time.Millisecond)
+	r.recordDrop(rawTCP, 8*time.Second, syscall.ECONNRESET)
+	// Even if rawTCP recovers immediately, preferTLS keeps WSS-over-TLS first.
+	r.success(rawTCP.id, 15*time.Millisecond)
+
+	best := r.bestCandidates(2, false, 3)
+	if len(best) == 0 || !best[0].isEncryptedWSS() {
+		t.Fatalf("expected WSS-over-TLS fallback route first, got %+v", best)
+	}
+}
+
+func TestTLSFallbackDoesNotQueueUnverifiedRoutesAheadOfWorkingPlainWS(t *testing.T) {
+	plain := plainRelayRoute(2, true, communityDomains[0])
+	first := make(chan string, 1)
+	r := newRouter(func(ctx context.Context, c route) (peer, error) {
+		select {
+		case first <- c.id:
+		default:
+		}
+		if c.id == plain.id {
+			return inertPeer{}, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, true)
+	r.known[plain.id] = plain
+	r.success(plain.id, 1200*time.Millisecond)
+	r.recordDrop(tcpRoute(2, true), 8*time.Second, syscall.ECONNRESET)
+
+	if best := r.bestCandidates(2, true, 1); len(best) != 1 || best[0].id != plain.id {
+		t.Fatalf("expected verified plain media route before unverified WSS routes, got %+v", best)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	p, route, _, err := r.connect(ctx, 2, true)
+	if err != nil || route.id != plain.id {
+		t.Fatalf("expected working plain media route, got %+v (%v)", route, err)
+	}
+	_ = p.Close()
+	if got := <-first; got != plain.id {
+		t.Fatalf("unverified route %s dialed before verified media route %s", got, plain.id)
+	}
+}
+
+func TestSeamlessSwitchKeepsClientAliveAcrossUpstreamBreak(t *testing.T) {
+	v := vectors(t)[0]
+	frame := unhex(t, v.Plain)
+	var dials atomic.Int32
+	droppedFirst := make(chan struct{})
+
+	// First upstream echoes the first frame, then abruptly closes (simulating a
+	// DPI reset). Second upstream handles subsequent frames cleanly.
+	dial := func(ctx context.Context, _ route) (peer, error) {
+		n := dials.Add(1)
+		local, remote := net.Pipe()
+		go func() {
+			defer remote.Close()
+			_ = remote.SetDeadline(time.Now().Add(4 * time.Second))
+			init := make([]byte, 64)
+			if _, err := io.ReadFull(remote, init); err != nil {
+				return
+			}
+			dec := ctr(init[8:40], init[40:56])
+			plainInit := make([]byte, 64)
+			dec.XORKeyStream(plainInit, init)
+			reversed := reverse(init[8:56])
+			enc := ctr(reversed[:32], reversed[32:])
+			reader := &cipher.StreamReader{S: dec, R: remote}
+			for {
+				hdr, sz, err := readPacketHeader(reader, plainInit[56])
+				if err != nil {
+					return
+				}
+				payload := make([]byte, sz)
+				if _, err := io.ReadFull(reader, payload); err != nil {
+					return
+				}
+				reply := append(hdr, payload...)
+				enc.XORKeyStream(reply, reply)
+				if _, err := writeAll(remote, reply); err != nil {
+					return
+				}
+				if n == 1 {
+					// Simulate abrupt disconnect after the first reply.
+					select {
+					case <-droppedFirst:
+					default:
+						close(droppedFirst)
+					}
+					return
+				}
+			}
+		}()
+		return &tcpPeer{local}, nil
+	}
+
+	s, err := New(Options{Secret: unhex(t, v.Secret), Dial: dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mark backup routes as verified in this unit test since the mock echo peer
+	// does not implement MTProto resPQ for idle probeRoute checks.
+	for _, r := range routesFor(2, true) {
+		s.router.success(r.id, 10*time.Millisecond)
+	}
+	if err := s.Start(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	c, err := net.DialTimeout("tcp", s.Snapshot().Address, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(4 * time.Second))
+
+	clientInit := unhex(t, v.ClientInit)
+	secret := unhex(t, v.Secret)
+	keyEnc := sha256.Sum256(append(append([]byte(nil), clientInit[8:40]...), secret...))
+	clientEnc := ctr(keyEnc[:], clientInit[40:56])
+	// Advance clientEnc past the 64-byte init header (matching protocol.go).
+	clientEnc.XORKeyStream(make([]byte, 64), clientInit)
+	reversed := reverse(clientInit[8:56])
+	keyDec := sha256.Sum256(append(append([]byte(nil), reversed[:32]...), secret...))
+	clientDec := ctr(keyDec[:], reversed[32:])
+
+	// Send init + first frame.
+	if _, err := writeAll(c, append(clientInit, unhex(t, v.ClientCipher)...)); err != nil {
+		t.Fatal(err)
+	}
+	// Advance clientEnc past first frame too.
+	clientEnc.XORKeyStream(make([]byte, len(frame)), frame)
+
+	reply1 := make([]byte, len(frame))
+	if _, err := io.ReadFull(c, reply1); err != nil {
+		t.Fatalf("first reply failed: %v", err)
+	}
+	plain1 := make([]byte, len(reply1))
+	clientDec.XORKeyStream(plain1, reply1)
+	if !bytes.Equal(plain1, frame) {
+		t.Fatal("first reply mismatch")
+	}
+
+	// Wait for first upstream to drop and proxy to seamlessly switch routes.
+	select {
+	case <-droppedFirst:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first upstream did not drop")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for s.Snapshot().Switches == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.Snapshot().Switches == 0 {
+		t.Fatalf("expected seamless switch, snapshot=%+v", s.Snapshot())
+	}
+
+	// Send a second MTProto frame over the SAME client TCP connection!
+	secondCipher := make([]byte, len(frame))
+	clientEnc.XORKeyStream(secondCipher, frame)
+	if _, err := writeAll(c, secondCipher); err != nil {
+		t.Fatalf("second write failed after switch: %v", err)
+	}
+	reply2 := make([]byte, len(frame))
+	if _, err := io.ReadFull(c, reply2); err != nil {
+		t.Fatalf("second reply failed after switch: %v", err)
+	}
+	plain2 := make([]byte, len(reply2))
+	clientDec.XORKeyStream(plain2, reply2)
+	if !bytes.Equal(plain2, frame) {
+		t.Fatal("second reply mismatch after seamless switch")
+	}
+
+	snap := s.Snapshot()
+	if snap.Failures != 0 {
+		t.Fatalf("recovered disconnect should not count as client failure, got %d", snap.Failures)
+	}
+	if len(snap.Disconnects) == 0 || !snap.Disconnects[0].Recovered {
+		t.Fatalf("expected recovered disconnect journal entry, got %+v", snap.Disconnects)
+	}
+}
+
+func TestSeamlessSwitchOnWriteErrorReplaysFrame(t *testing.T) {
+	v := vectors(t)[0]
+	frame := unhex(t, v.Plain)
+	var dials atomic.Int32
+	var writes atomic.Int32
+
+	dial := func(ctx context.Context, _ route) (peer, error) {
+		n := dials.Add(1)
+		local, remote := net.Pipe()
+		go func() {
+			defer remote.Close()
+			_ = remote.SetDeadline(time.Now().Add(4 * time.Second))
+			init := make([]byte, 64)
+			if _, err := io.ReadFull(remote, init); err != nil {
+				return
+			}
+			dec := ctr(init[8:40], init[40:56])
+			plainInit := make([]byte, 64)
+			dec.XORKeyStream(plainInit, init)
+			reversed := reverse(init[8:56])
+			enc := ctr(reversed[:32], reversed[32:])
+			reader := &cipher.StreamReader{S: dec, R: remote}
+			for {
+				hdr, sz, err := readPacketHeader(reader, plainInit[56])
+				if err != nil {
+					return
+				}
+				payload := make([]byte, sz)
+				if _, err := io.ReadFull(reader, payload); err != nil {
+					return
+				}
+				reply := append(hdr, payload...)
+				enc.XORKeyStream(reply, reply)
+				if _, err := writeAll(remote, reply); err != nil {
+					return
+				}
+			}
+		}()
+		p := &tcpPeer{local}
+		if n == 1 {
+			return &failOnSecondWritePeer{peer: p, writes: &writes}, nil
+		}
+		return p, nil
+	}
+
+	s, err := New(Options{Secret: unhex(t, v.Secret), Dial: dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	c, err := net.DialTimeout("tcp", s.Snapshot().Address, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(4 * time.Second))
+
+	clientInit := unhex(t, v.ClientInit)
+	secret := unhex(t, v.Secret)
+	keyEnc := sha256.Sum256(append(append([]byte(nil), clientInit[8:40]...), secret...))
+	clientEnc := ctr(keyEnc[:], clientInit[40:56])
+	clientEnc.XORKeyStream(make([]byte, 64), clientInit)
+	reversed := reverse(clientInit[8:56])
+	keyDec := sha256.Sum256(append(append([]byte(nil), reversed[:32]...), secret...))
+	clientDec := ctr(keyDec[:], reversed[32:])
+
+	if _, err := writeAll(c, append(clientInit, unhex(t, v.ClientCipher)...)); err != nil {
+		t.Fatal(err)
+	}
+	clientEnc.XORKeyStream(make([]byte, len(frame)), frame)
+	reply1 := make([]byte, len(frame))
+	if _, err := io.ReadFull(c, reply1); err != nil {
+		t.Fatal(err)
+	}
+	clientDec.XORKeyStream(reply1, reply1)
+
+	// Second write hits ECONNRESET on route 1 -> proxy replays it on route 2!
+	secondCipher := make([]byte, len(frame))
+	clientEnc.XORKeyStream(secondCipher, frame)
+	if _, err := writeAll(c, secondCipher); err != nil {
+		t.Fatal(err)
+	}
+	reply2 := make([]byte, len(frame))
+	if _, err := io.ReadFull(c, reply2); err != nil {
+		t.Fatalf("expected replayed second reply, got %v", err)
+	}
+	clientDec.XORKeyStream(reply2, reply2)
+	if !bytes.Equal(reply2, frame) {
+		t.Fatal("replayed frame mismatch")
+	}
+	if s.Snapshot().Switches == 0 {
+		t.Fatal("expected write-error seamless switch")
+	}
+}
+
+type failOnSecondWritePeer struct {
+	peer
+	writes *atomic.Int32
+}
+
+func (f *failOnSecondWritePeer) WritePacket(r io.Reader, size int64) error {
+	// Write 1 = 64-byte init, Write 2 = firstFrame, Write 3 = second client frame.
+	if f.writes.Add(1) >= 3 {
+		return errors.New("write: connection reset by peer")
+	}
+	return f.peer.WritePacket(r, size)
+}
+
+func TestUpstreamQuickAckTokenPassesThroughWithoutPayload(t *testing.T) {
+	// Intermediate (0xee) quick ack: 4 bytes with MSB set on byte 3, followed by
+	// a normal 4-byte payload frame.
+	quickAck := []byte{0x11, 0x22, 0x33, 0x84}
+	normalFrame := []byte{0x04, 0x00, 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef}
+	stream := bytes.NewReader(append(append([]byte(nil), quickAck...), normalFrame...))
+
+	hdr1, sz1, err := readUpstreamPacketHeader(stream, 0xee)
+	if err != nil || sz1 != 0 || !bytes.Equal(hdr1, quickAck) {
+		t.Fatalf("quick ack parse failed: hdr=%x sz=%d err=%v", hdr1, sz1, err)
+	}
+	hdr2, sz2, err := readUpstreamPacketHeader(stream, 0xee)
+	if err != nil || sz2 != 4 || !bytes.Equal(hdr2, normalFrame[:4]) {
+		t.Fatalf("following frame parse failed: hdr=%x sz=%d err=%v", hdr2, sz2, err)
+	}
+
+	// Abridged (0xef) quick ack: MSB set on byte 0 -> 4-byte token, 0 payload.
+	abridgedAck := []byte{0x81, 0x02, 0x03, 0x04}
+	hdr3, sz3, err := readUpstreamPacketHeader(bytes.NewReader(abridgedAck), 0xef)
+	if err != nil || sz3 != 0 || !bytes.Equal(hdr3, abridgedAck) {
+		t.Fatalf("abridged quick ack parse failed: hdr=%x sz=%d err=%v", hdr3, sz3, err)
+	}
+}
+
+func TestPlainWSFallbackIncludedOnColdConnect(t *testing.T) {
+	r := newRouter(func(ctx context.Context, c route) (peer, error) {
+		if c.community && c.plain {
+			return inertPeer{}, nil
+		}
+		return nil, errors.New("tls blocked")
+	}, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p, c, _, err := r.connect(ctx, 2, false)
+	if err != nil {
+		t.Fatalf("expected plain WS fallback to succeed on cold connect, got %v", err)
+	}
+	_ = p.Close()
+	if !c.community || !c.plain {
+		t.Fatalf("expected plain community WS route, got %+v", c)
+	}
+}
+
+func TestIdleSwitchRejectsSilentUnverifiedRoute(t *testing.T) {
+	v := vectors(t)[0]
+	s, err := New(Options{
+		Secret: unhex(t, v.Secret),
+		Dial: func(ctx context.Context, _ route) (peer, error) {
+			// Accepts connection but never answers Telegram.
+			local, remote := net.Pipe()
+			go func() {
+				<-ctx.Done()
+				_ = remote.Close()
+			}()
+			return &tcpPeer{local}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handshake{dc: 2, media: false, protocol: 0xee}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if ch, err := s.switchChannel(ctx, h, "", nil); err == nil {
+		_ = ch.upstream.Close()
+		t.Fatal("expected idle switch to reject silent unverified route")
+	}
+}
+
+func TestIdleSwitchRetriesAfterSilentUnverifiedRoute(t *testing.T) {
+	v := vectors(t)[0]
+	routes := routesFor(2, false)
+	if len(routes) < 2 {
+		t.Fatal("need at least two routes")
+	}
+	silentID := routes[0].id
+	goodID := routes[1].id
+	s, err := New(Options{
+		Secret: unhex(t, v.Secret),
+		Dial: func(ctx context.Context, r route) (peer, error) {
+			if r.id == silentID {
+				local, remote := net.Pipe()
+				go func() {
+					<-ctx.Done()
+					_ = remote.Close()
+				}()
+				return &tcpPeer{local}, nil
+			}
+			if r.id == goodID {
+				// Slightly slower than silentID so silentID wins the first race.
+				select {
+				case <-time.After(150 * time.Millisecond):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				local, remote := net.Pipe()
+				go func() {
+					_, _ = io.Copy(io.Discard, remote)
+				}()
+				return &tcpPeer{local}, nil
+			}
+			return nil, errors.New("blocked")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.router.success(goodID, 50*time.Millisecond)
+	h := handshake{dc: 2, media: false, protocol: 0xee}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	ch, err := s.switchChannel(ctx, h, "", nil)
+	if err != nil {
+		t.Fatalf("expected idle switch to retry and succeed on verified backup, got %v", err)
+	}
+	defer ch.upstream.Close()
+	if ch.route.id != goodID {
+		t.Fatalf("expected backup route %s, got %s", goodID, ch.route.id)
+	}
+}
+
+func TestFailoverNotStarvedByFullDialQueue(t *testing.T) {
+	v := vectors(t)[0]
+	routes := routesFor(2, false)
+	goodID := routes[1].id
+	s, err := New(Options{
+		Secret: unhex(t, v.Secret),
+		Dial: func(ctx context.Context, r route) (peer, error) {
+			if r.id != goodID {
+				return nil, errors.New("blocked")
+			}
+			local, remote := net.Pipe()
+			go func() {
+				_, _ = io.Copy(io.Discard, remote)
+			}()
+			return &tcpPeer{local}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.router.success(goodID, 50*time.Millisecond)
+	// Saturate all shared foreground dial slots as if concurrent media reconnects stalled.
+	for range cap(s.router.slots) {
+		s.router.slots <- struct{}{}
+	}
+	defer func() {
+		for range cap(s.router.slots) {
+			<-s.router.slots
+		}
+	}()
+	h := handshake{dc: 2, media: false, protocol: 0xee}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ch, err := s.switchChannel(ctx, h, routes[0].id, nil)
+	if err != nil {
+		t.Fatalf("failover should not starve when shared dial slots are full: %v", err)
+	}
+	_ = ch.upstream.Close()
+}

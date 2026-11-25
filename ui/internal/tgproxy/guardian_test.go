@@ -110,6 +110,25 @@ func TestWarmBestSkipsUnverifiedRoutes(t *testing.T) {
 	}
 }
 
+func TestWarmBestKeepsVerifiedMediaBackupWithinPoolBudget(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	candidates := routesFor(4, true)
+	r.success(candidates[0].id, time.Millisecond)
+	r.success(candidates[1].id, 500*time.Millisecond)
+	r.warmBest(4, true)
+	waitWarm(t, r)
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+	counts := map[string]int{}
+	for _, item := range r.pool.idle[poolKey{4, true}] {
+		counts[item.route.id]++
+	}
+	if len(counts) != 2 || counts[candidates[0].id] != 2 || counts[candidates[1].id] != 2 || r.pool.count != warmPerRoute {
+		t.Fatalf("expected two routes within existing media pool budget, got %v", counts)
+	}
+}
+
 type silentPeer struct {
 	done   chan struct{}
 	closed atomic.Bool

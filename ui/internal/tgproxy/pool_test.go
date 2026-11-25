@@ -95,11 +95,11 @@ func TestWarmSocketsAreSingleUseAndCloseReleasesIdle(t *testing.T) {
 	r.success(c.id, time.Millisecond)
 	r.warm(2, false, c)
 	waitWarm(t, r)
-	p, got, ok := r.takeWarm(context.Background(), 2, false)
+	p, got, ok := r.takeWarm(context.Background(), 2, false, nil)
 	if !ok || !got.fromPool {
 		t.Fatal("warm socket not used")
 	}
-	q, _, ok := r.takeWarm(context.Background(), 2, false)
+	q, _, ok := r.takeWarm(context.Background(), 2, false, nil)
 	if !ok || p == q {
 		t.Fatal("socket reused by two clients")
 	}
@@ -113,6 +113,60 @@ func TestWarmSocketsAreSingleUseAndCloseReleasesIdle(t *testing.T) {
 	defer r.pool.mu.Unlock()
 	if r.pool.count != 0 {
 		t.Fatalf("pool leaked %d sockets", r.pool.count)
+	}
+}
+
+func TestWarmMediaUsesFasterVerifiedSocket(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	candidates := routesFor(2, true)
+	slow, fast := candidates[0], candidates[1]
+	r.success(slow.id, time.Millisecond)
+	r.success(fast.id, time.Millisecond)
+	r.recordMediaRate(slow.id, 128<<10)
+	r.recordMediaRate(fast.id, 2<<20)
+	key := poolKey{dc: 2, media: true}
+	for _, c := range []route{slow, fast} {
+		r.pool.idle[key] = append(r.pool.idle[key], &warmPeer{
+			p: &trackedPeer{}, route: c, created: time.Now(), expiry: time.AfterFunc(time.Hour, func() {}),
+		})
+		r.pool.count++
+	}
+	p, candidate, ok := r.takeWarm(context.Background(), 2, true, nil)
+	if ok {
+		defer p.Close()
+	}
+	if !ok || candidate.id != fast.id {
+		t.Fatalf("warm route = %q, want %q", candidate.id, fast.id)
+	}
+}
+
+func TestMediaFailoverUsesWarmAlternateWithoutDialing(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	candidates := routesFor(4, true)
+	broken, backup := candidates[0], candidates[1]
+	r.success(broken.id, time.Millisecond)
+	r.success(backup.id, time.Second)
+	key := poolKey{dc: 4, media: true}
+	for _, c := range []route{broken, backup} {
+		r.pool.idle[key] = append(r.pool.idle[key], &warmPeer{
+			p: &trackedPeer{}, route: c, created: time.Now(), expiry: time.AfterFunc(time.Hour, func() {}),
+		})
+		r.pool.count++
+	}
+	for range cap(r.failover) {
+		r.failover <- struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	p, got, _, err := r.connectFailover(ctx, 4, true, map[string]bool{broken.id: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if got.id != backup.id || !got.fromPool {
+		t.Fatalf("failover selected %v, want a warm socket for %s", got, backup.id)
 	}
 }
 
@@ -138,7 +192,7 @@ func TestWarmPoolRejectsClosedExpiredAndFailedRoutes(t *testing.T) {
 			if mode == "failed" {
 				r.failure(c.id)
 			}
-			if p, _, ok := r.takeWarm(context.Background(), 2, false); ok {
+			if p, _, ok := r.takeWarm(context.Background(), 2, false, nil); ok {
 				p.Close()
 				t.Fatal("stale warm connection handed out")
 			}
@@ -186,5 +240,47 @@ func TestWarmPoolCapacityIsBoundedAcrossDataCenters(t *testing.T) {
 	defer r.pool.mu.Unlock()
 	if r.pool.count != 0 {
 		t.Fatal("refill reservation leaked")
+	}
+}
+
+func TestWarmBestSkipsTopRankedTunnel(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	r.tunnel = func(context.Context, route) (peer, error) { return &trackedPeer{}, nil }
+	tunnel := tunnelRoute(2, true)
+	ws := routesFor(2, true)[0]
+	r.success(tunnel.id, time.Millisecond)
+	r.success(ws.id, 10*time.Millisecond)
+	r.warmBest(2, true)
+	r.pool.wg.Wait()
+	p, candidate, ok := r.takeWarm(context.Background(), 2, true, nil)
+	if ok {
+		defer p.Close()
+	}
+	if !ok || candidate.id != ws.id {
+		t.Fatalf("warmed route = %q (ok=%v), want %q", candidate.id, ok, ws.id)
+	}
+}
+
+func TestWarmRebalancesFullMediaPoolForVerifiedBackup(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	candidates := routesFor(2, true)
+	primary, backup := candidates[0], candidates[1]
+	r.success(primary.id, time.Millisecond)
+	r.warm(2, true, primary)
+	r.pool.wg.Wait()
+
+	// Guardian verifies backup after primary already filled all 4 pool slots.
+	r.success(backup.id, 10*time.Millisecond)
+	r.warm(2, true, primary, backup)
+	r.pool.wg.Wait()
+
+	p, candidate, ok := r.takeWarm(context.Background(), 2, true, map[string]bool{primary.id: true})
+	if ok {
+		defer p.Close()
+	}
+	if !ok || candidate.id != backup.id {
+		t.Fatalf("warm backup = %q (ok=%v), want %q", candidate.id, ok, backup.id)
 	}
 }

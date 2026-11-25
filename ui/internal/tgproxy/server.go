@@ -22,25 +22,28 @@ type LogLine struct {
 	Attrs string `json:"attrs"`
 }
 type Snapshot struct {
-	Speeds      []SpeedSample `json:"speeds"`
-	Running     bool          `json:"running"`
-	Phase       string        `json:"phase"`
-	Address     string        `json:"address"`
-	Active      int64         `json:"active"`
-	Connections uint64        `json:"connections"`
-	BytesUp     uint64        `json:"bytesUp"`
-	BytesDown   uint64        `json:"bytesDown"`
-	Failures    uint64        `json:"failures"`
-	Rejected    uint64        `json:"rejected"`
-	Route       string        `json:"route"`
-	DialMS      int64         `json:"dialMs"`
-	LastDataAt  string        `json:"lastDataAt"`
-	Error       string        `json:"error"`
-	Logs        []LogLine     `json:"logs"`
+	Speeds      []SpeedSample     `json:"speeds"`
+	Running     bool              `json:"running"`
+	Phase       string            `json:"phase"`
+	Address     string            `json:"address"`
+	Active      int64             `json:"active"`
+	Connections uint64            `json:"connections"`
+	BytesUp     uint64            `json:"bytesUp"`
+	BytesDown   uint64            `json:"bytesDown"`
+	Failures    uint64            `json:"failures"`
+	Switches    uint64            `json:"switches"`
+	Rejected    uint64            `json:"rejected"`
+	Route       string            `json:"route"`
+	DialMS      int64             `json:"dialMs"`
+	LastDataAt  string            `json:"lastDataAt"`
+	Error       string            `json:"error"`
+	Logs        []LogLine         `json:"logs"`
+	Disconnects []DisconnectEvent `json:"disconnects"`
 }
 
 type Options struct {
 	CachePath         string
+	JournalPath       string
 	NetworkKey        string
 	Community         bool
 	Port              int
@@ -62,6 +65,7 @@ type Server struct {
 	slots                 chan struct{}
 	secret                []byte
 	router                *router
+	journal               *disconnectJournal
 	cachePath, networkKey string
 	firstReplyTimeout     time.Duration
 	active                atomic.Int64
@@ -70,6 +74,7 @@ type Server struct {
 	up                    atomic.Uint64
 	down                  atomic.Uint64
 	failures              atomic.Uint64
+	switches              atomic.Uint64
 	rejected              atomic.Uint64
 	lastData              time.Time
 	lastErr               string
@@ -94,7 +99,7 @@ func New(opts Options) (*Server, error) {
 	if opts.FirstReplyTimeout == 0 {
 		opts.FirstReplyTimeout = 3 * time.Second
 	}
-	server := &Server{secret: append([]byte(nil), opts.Secret...), clients: map[net.Conn]struct{}{}, slots: make(chan struct{}, opts.MaxClients), router: newRouter(opts.Dial, opts.Community), cachePath: opts.CachePath, networkKey: opts.NetworkKey, firstReplyTimeout: opts.FirstReplyTimeout, usedKeys: map[poolKey]struct{}{}, guardianSignal: make(chan struct{}, 1)}
+	server := &Server{secret: append([]byte(nil), opts.Secret...), clients: map[net.Conn]struct{}{}, slots: make(chan struct{}, opts.MaxClients), router: newRouter(opts.Dial, opts.Community), journal: newDisconnectJournal(opts.JournalPath), cachePath: opts.CachePath, networkKey: opts.NetworkKey, firstReplyTimeout: opts.FirstReplyTimeout, usedKeys: map[poolKey]struct{}{}, guardianSignal: make(chan struct{}, 1)}
 	server.router.tunnel = opts.Tunnel
 	return server, nil
 }
@@ -137,7 +142,7 @@ func (s *Server) Start(ctx context.Context, port int) error {
 func (s *Server) Snapshot() Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state := Snapshot{Speeds: append([]SpeedSample{}, s.speeds...), Phase: "stopped", Running: s.listener != nil && !s.closed, Active: s.active.Load(), Connections: s.connections.Load(), BytesUp: s.up.Load(), BytesDown: s.down.Load(), Failures: s.failures.Load(), Rejected: s.rejected.Load(), Route: s.lastRoute, DialMS: s.dialMS, Error: s.lastErr, Logs: append([]LogLine{}, s.logs...)}
+	state := Snapshot{Speeds: append([]SpeedSample{}, s.speeds...), Phase: "stopped", Running: s.listener != nil && !s.closed, Active: s.active.Load(), Connections: s.connections.Load(), BytesUp: s.up.Load(), BytesDown: s.down.Load(), Failures: s.failures.Load(), Switches: s.switches.Load(), Rejected: s.rejected.Load(), Route: s.lastRoute, DialMS: s.dialMS, Error: s.lastErr, Logs: append([]LogLine{}, s.logs...), Disconnects: s.journal.snapshot()}
 	if s.listener != nil {
 		state.Address = s.listener.Addr().String()
 	}
@@ -264,9 +269,96 @@ func (s *Server) Close() error {
 	return nil
 }
 
-type relayResult struct {
+const (
+	maxSeamlessSwitches  = 5
+	bufferedDownFrameMax = 256 << 10
+)
+
+type clientFrameMsg struct {
+	frame []byte
+	err   error
+}
+
+type upstreamChunkMsg struct {
+	data     []byte
+	midFrame bool
 	err      error
-	upstream bool
+}
+
+func startUpstreamReader(ctx context.Context, upstream peer, firstHeader []byte, dec cipher.Stream, protocol byte) (<-chan upstreamChunkMsg, <-chan struct{}) {
+	ch := make(chan upstreamChunkMsg, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(ch)
+		var decReader io.Reader = &cipher.StreamReader{S: dec, R: upstream}
+		if len(firstHeader) > 0 {
+			decReader = io.MultiReader(bytes.NewReader(firstHeader), decReader)
+		}
+		for {
+			header, size, err := readUpstreamPacketHeader(decReader, protocol)
+			if err != nil {
+				select {
+				case ch <- upstreamChunkMsg{err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			if size == 0 {
+				// Standalone 4-byte quick-acknowledgment token from Telegram.
+				select {
+				case ch <- upstreamChunkMsg{data: header, midFrame: false}:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			if size <= bufferedDownFrameMax {
+				frame := make([]byte, len(header)+int(size))
+				copy(frame, header)
+				if _, err := io.ReadFull(decReader, frame[len(header):]); err != nil {
+					select {
+					case ch <- upstreamChunkMsg{err: err}:
+					case <-ctx.Done():
+					}
+					return
+				}
+				select {
+				case ch <- upstreamChunkMsg{data: frame, midFrame: false}:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			// Large media frame: stream header then chunks while tracking midFrame.
+			select {
+			case ch <- upstreamChunkMsg{data: header, midFrame: true}:
+			case <-ctx.Done():
+				return
+			}
+			remaining := size
+			for remaining > 0 {
+				buf := make([]byte, min(remaining, 32<<10))
+				n, err := decReader.Read(buf)
+				if n > 0 {
+					remaining -= int64(n)
+					select {
+					case ch <- upstreamChunkMsg{data: buf[:n], midFrame: remaining > 0}:
+					case <-ctx.Done():
+						return
+					}
+				}
+				if err != nil {
+					select {
+					case ch <- upstreamChunkMsg{err: err, midFrame: remaining > 0}:
+					case <-ctx.Done():
+					}
+					return
+				}
+			}
+		}
+	}()
+	return ch, done
 }
 
 func writeAll(w io.Writer, b []byte) (int, error) {
@@ -323,48 +415,255 @@ func (s *Server) serve(client net.Conn) {
 	if err != nil {
 		if ctx.Err() == nil {
 			s.failures.Add(1)
+			s.journal.record(DisconnectEvent{
+				DC:         h.dc,
+				Media:      h.media,
+				Stage:      "dial",
+				Cause:      classifyDisconnect(err),
+				Detail:     err.Error(),
+				DurationMS: time.Since(started).Milliseconds(),
+			})
 			s.log("ERROR", "Маршрут Telegram недоступен", err.Error())
 			s.pingGuardian()
 		}
 		return
 	}
+
 	upstream := channel.upstream
 	candidate := channel.route
 	tgEnc, tgDec := channel.encrypt, channel.decrypt
 	label := channel.label
-	defer upstream.Close()
+	connectedAt := time.Now()
+	connUp := uint64(len(firstFrame))
+	connDown := uint64(0)
 	s.mu.Lock()
 	s.lastRoute = label
 	s.dialMS = time.Since(started).Milliseconds()
 	s.mu.Unlock()
-	results := make(chan relayResult, 2)
+
+	upCtx, upCancel := context.WithCancel(ctx)
+	upCh, upDone := startUpstreamReader(upCtx, upstream, channel.firstHeader, tgDec, h.protocol)
+
+	clientCh := make(chan clientFrameMsg, 1)
+	clientDone := make(chan struct{})
 	go func() {
+		defer close(clientDone)
 		for {
-			header, size, err := readPacketHeader(reader, h.protocol)
-			if err != nil {
-				results <- relayResult{err: err}
+			hdr, sz, rerr := readPacketHeader(reader, h.protocol)
+			if rerr != nil {
+				select {
+				case clientCh <- clientFrameMsg{err: rerr}:
+				case <-ctx.Done():
+				}
 				return
 			}
-			encoded := &cipher.StreamReader{S: tgEnc, R: io.MultiReader(bytes.NewReader(header), io.LimitReader(reader, size))}
-			err = upstream.WritePacket(encoded, size+int64(len(header)))
-			if err != nil {
-				results <- relayResult{err: err, upstream: !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF)}
+			frame := make([]byte, len(hdr)+int(sz))
+			copy(frame, hdr)
+			if _, rerr = io.ReadFull(reader, frame[len(hdr):]); rerr != nil {
+				select {
+				case clientCh <- clientFrameMsg{err: rerr}:
+				case <-ctx.Done():
+				}
 				return
 			}
-			s.up.Add(uint64(size) + uint64(len(header)))
+			select {
+			case clientCh <- clientFrameMsg{frame: frame}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
-	go func() {
-		buf := buffers.Get().([]byte)
-		defer buffers.Put(buf)
-		upstreamReader := io.MultiReader(bytes.NewReader(channel.firstReply), upstream)
-		for {
-			n, err := upstreamReader.Read(buf)
-			if n > 0 {
-				tgDec.XORKeyStream(buf[:n], buf[:n])
-				h.encrypt.XORKeyStream(buf[:n], buf[:n])
+
+	closeCurrentUpstream := func() {
+		upCancel()
+		_ = upstream.Close()
+		<-upDone
+	}
+	defer func() {
+		cancel()
+		_ = client.Close()
+		closeCurrentUpstream()
+		<-clientDone
+	}()
+
+	const (
+		maxPendingReplayFrames = 8
+		maxPendingReplayBytes  = 256 << 10
+	)
+	var pendingFrames [][]byte
+	pendingBytes := 0
+	pendingOverflow := false
+	pushPending := func(frame []byte) {
+		if pendingOverflow {
+			return
+		}
+		if len(pendingFrames) >= maxPendingReplayFrames || pendingBytes+len(frame) > maxPendingReplayBytes {
+			pendingFrames = nil
+			pendingBytes = 0
+			pendingOverflow = true
+			return
+		}
+		pendingFrames = append(pendingFrames, frame)
+		pendingBytes += len(frame)
+	}
+	popPending := func() {
+		if pendingOverflow {
+			pendingOverflow = false
+			return
+		}
+		if len(pendingFrames) > 0 {
+			pendingBytes -= len(pendingFrames[0])
+			pendingFrames = pendingFrames[1:]
+		}
+	}
+
+	midFrame := false
+	switchesUsed := 0
+	var mediaRate mediaDeliverySample
+	defer func() {
+		if h.media {
+			if rate := mediaRate.flush(); rate > 0 {
+				s.router.recordMediaRate(candidate.id, rate)
+			}
+		}
+	}()
+
+	trySwitch := func(stage string, causeErr error, extraFrame []byte) bool {
+		duration := time.Since(connectedAt)
+		cause := classifyDisconnect(causeErr)
+		cleanClose := errors.Is(causeErr, io.EOF) || websocket.IsCloseError(causeErr, websocket.CloseNormalClosure, websocket.CloseGoingAway)
+		if !cleanClose || duration < 30*time.Second {
+			s.router.recordDrop(candidate, duration, causeErr)
+		} else {
+			s.router.recordCleanSession(candidate.id, duration)
+		}
+		ev := DisconnectEvent{
+			RouteID:    candidate.id,
+			RouteLabel: label,
+			Transport:  routeTransport(candidate),
+			DC:         h.dc,
+			Media:      h.media,
+			Stage:      stage,
+			Cause:      cause,
+			Detail:     causeErr.Error(),
+			DurationMS: duration.Milliseconds(),
+			BytesUp:    connUp,
+			BytesDown:  connDown,
+		}
+		closeCurrentUpstream()
+		replay := make([][]byte, 0, len(pendingFrames)+1)
+		replay = append(replay, pendingFrames...)
+		if len(extraFrame) > 0 {
+			replay = append(replay, extraFrame)
+		}
+		switch {
+		case midFrame:
+			ev.RecoveryFailure = "partial_frame"
+		case pendingOverflow:
+			ev.RecoveryFailure = "replay_limit"
+		case switchesUsed >= maxSeamlessSwitches:
+			ev.RecoveryFailure = "switch_limit"
+		case ctx.Err() != nil:
+			ev.RecoveryFailure = "cancelled"
+		default:
+			replacement, switchErr := s.switchChannel(ctx, h, candidate.id, replay)
+			if switchErr == nil {
+				switchesUsed++
+				s.switches.Add(1)
+				ev.Recovered = true
+				ev.SwitchedTo = replacement.label
+				s.journal.record(ev)
+				upstream = replacement.upstream
+				candidate = replacement.route
+				tgEnc, tgDec = replacement.encrypt, replacement.decrypt
+				label = replacement.label
+				connectedAt = time.Now()
+				var replayedBytes uint64
+				for _, f := range replay {
+					replayedBytes += uint64(len(f))
+				}
+				connUp = replayedBytes
+				connDown = 0
+				mediaRate = mediaDeliverySample{}
+				if replayedBytes > 0 {
+					s.up.Add(replayedBytes)
+				}
+				pendingFrames = nil
+				pendingBytes = 0
+				pendingOverflow = false
+				s.mu.Lock()
+				s.lastRoute = label
+				s.lastErr = ""
+				s.mu.Unlock()
+				s.log("INFO", "Маршрут Telegram переключён без обрыва", ev.RouteLabel+" → "+label)
+				upCtx, upCancel = context.WithCancel(ctx)
+				upCh, upDone = startUpstreamReader(upCtx, upstream, replacement.firstHeader, tgDec, h.protocol)
+				s.pingGuardian()
+				return true
+			}
+			switch {
+			case ctx.Err() != nil:
+				ev.RecoveryFailure = "cancelled"
+			case errors.Is(switchErr, context.DeadlineExceeded):
+				ev.RecoveryFailure = "switch_timeout"
+			default:
+				ev.RecoveryFailure = "replacement_failed"
+			}
+		}
+		s.journal.record(ev)
+		if !cleanClose {
+			s.failures.Add(1)
+			s.log("ERROR", "Соединение Telegram прервано", label+": "+causeErr.Error())
+			s.pingGuardian()
+		} else {
+			s.log("INFO", "Канал Telegram закрыт", label)
+		}
+		return false
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-clientCh:
+			if msg.err != nil {
+				s.router.recordCleanSession(candidate.id, time.Since(connectedAt))
+				s.log("INFO", "Канал Telegram закрыт", label)
+				return
+			}
+			encoded := append([]byte(nil), msg.frame...)
+			tgEnc.XORKeyStream(encoded, encoded)
+			writeErr := upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded)))
+			if writeErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if !trySwitch("relay_write", writeErr, msg.frame) {
+					return
+				}
+				continue
+			}
+			pushPending(msg.frame)
+			connUp += uint64(len(msg.frame))
+			s.up.Add(uint64(len(msg.frame)))
+		case msg, ok := <-upCh:
+			if !ok {
+				return
+			}
+			if len(msg.data) > 0 {
+				if !msg.midFrame {
+					popPending()
+				}
+				out := make([]byte, len(msg.data))
+				h.encrypt.XORKeyStream(out, msg.data)
 				_ = client.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				written, writeErr := writeAll(client, buf[:n])
+				written, writeErr := writeAll(client, out)
+				connDown += uint64(written)
+				if h.media && written > 0 {
+					if rate := mediaRate.observe(time.Now(), written); rate > 0 {
+						s.router.recordMediaRate(candidate.id, rate)
+					}
+				}
 				s.mu.Lock()
 				s.down.Add(uint64(written))
 				if written > 0 {
@@ -373,38 +672,19 @@ func (s *Server) serve(client net.Conn) {
 				}
 				s.mu.Unlock()
 				if writeErr != nil {
-					results <- relayResult{err: writeErr}
+					s.router.recordCleanSession(candidate.id, time.Since(connectedAt))
+					return
+				}
+				midFrame = msg.midFrame
+			}
+			if msg.err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if !trySwitch("relay_read", msg.err, nil) {
 					return
 				}
 			}
-			if err != nil {
-				results <- relayResult{err: err, upstream: true}
-				return
-			}
 		}
-	}()
-	var selected relayResult
-	consumed := 0
-	select {
-	case selected = <-results:
-		consumed = 1
-	case <-ctx.Done():
-	}
-	cancel()
-	_ = client.Close()
-	_ = upstream.Close()
-	for consumed < 2 {
-		<-results
-		consumed++
-	}
-	if selected.upstream && s.ctx.Err() == nil && selected.err != nil && !errors.Is(selected.err, io.EOF) && !websocket.IsCloseError(selected.err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-		s.router.failure(candidate.id, selected.err)
-		s.failures.Add(1)
-		s.log("ERROR", "Соединение Telegram прервано", label+": "+selected.err.Error())
-		// Будим стража: немедленно перепроверить маршруты и наполнить
-		// тёплый пул, чтобы переподключение Telegram было мгновенным.
-		s.pingGuardian()
-	} else {
-		s.log("INFO", "Канал Telegram закрыт", label)
 	}
 }

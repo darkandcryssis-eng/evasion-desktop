@@ -87,14 +87,38 @@ func TestLocalDialQueueDoesNotCoolDownRoute(t *testing.T) {
 	})
 	candidate := routesFor(4, true)[0]
 	r.success(candidate.id, time.Millisecond)
-	for range cap(r.slots) {
-		r.slots <- struct{}{}
+	for range cap(r.background) {
+		r.background <- struct{}{}
 	}
 	r.probeRoute(t.Context(), candidate, 20*time.Millisecond)
 	h := r.health[candidate.id]
 	if dials.Load() != 0 || !h.success || h.failures != 0 || !h.retryAt.IsZero() {
 		t.Fatal("a local queue timeout was treated as a remote failure", h)
 	}
+}
+
+func TestForegroundDialBudgetStartsAfterQueue(t *testing.T) {
+	const budget = 100 * time.Millisecond
+	candidate := routesFor(2, true)[0]
+	r := newRouter(func(ctx context.Context, _ route) (peer, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) < budget/2 {
+			return nil, errors.New("queue consumed the network dial budget")
+		}
+		return inertPeer{}, nil
+	})
+	for range cap(r.slots) {
+		r.slots <- struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	timer := time.AfterFunc(2*budget, func() { <-r.slots })
+	defer timer.Stop()
+	p, _, err := r.dialRouteTimed(ctx, candidate, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
 }
 
 func TestBackgroundDialsLeaveRoomForNewConnections(t *testing.T) {
@@ -127,6 +151,9 @@ func TestBackgroundDialsLeaveRoomForNewConnections(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("background dials did not start")
 		}
+	}
+	if got := len(r.slots); got != 0 {
+		t.Fatalf("background dials occupied %d foreground slots", got)
 	}
 	p, err := r.dialRoute(ctx, routesFor(2, false)[0])
 	if err != nil {

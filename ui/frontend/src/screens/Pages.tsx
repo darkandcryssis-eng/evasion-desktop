@@ -10,6 +10,7 @@ import { loadOptions } from "../preferences";
 import { gameConnectionNote, gameStatus } from "../gameStatus";
 import { speedChart } from "../speedChart";
 import { telegramBadge } from "../telegramBadge";
+import { DisconnectJournalPanel } from "../components/TelegramInsights";
 import { usePoll } from "../hooks";
 import { Badge, Button, Collapse, Disclosure, Feed, Glass, Icon, Note, PageHead, Row, Segmented, Ticker, Toggle, fileName, traffic, type Tone } from "../ui";
 import type { Page } from "../types";
@@ -277,6 +278,7 @@ export function TelegramScreen({ state, onRefresh }: { state?: TelegramState; on
         {state?.running && state.phase === "waiting" && <Note>Нажмите «Подключить в Telegram» и подтвердите прокси в клиенте. Статус изменится после реального обмена данными.</Note>}
       </Glass>
       <SpeedGraph samples={state?.speeds} running={!!state?.running} />
+      <DisconnectJournalPanel disconnects={state?.disconnects} switches={state?.switches} />
       <Disclosure icon="settings" title="Параметры подключения" note="Обычно менять не требуется">
         <Row title="Локальный порт" note="Меняется только при выключенном прокси"><input className="field field--num" type="number" min={1024} max={65535} aria-label="Локальный порт" value={port ?? state?.port ?? 17655} disabled={state?.running || busy} onChange={(e) => setPort(e.target.value)} /></Row>
         <Row title="Резервные узлы сообщества" note="Используются, если прямой маршрут заблокирован"><Toggle label="Резервные узлы сообщества" checked={community ?? state?.community ?? true} disabled={state?.running || busy} onChange={setCommunity} /></Row>

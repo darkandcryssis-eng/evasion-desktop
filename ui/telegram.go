@@ -26,26 +26,46 @@ type telegramSettings struct {
 	Secret    string `json:"secret"`
 }
 
+type TelegramDisconnect struct {
+	At               string `json:"at"`
+	Route            string `json:"route"`
+	RouteLabel       string `json:"routeLabel"`
+	Transport        string `json:"transport"`
+	DC               int    `json:"dc"`
+	Media            bool   `json:"media"`
+	Stage            string `json:"stage"`
+	Cause            string `json:"cause"`
+	Detail           string `json:"detail,omitempty"`
+	DurationMS       int64  `json:"durationMs"`
+	BytesUp          uint64 `json:"bytesUp"`
+	BytesDown        uint64 `json:"bytesDown"`
+	Recovered        bool   `json:"recovered"`
+	RecoveryFailure  string `json:"recoveryFailure,omitempty"`
+	ReplacementRoute string `json:"replacementRoute,omitempty"`
+}
+
 type TelegramState struct {
-	Speeds      []SpeedSample `json:"speeds"`
-	Running     bool          `json:"running"`
-	Phase       string        `json:"phase"`
-	Address     string        `json:"address"`
-	Active      int64         `json:"active"`
-	Connections uint64        `json:"connections"`
-	BytesUp     uint64        `json:"bytesUp"`
-	BytesDown   uint64        `json:"bytesDown"`
-	Failures    uint64        `json:"failures"`
-	Rejected    uint64        `json:"rejected"`
-	Route       string        `json:"route"`
-	DialMS      int64         `json:"dialMs"`
-	LastDataAt  string        `json:"lastDataAt"`
-	Error       string        `json:"error"`
-	Logs        []LogLine     `json:"logs"`
-	Community   bool          `json:"community"`
-	Enabled     bool          `json:"enabled"`
-	Port        int           `json:"port"`
-	Link        string        `json:"link"`
+	Speeds      []SpeedSample        `json:"speeds"`
+	Running     bool                 `json:"running"`
+	Phase       string               `json:"phase"`
+	Address     string               `json:"address"`
+	Active      int64                `json:"active"`
+	Connections uint64               `json:"connections"`
+	BytesUp     uint64               `json:"bytesUp"`
+	BytesDown   uint64               `json:"bytesDown"`
+	Failures    uint64               `json:"failures"`
+	Switches    uint64               `json:"switches"`
+	Rejected    uint64               `json:"rejected"`
+	Route       string               `json:"route"`
+	DialMS      int64                `json:"dialMs"`
+	LastDataAt  string               `json:"lastDataAt"`
+	Error       string               `json:"error"`
+	Logs        []LogLine            `json:"logs"`
+	Disconnects []TelegramDisconnect `json:"disconnects"`
+	Community   bool                 `json:"community"`
+	Enabled     bool                 `json:"enabled"`
+	Port        int                  `json:"port"`
+	Link        string               `json:"link"`
 }
 
 func telegramSettingsPath() string { return filepath.Join(dataDir(), "telegram-proxy.json") }
@@ -112,9 +132,28 @@ func (a *App) GetTelegramState() TelegramState {
 	if a.telegram != nil {
 		snapshot = a.telegram.Snapshot()
 	}
-	state := TelegramState{Running: snapshot.Running, Phase: snapshot.Phase, Address: snapshot.Address, Active: snapshot.Active, Connections: snapshot.Connections, BytesUp: snapshot.BytesUp, BytesDown: snapshot.BytesDown, Failures: snapshot.Failures, Rejected: snapshot.Rejected, Route: snapshot.Route, DialMS: snapshot.DialMS, LastDataAt: snapshot.LastDataAt, Error: snapshot.Error, Logs: []LogLine{}, Enabled: cfg.Enabled, Port: cfg.Port, Link: telegramLink(cfg), Community: cfg.Community}
+	state := TelegramState{Running: snapshot.Running, Phase: snapshot.Phase, Address: snapshot.Address, Active: snapshot.Active, Connections: snapshot.Connections, BytesUp: snapshot.BytesUp, BytesDown: snapshot.BytesDown, Failures: snapshot.Failures, Switches: snapshot.Switches, Rejected: snapshot.Rejected, Route: snapshot.Route, DialMS: snapshot.DialMS, LastDataAt: snapshot.LastDataAt, Error: snapshot.Error, Logs: []LogLine{}, Disconnects: []TelegramDisconnect{}, Enabled: cfg.Enabled, Port: cfg.Port, Link: telegramLink(cfg), Community: cfg.Community}
 	for _, line := range snapshot.Logs {
 		state.Logs = append(state.Logs, LogLine{At: line.At, Level: line.Level, Msg: line.Msg, Attrs: line.Attrs})
+	}
+	for _, ev := range snapshot.Disconnects {
+		state.Disconnects = append(state.Disconnects, TelegramDisconnect{
+			At:               ev.At,
+			Route:            ev.RouteID,
+			RouteLabel:       ev.RouteLabel,
+			Transport:        ev.Transport,
+			DC:               ev.DC,
+			Media:            ev.Media,
+			Stage:            ev.Stage,
+			Cause:            ev.Cause,
+			Detail:           ev.Detail,
+			DurationMS:       ev.DurationMS,
+			BytesUp:          ev.BytesUp,
+			BytesDown:        ev.BytesDown,
+			Recovered:        ev.Recovered,
+			RecoveryFailure:  ev.RecoveryFailure,
+			ReplacementRoute: ev.SwitchedTo,
+		})
 	}
 	state.Speeds = make([]SpeedSample, 0, len(snapshot.Speeds))
 	for _, sample := range snapshot.Speeds {
@@ -168,7 +207,8 @@ func (a *App) startTelegramProxyLocked(port int) error {
 	}
 	secret, _ := hex.DecodeString(cfg.Secret)
 	cachePath, networkKey := telegramRouteCache(dataDir())
-	opts := tgproxy.Options{Secret: secret, Community: cfg.Community, CachePath: cachePath, NetworkKey: networkKey}
+	journalPath := filepath.Join(dataDir(), "telegram-disconnects.jsonl")
+	opts := tgproxy.Options{Secret: secret, Community: cfg.Community, CachePath: cachePath, JournalPath: journalPath, NetworkKey: networkKey}
 	if gameRouteView(dataDir()).Configured {
 		opts.Tunnel = tgproxy.CONNECTDialer(defaultTelegramTunnelAddress)
 	}

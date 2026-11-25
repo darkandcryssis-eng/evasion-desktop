@@ -139,3 +139,48 @@ func readPacketHeader(r io.Reader, protocol byte) ([]byte, int64, error) {
 	}
 	return header[:n], int64(size), nil
 }
+
+// readUpstreamPacketHeader reads a server-to-client MTProto frame header.
+// Unlike client-to-server headers (where the MSB requests a quick ack for the
+// accompanying payload), a server-to-client frame with MSB set is a standalone
+// 4-byte quick-acknowledgment token with zero payload bytes.
+func readUpstreamPacketHeader(r io.Reader, protocol byte) ([]byte, int64, error) {
+	header := make([]byte, 4)
+	var size uint32
+	n := 4
+	if protocol == 0xef {
+		if _, err := io.ReadFull(r, header[:1]); err != nil {
+			return nil, 0, err
+		}
+		if header[0]&0x80 != 0 {
+			if _, err := io.ReadFull(r, header[1:]); err != nil {
+				return nil, 0, err
+			}
+			return header[:4], 0, nil
+		}
+		if header[0] == 0x7f {
+			if _, err := io.ReadFull(r, header[1:]); err != nil {
+				return nil, 0, err
+			}
+			size = uint32(header[1]) | uint32(header[2])<<8 | uint32(header[3])<<16
+		} else {
+			size = uint32(header[0])
+			n = 1
+		}
+		size *= 4
+	} else if protocol == 0xee || protocol == 0xdd {
+		if _, err := io.ReadFull(r, header); err != nil {
+			return nil, 0, err
+		}
+		if header[3]&0x80 != 0 {
+			return header[:4], 0, nil
+		}
+		size = binary.LittleEndian.Uint32(header)
+	} else {
+		return nil, 0, errors.New("unsupported MTProto framing")
+	}
+	if size == 0 || size > maxPacket {
+		return nil, 0, errors.New("invalid MTProto packet size")
+	}
+	return header[:n], int64(size), nil
+}
