@@ -155,6 +155,33 @@ func TestDialContextRejectsUDP(t *testing.T) {
 	}
 }
 
+func TestListenUDP(t *testing.T) {
+	acc := goodAccount(t)
+	tun, err := Open(Options{Account: acc})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer tun.Close()
+
+	pc4, err := tun.ListenUDP(false)
+	if err != nil {
+		t.Fatalf("ListenUDP(false): %v", err)
+	}
+	defer pc4.Close()
+	if pc4.LocalAddr() == nil {
+		t.Fatal("ListenUDP(false) returned nil LocalAddr")
+	}
+
+	pc6, err := tun.ListenUDP(true)
+	if err != nil {
+		t.Fatalf("ListenUDP(true): %v", err)
+	}
+	defer pc6.Close()
+	if pc6.LocalAddr() == nil {
+		t.Fatal("ListenUDP(true) returned nil LocalAddr")
+	}
+}
+
 // TestDialContextTimesOutWithUnreachablePeer: с заведомо недостижимым
 // peer-ом (localhost порт 65535), DialContext с коротким контекстом обязан
 // честно отваливаться по таймауту. Это проверка, что netstack реагирует на

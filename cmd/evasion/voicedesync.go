@@ -584,17 +584,25 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 	// есть, но форму IP discovery не распознаём.
 	var acted, actedTelegram, dgrams int
 	var lastReport, lastTelegramReport time.Time
-	tgEngine := newTelegramCallEngine(newTelegramUDPOwner(), newTelegramReflectorTracker())
+	owner := newTelegramUDPOwner()
+	tgEngine := newTelegramCallEngine(owner, newTelegramReflectorTracker())
+	tgTunnel := newTelegramCallTunnel(ctx, owner, logger)
+	defer tgTunnel.Close()
+	logStop := func() {
+		tg := tgEngine.Stats()
+		ws := tgTunnel.Stats()
+		logger.Info("десинк голоса остановлен",
+			"применено", acted, "применено_telegram", actedTelegram, "датаграмм_udp", dgrams,
+			"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies,
+			"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received)
+	}
 	for {
 		pkt, err := conn.Recv()
 		if err != nil {
 			// Финальная сводка печатается всегда, даже при нулях: ноль датаграмм
 			// — это ответ (голос не на этих портах / канал не подключался), а не
 			// отсутствие данных.
-			tg := tgEngine.Stats()
-			logger.Info("десинк голоса остановлен",
-				"применено", acted, "применено_telegram", actedTelegram, "датаграмм_udp", dgrams,
-				"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies)
+			logStop()
 			return
 		}
 		if pkt.Dir == core.DirectionInbound {
@@ -603,10 +611,7 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 				logger.Warn("десинк голоса: не удалось пропустить входящий пакет", "ошибка", err)
 			}
 			if ctx.Err() != nil {
-				tg := tgEngine.Stats()
-				logger.Info("десинк голоса остановлен",
-					"применено", acted, "применено_telegram", actedTelegram, "датаграмм_udp", dgrams,
-					"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies)
+				logStop()
 				return
 			}
 			continue
@@ -621,19 +626,21 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 			}
 			acted++
 			actedTelegram++
+			tg := tgEngine.Stats()
+			if tg.Replies == 0 && (tg.STUN+tg.DTLS+tg.Legacy) >= telegramCallWARPTrigger {
+				tgTunnel.NotifyUnanswered()
+			}
 			if actedTelegram == 1 || time.Since(lastTelegramReport) >= voiceReportEvery {
-				tg := tgEngine.Stats()
+				ws := tgTunnel.Stats()
 				logger.Info("десинк голоса применён (звонок Telegram)",
 					"применено_telegram", actedTelegram, "stun", tg.STUN, "dtls", tg.DTLS,
 					"ответов", tg.Replies, "стратегия", tg.Strategy, "целей", tg.Targets,
+					"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received,
 					"применено", acted, "датаграмм_udp", dgrams)
 				lastTelegramReport = time.Now()
 			}
 			if ctx.Err() != nil {
-				tg := tgEngine.Stats()
-				logger.Info("десинк голоса остановлен",
-					"применено", acted, "применено_telegram", actedTelegram, "датаграмм_udp", dgrams,
-					"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies)
+				logStop()
 				return
 			}
 			continue
@@ -654,10 +661,7 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 				lastReport = time.Now()
 			}
 			if ctx.Err() != nil {
-				tg := tgEngine.Stats()
-				logger.Info("десинк голоса остановлен",
-					"применено", acted, "применено_telegram", actedTelegram, "датаграмм_udp", dgrams,
-					"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies)
+				logStop()
 				return
 			}
 			continue
@@ -671,17 +675,16 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 		// voiceReportEvery и только когда датаграммы вообще были.
 		if dgrams > 0 && time.Since(lastReport) >= voiceReportEvery {
 			tg := tgEngine.Stats()
+			ws := tgTunnel.Stats()
 			logger.Info("десинк голоса: сводка",
 				"датаграмм_udp", dgrams, "применено", acted, "применено_telegram", actedTelegram,
 				"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies,
-				"telegram_стратегия", tg.Strategy)
+				"telegram_стратегия", tg.Strategy,
+				"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received)
 			lastReport = time.Now()
 		}
 		if ctx.Err() != nil {
-			tg := tgEngine.Stats()
-			logger.Info("десинк голоса остановлен",
-				"применено", acted, "применено_telegram", actedTelegram, "датаграмм_udp", dgrams,
-				"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies)
+			logStop()
 			return
 		}
 	}

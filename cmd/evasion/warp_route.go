@@ -270,6 +270,10 @@ func warpWorthy(err error) bool {
 // openWARP регистрирует устройство при первом обращении, подбирает порт, на
 // котором провайдер пропускает WARP, и проверяет туннель настоящим соединением.
 func openWARP(ctx context.Context, dir string, logger *slog.Logger) (warpDialer, error) {
+	return openWARPTunnel(ctx, dir, logger)
+}
+
+func openWARPTunnel(ctx context.Context, dir string, logger *slog.Logger) (*tunnel.Tunnel, error) {
 	path := filepath.Join(dir, warpStateFile)
 	acc, err := loadWARPAccount(path)
 	if err != nil {

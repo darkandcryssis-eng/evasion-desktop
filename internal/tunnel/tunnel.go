@@ -50,6 +50,8 @@ type Tunnel struct {
 	stack    *netstack.Net
 	logger   *slog.Logger
 	endpoint string
+	ipv4     netip.Addr
+	ipv6     netip.Addr
 }
 
 // Endpoint возвращает адрес пира ("IP:порт"), с которым поднят туннель.
@@ -165,7 +167,28 @@ func Open(opts Options) (*Tunnel, error) {
 		return nil, fmt.Errorf("tunnel: Up: %w", err)
 	}
 
-	return &Tunnel{device: dev, stack: netStack, logger: logger, endpoint: endpoint}, nil
+	return &Tunnel{
+		device:   dev,
+		stack:    netStack,
+		logger:   logger,
+		endpoint: endpoint,
+		ipv4:     opts.Account.IPv4,
+		ipv6:     opts.Account.IPv6,
+	}, nil
+}
+
+// ListenUDP открывает несвязанный UDP-сокет внутри туннеля для IPv4 или IPv6.
+// Один сокет обслуживает все удалённые направления с сохранением внешнего
+// порта (Cone NAT), что нужно для STUN/TURN/DTLS/SRTP в звонках Telegram.
+func (t *Tunnel) ListenUDP(ipv6 bool) (net.PacketConn, error) {
+	ip := t.ipv4
+	if ipv6 {
+		ip = t.ipv6
+	}
+	if !ip.IsValid() {
+		return nil, fmt.Errorf("tunnel: адрес для UDP (ipv6=%v) не задан", ipv6)
+	}
+	return t.stack.ListenUDPAddrPort(netip.AddrPortFrom(ip, 0))
 }
 
 // DialContext открывает TCP-соединение через туннель.
