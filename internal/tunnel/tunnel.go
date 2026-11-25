@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -293,6 +294,47 @@ func (t *Tunnel) ProbeUDP(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// ExitInfo сообщает, через какой узел Cloudflare туннель выходит в интернет
+// (colo, страна и внешний адрес из /cdn-cgi/trace). Нужен для диагностики:
+// anycast-адрес пира не говорит, в какой дата-центр провайдер привёл туннель.
+func (t *Tunnel) ExitInfo(ctx context.Context) (string, error) {
+	client := &http.Client{Transport: &http.Transport{
+		DialContext:       t.stack.DialContext,
+		DisableKeepAlives: true,
+	}}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://1.1.1.1/cdn-cgi/trace", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("tunnel: trace: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return "", fmt.Errorf("tunnel: trace: %w", err)
+	}
+	return parseTrace(string(body)), nil
+}
+
+func parseTrace(body string) string {
+	fields := map[string]string{}
+	for _, line := range strings.Split(body, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			fields[k] = v
+		}
+	}
+	out := make([]string, 0, 4)
+	for _, k := range []string{"colo", "loc", "ip", "warp"} {
+		if v := fields[k]; v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // DialContext открывает TCP-соединение через туннель.
