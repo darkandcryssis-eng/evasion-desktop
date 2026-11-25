@@ -5,6 +5,7 @@ import { loadOptions } from "../preferences";
 import { gameStatus, gameConnectionNote } from "../gameStatus";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
+import { startVisibleLoop } from "../windowActivity";
 
 const defaults: GameFilterSettings = { adaptive: true, mode: "auto", protocol: "both", executables: [], onDemand: true };
 export function GamesScreen({onDiagnosticsRequested}:{onDiagnosticsRequested:()=>void}) {
@@ -18,9 +19,8 @@ export function GamesScreen({onDiagnosticsRequested}:{onDiagnosticsRequested:()=
  const connectionNote=gameConnectionNote(view);
  useEffect(()=>{
   let alive=true;
-  const refresh=async()=>{try{const next=await api.getGameFilter();if(alive)setView(next)}catch(e){if(alive)setError(String(e))}};
-  void refresh();const timer=window.setInterval(()=>void refresh(),1500);
-  return()=>{alive=false;window.clearInterval(timer)};
+  const loop=startVisibleLoop(async()=>{try{const next=await api.getGameFilter();if(alive)setView(next)}catch(e){if(alive)setError(String(e))}},1500);
+  return()=>{alive=false;loop.stop()};
  },[]);
  const persist=async(patch:Partial<GameFilterSettings>,start:boolean)=>{
   setBusy(true);setError("");

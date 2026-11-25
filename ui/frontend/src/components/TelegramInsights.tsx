@@ -3,6 +3,7 @@ import { useEffect, useId, useState } from "react";
 import { api, type SpeedSample, type TelegramDisconnect, type TelegramRoute } from "../api";
 import { speedChart } from "../speedChart";
 import { Badge, Disclosure } from "../ui";
+import { startVisibleLoop } from "../windowActivity";
 import { StatusBadge } from "./StatusBadge";
 import { traffic } from "./TelegramStatus";
 
@@ -30,10 +31,9 @@ export function RoutePanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    let disposed = false, pending = false;
-    const load = async () => { if (pending) return; pending = true; try { const value = await api.getTelegramRoutes(); if (!disposed) setRoutes(value || []); } catch { if (!disposed) setError("Не удалось получить состояние маршрутов"); } finally { pending = false; } };
-    void load(); const timer = window.setInterval(() => void load(), 2000);
-    return () => { disposed = true; window.clearInterval(timer); };
+    let disposed = false;
+    const loop = startVisibleLoop(async () => { try { const value = await api.getTelegramRoutes(); if (!disposed) setRoutes(value || []); } catch { if (!disposed) setError("Не удалось получить состояние маршрутов"); } }, 2000);
+    return () => { disposed = true; loop.stop(); };
   }, []);
   const check = async () => { setBusy(true); setError(""); try { setRoutes(await api.checkTelegramRoutes()); } catch (e) { setError(String(e)); } finally { setBusy(false); } };
   return <section className="insight-panel route-panel" aria-label="Состояние резервных маршрутов">

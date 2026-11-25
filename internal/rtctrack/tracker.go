@@ -1,6 +1,7 @@
 package rtctrack
 
 import (
+	"container/list"
 	"fmt"
 	"sort"
 	"sync"
@@ -109,11 +110,19 @@ func (s Stat) LivenessScore() int {
 	return (sr + dwellPermille) / 2
 }
 
+const maxTrackedPairs = 4096
+
+type trackedStat struct {
+	Stat
+	recency *list.Element
+}
+
 // Tracker — потокобезопасный агрегатор.
 type Tracker struct {
-	mu    sync.Mutex
-	stats map[Pair]*Stat
-	now   func() time.Time
+	mu      sync.Mutex
+	stats   map[Pair]*trackedStat
+	recency list.List
+	now     func() time.Time
 }
 
 // NewTracker создаёт пустой трекер. now можно задать для детерминированных
@@ -123,7 +132,7 @@ func NewTracker(now func() time.Time) *Tracker {
 		now = time.Now
 	}
 	return &Tracker{
-		stats: make(map[Pair]*Stat),
+		stats: make(map[Pair]*trackedStat),
 		now:   now,
 	}
 }
@@ -133,10 +142,20 @@ func NewTracker(now func() time.Time) *Tracker {
 func (t *Tracker) get(p Pair) *Stat {
 	s := t.stats[p]
 	if s == nil {
-		s = &Stat{}
+		if len(t.stats) == maxTrackedPairs {
+			t.remove(t.recency.Back().Value.(Pair))
+		}
+		s = &trackedStat{recency: t.recency.PushFront(p)}
 		t.stats[p] = s
+	} else {
+		t.recency.MoveToFront(s.recency)
 	}
-	return s
+	return &s.Stat
+}
+
+func (t *Tracker) remove(p Pair) {
+	t.recency.Remove(t.stats[p].recency)
+	delete(t.stats, p)
 }
 
 // Observe регистрирует замеченное начало соединения.
@@ -185,7 +204,7 @@ func (t *Tracker) Snapshot() map[Pair]Stat {
 	defer t.mu.Unlock()
 	out := make(map[Pair]Stat, len(t.stats))
 	for p, s := range t.stats {
-		out[p] = *s
+		out[p] = s.Stat
 	}
 	return out
 }
@@ -241,7 +260,7 @@ func (t *Tracker) Prune(olderThan time.Duration) int {
 	removed := 0
 	for p, s := range t.stats {
 		if s.LastAt.Before(cutoff) {
-			delete(t.stats, p)
+			t.remove(p)
 			removed++
 		}
 	}

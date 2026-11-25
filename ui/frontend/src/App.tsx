@@ -9,6 +9,7 @@ import { Boundary, Button, Dialog, Icon, Tips, type IconName } from "./ui";
 import { HomeScreen, telegramMode } from "./screens/Home";
 import { DiagnosticsScreen, GamesScreen, ServicesScreen, SettingsScreen, TelegramScreen } from "./screens/Pages";
 import type { Page, Theme } from "./types";
+import { setTrayHidden, watchWindowActivity } from "./windowActivity";
 
 const pages: { id: Page; title: string; icon: IconName }[] = [
   { id: "home", title: "Главная", icon: "home" }, { id: "services", title: "Сервисы", icon: "layers" },
@@ -27,6 +28,15 @@ export default function App() {
   const [pending, setPending] = useState<StartOptions | null>(null);
   const engine = useEngine();
   const viewport = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const off = EventsOn("evasion:window", (state: unknown) => {
+      if (state === "hidden" || state === "shown") setTrayHidden(state === "hidden");
+    });
+    const unwatch = watchWindowActivity((active) => {
+      document.documentElement.toggleAttribute("data-window-hidden", !active);
+    });
+    return () => { off(); unwatch(); };
+  }, []);
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.motion = motion ? "full" : "reduced";

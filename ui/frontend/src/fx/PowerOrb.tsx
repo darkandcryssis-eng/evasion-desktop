@@ -2,6 +2,7 @@
 // from a seed at the bottom, a liquid drop climbs from it and settles as the centre
 // dot; turning off, the ring tips over like a coin and breaks into fading arcs.
 import { useEffect, useRef } from "react";
+import { watchWindowActivity } from "../windowActivity";
 
 export type OrbMode = "off" | "on" | "busy" | "failed";
 
@@ -216,8 +217,13 @@ export function PowerOrb({ mode, motion = true }: { mode: OrbMode; motion?: bool
       s.hover += ((hovering ? 1 : 0) - s.hover) * k;
       render(c, layer, s, dpr);
     };
-    raf = requestAnimationFrame(frame);
+    const unwatch = watchWindowActivity((active) => {
+      if (!active) { cancelAnimationFrame(raf); return; }
+      last = performance.now();
+      raf = requestAnimationFrame(frame);
+    });
     return () => {
+      unwatch();
       cancelAnimationFrame(raf);
       host.removeEventListener("pointerenter", enter); host.removeEventListener("pointerleave", leave);
       host.removeEventListener("focus", enter); host.removeEventListener("blur", leave);
