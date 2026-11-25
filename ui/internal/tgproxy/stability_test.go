@@ -555,3 +555,46 @@ func TestFailoverNotStarvedByFullDialQueue(t *testing.T) {
 	}
 	_ = ch.upstream.Close()
 }
+
+func TestCommunityPlainWSNotStarvedByBlackholedCommunityWSS(t *testing.T) {
+	r := newRouter(func(ctx context.Context, c route) (peer, error) {
+		if c.community && c.plain {
+			return inertPeer{}, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, true)
+	defer r.pool.close()
+
+	// Activate preferTLS (e.g. after a non-TLS drop) with no verified plain route yet.
+	r.recordDrop(tcpRoute(2, false), 5*time.Second, syscall.ECONNRESET)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p, got, _, err := r.connect(ctx, 2, false)
+	if err != nil {
+		t.Fatalf("connect failed when only plain community WS works: %v", err)
+	}
+	_ = p.Close()
+	if !got.community || !got.plain {
+		t.Fatalf("expected plain community WS route, got %+v", got)
+	}
+	if elapsed := time.Since(start); elapsed > 600*time.Millisecond {
+		t.Fatalf("connect took %v, expected <600ms without stalling behind blackholed community WSS", elapsed)
+	}
+}
+
+func TestCommunityWSSFailureUsesLongerCooldown(t *testing.T) {
+	r := newRouter(nil, true)
+	defer r.pool.close()
+	c := relayRoute(2, false, communityDomains[0])
+	r.known[c.id] = c
+	r.failure(c.id, context.DeadlineExceeded)
+	r.mu.Lock()
+	retryIn := time.Until(r.health[c.id].retryAt)
+	r.mu.Unlock()
+	if retryIn < 25*time.Second {
+		t.Fatalf("community WSS failure cooldown = %v, want >= 25s", retryIn)
+	}
+}

@@ -531,8 +531,10 @@ func (s *Server) serve(client net.Conn) {
 	trySwitch := func(stage string, causeErr error, extraFrame []byte) bool {
 		duration := time.Since(connectedAt)
 		cause := classifyDisconnect(causeErr)
-		cleanClose := errors.Is(causeErr, io.EOF) || websocket.IsCloseError(causeErr, websocket.CloseNormalClosure, websocket.CloseGoingAway)
-		if !cleanClose || duration < 30*time.Second {
+		wsNormalClose := websocket.IsCloseError(causeErr, websocket.CloseNormalClosure, websocket.CloseGoingAway)
+		cleanClose := errors.Is(causeErr, io.EOF) || wsNormalClose
+		normalIdleWSClose := wsNormalClose && connDown > 0 && len(pendingFrames) == 0 && len(extraFrame) == 0
+		if (!cleanClose || duration < 30*time.Second) && !normalIdleWSClose {
 			s.router.recordDrop(candidate, duration, causeErr)
 		} else {
 			s.router.recordCleanSession(candidate.id, duration)

@@ -178,6 +178,12 @@ func (r *router) failure(id string, cause ...error) {
 	if delay > 15*time.Second {
 		delay = 15 * time.Second
 	}
+	if candidate, ok := r.known[id]; ok && candidate.community && !candidate.plain {
+		delay = 30 * time.Second << min(h.failures-1, 3)
+		if delay > 4*time.Minute {
+			delay = 4 * time.Minute
+		}
+	}
 	h.retryAt = time.Now().Add(delay)
 	r.health[id] = h
 }
@@ -333,43 +339,49 @@ func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid
 		}
 		sortRelays(secureRelays)
 		sortRelays(plainRelays)
-		// Reserve 2 of the 8 relay slots for plain ws:// (either on cold start
-		// or whenever a verified plain backup exists) so TLS-only failures can
-		// still fall back to a working plain WebSocket relay.
-		secureCap := 6
-		if preferTLS {
-			hasVerifiedPlain := false
-			for _, candidate := range plainRelays {
-				if !now.Before(r.health[candidate.id].retryAt) && routeRank(r.health[candidate.id]) > 0 {
-					hasVerifiedPlain = true
-					break
-				}
-			}
-			if !hasVerifiedPlain {
-				secureCap = 8
-			}
-		}
+		// Prefer plain ws:// community relays first (matching pre-v0.1.25 behavior),
+		// because on Russian ISPs unverified wss:// community domains often blackhole
+		// TLS ClientHellos and starve the dial queue. Official Telegram WSS/fronting
+		// routes are always included separately via routesFor().
 		var picked []route
 		for _, candidate := range secureRelays {
+			if len(picked) >= 2 {
+				break
+			}
+			if now.Before(r.health[candidate.id].retryAt) || routeRank(r.health[candidate.id]) == 0 {
+				continue
+			}
+			picked = append(picked, candidate)
+		}
+		for _, candidate := range plainRelays {
+			if len(picked) >= 6 {
+				break
+			}
 			if now.Before(r.health[candidate.id].retryAt) {
 				continue
 			}
 			picked = append(picked, candidate)
-			if len(picked) == secureCap {
-				break
-			}
 		}
-		for _, candidate := range plainRelays {
+		for _, candidate := range secureRelays {
 			if len(picked) >= 8 {
 				break
 			}
 			if now.Before(r.health[candidate.id].retryAt) {
 				continue
 			}
-			picked = append(picked, candidate)
+			dup := false
+			for _, p := range picked {
+				if p.id == candidate.id {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				picked = append(picked, candidate)
+			}
 		}
 		if len(picked) < 8 {
-			for _, candidate := range secureRelays {
+			for _, candidate := range plainRelays {
 				if len(picked) >= 8 {
 					break
 				}
@@ -436,14 +448,14 @@ func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid
 		}
 		if candidate.community {
 			if candidate.plain {
-				base := 500 * time.Millisecond
+				base := 75 * time.Millisecond
 				if preferTLS {
-					base = 900 * time.Millisecond
+					base = 150 * time.Millisecond
 				}
-				delay = base + time.Duration(plainOrder)*75*time.Millisecond
+				delay = base + time.Duration(plainOrder)*50*time.Millisecond
 				plainOrder++
 			} else {
-				delay = 180*time.Millisecond + time.Duration(secureOrder)*75*time.Millisecond
+				delay = 500*time.Millisecond + time.Duration(secureOrder)*75*time.Millisecond
 				secureOrder++
 			}
 		}
@@ -657,8 +669,10 @@ func routeBefore(a, b route, ha, hb routeHealth, preferTLS bool, now time.Time) 
 	if ha.success != hb.success {
 		return ha.success
 	}
-	if preferTLS && a.isEncryptedWSS() != b.isEncryptedWSS() {
-		return a.isEncryptedWSS()
+	preferA := a.isEncryptedWSS() && (!a.community || routeRank(ha) > 0)
+	preferB := b.isEncryptedWSS() && (!b.community || routeRank(hb) > 0)
+	if preferTLS && preferA != preferB {
+		return preferA
 	}
 	if routeRank(ha) != routeRank(hb) {
 		return routeRank(ha) > routeRank(hb)
