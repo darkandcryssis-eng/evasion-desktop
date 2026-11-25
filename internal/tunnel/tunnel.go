@@ -288,6 +288,12 @@ func (t *Tunnel) hasHandshake() bool {
 // при успехе — возвращаем, при неудаче — закрываем и пробуем следующий.
 // Если все провалились, возвращаем ошибку с перечислением попыток.
 func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (*Tunnel, error) {
+	return OpenWithFallbackContext(context.Background(), opts, ports, perPortTimeout)
+}
+
+// OpenWithFallbackContext — как OpenWithFallback, но немедленно прерывает
+// перебор портов при отмене ctx.
+func OpenWithFallbackContext(ctx context.Context, opts Options, ports []int, perPortTimeout time.Duration) (*Tunnel, error) {
 	if opts.Account == nil {
 		return nil, fmt.Errorf("tunnel: не задан account")
 	}
@@ -316,6 +322,9 @@ func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (
 
 	var lastErr error
 	for i, port := range ports {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		candidateAcc := *opts.Account
 		candidateAcc.PeerEndpoint = fmt.Sprintf("%s:%d", host, port)
 		candidateOpts := opts
@@ -329,8 +338,8 @@ func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), perPortTimeout)
-		err = tn.WaitHandshake(ctx)
+		pctx, cancel := context.WithTimeout(ctx, perPortTimeout)
+		err = tn.WaitHandshake(pctx)
 		cancel()
 		if err == nil {
 			logger.Info("tunnel: рукопожатие прошло", "port", port, "попыток", i+1)
@@ -338,6 +347,9 @@ func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (
 		}
 		tn.Close()
 		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		logger.Debug("tunnel: порт не ответил", "port", port, "ошибка", err)
 	}
 	return nil, fmt.Errorf("tunnel: ни один из %d портов не ответил рукопожатием: %w", len(ports), lastErr)

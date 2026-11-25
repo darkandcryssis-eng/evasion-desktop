@@ -133,6 +133,7 @@ func (t *telegramCallTunnel) NotifyUnanswered() {
 func (t *telegramCallTunnel) activate() {
 	defer t.wg.Done()
 
+	t.logger.Info("звонок Telegram: запуск резервного UDP-туннеля WARP")
 	tn, err := t.openTunnel(t.ctx)
 	if err != nil {
 		t.mu.Lock()

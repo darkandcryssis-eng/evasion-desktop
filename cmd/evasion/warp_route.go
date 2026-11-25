@@ -301,7 +301,7 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 	}
 	started := time.Now()
 	quiet := slog.New(slog.DiscardHandler)
-	tn, err := tunnel.OpenWithFallback(tunnel.Options{Account: acc, Logger: quiet}, warpPorts(acc.PeerEndpoint), portWait)
+	tn, err := tunnel.OpenWithFallbackContext(ctx, tunnel.Options{Account: acc, Logger: quiet}, warpPorts(acc.PeerEndpoint), portWait)
 	if err != nil {
 		return nil, fmt.Errorf("провайдер не пропускает WARP ни на одном порту: %w", err)
 	}
