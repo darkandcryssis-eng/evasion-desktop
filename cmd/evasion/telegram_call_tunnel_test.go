@@ -245,6 +245,7 @@ func TestTelegramCallTunnelRelaysAndPassesThrough(t *testing.T) {
 	fakeHandle := newFakeTunnelHandle()
 
 	tt := newTelegramCallTunnel(ctx, fakeTunnelOwner{}, nil)
+	tt.supported = true
 	tt.openTunnel = func(context.Context) (tgUDPTunnel, error) { return fakeTn, nil }
 	tt.openHandle = func() (tgTunnelConn, error) { return fakeHandle, nil }
 	defer tt.Close()
@@ -350,6 +351,7 @@ func TestTelegramCallTunnelRetryBackoff(t *testing.T) {
 	var calls atomic.Int32
 	now := time.Now()
 	tt := newTelegramCallTunnel(ctx, nil, nil)
+	tt.supported = true
 	tt.now = func() time.Time { return now }
 	tt.openTunnel = func(context.Context) (tgUDPTunnel, error) {
 		calls.Add(1)

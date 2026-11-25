@@ -13,7 +13,6 @@ import (
 	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/packet"
-	"github.com/fitting-1c/evasion/internal/windivert"
 )
 
 const (
@@ -64,6 +63,7 @@ type tgSocketRelay struct {
 // TURN, DTLS, and SRTP) through an in-process Cloudflare WARP tunnel when
 // local UDP DPI desync receives zero replies (ISP IP/UDP-level block).
 type telegramCallTunnel struct {
+	supported  bool
 	owner      telegramUDPOwner
 	logger     *slog.Logger
 	now        func() time.Time
@@ -96,24 +96,26 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &telegramCallTunnel{
-		owner:  owner,
-		logger: logger,
-		now:    time.Now,
+		supported: telegramCallTunnelSupported,
+		owner:     owner,
+		logger:    logger,
+		now:       time.Now,
 		openTunnel: func(c context.Context) (tgUDPTunnel, error) {
 			return openWARPTunnel(c, defaultStateDir, logger)
 		},
-		openHandle: func() (tgTunnelConn, error) {
-			return windivert.OpenPriority(telegramCallTunnelFilter, telegramCallTunnelPriority)
-		},
-		ctx:     ctx,
-		cancel:  cancel,
-		sockets: make(map[tgLocalSocketKey]*tgSocketRelay),
+		openHandle: openTelegramCallTunnelHandle,
+		ctx:        ctx,
+		cancel:     cancel,
+		sockets:    make(map[tgLocalSocketKey]*tgSocketRelay),
 	}
 }
 
 // NotifyUnanswered starts the fallback WARP UDP relay once Telegram call
 // signaling packets go unanswered locally. Safe to call repeatedly.
 func (t *telegramCallTunnel) NotifyUnanswered() {
+	if !t.supported {
+		return
+	}
 	t.mu.Lock()
 	if t.closed || t.active || t.opening || t.now().Before(t.retryAt) {
 		t.mu.Unlock()

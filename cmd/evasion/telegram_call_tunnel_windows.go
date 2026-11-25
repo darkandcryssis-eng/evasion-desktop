@@ -4,6 +4,12 @@ package main
 
 import "github.com/fitting-1c/evasion/internal/windivert"
 
+const telegramCallTunnelSupported = true
+
+func openTelegramCallTunnelHandle() (tgTunnelConn, error) {
+	return windivert.OpenPriority(telegramCallTunnelFilter, telegramCallTunnelPriority)
+}
+
 func makeInboundReinject(reinject any) any {
 	addr, ok := reinject.(windivert.Address)
 	if !ok {
