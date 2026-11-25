@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -270,10 +271,10 @@ func warpWorthy(err error) bool {
 // openWARP регистрирует устройство при первом обращении, подбирает порт, на
 // котором провайдер пропускает WARP, и проверяет туннель настоящим соединением.
 func openWARP(ctx context.Context, dir string, logger *slog.Logger) (warpDialer, error) {
-	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, 1, logger)
+	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, 1, 0, false, logger)
 }
 
-func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, parallelBatch int, logger *slog.Logger) (*tunnel.Tunnel, error) {
+func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, parallelBatch, handshakeJunk int, multiHost bool, logger *slog.Logger) (*tunnel.Tunnel, error) {
 	path := filepath.Join(dir, stateFile)
 	acc, err := loadWARPAccount(path)
 	if err != nil {
@@ -300,10 +301,18 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 		}
 	}
 	started := time.Now()
-	ports := warpPorts(acc.PeerEndpoint)
-	logger.Info("резерв WARP: перебор портов", "портов", len(ports), "параллельно", max(1, parallelBatch), "пир", acc.PeerEndpoint)
 	quiet := slog.New(slog.DiscardHandler)
-	tn, err := tunnel.OpenWithFallbackParallel(ctx, tunnel.Options{Account: acc, Logger: quiet}, ports, portWait, parallelBatch)
+	opts := tunnel.Options{Account: acc, Logger: quiet, HandshakeJunk: handshakeJunk}
+	var tn *tunnel.Tunnel
+	if multiHost {
+		endpoints := warpMultiHostEndpoints(acc.PeerEndpoint)
+		logger.Info("резерв WARP: перебор адресов", "адресов", len(endpoints), "параллельно", max(1, parallelBatch), "мусор", handshakeJunk)
+		tn, err = tunnel.OpenWithFallbackEndpoints(ctx, opts, endpoints, portWait, parallelBatch)
+	} else {
+		ports := warpPorts(acc.PeerEndpoint)
+		logger.Info("резерв WARP: перебор портов", "портов", len(ports), "параллельно", max(1, parallelBatch), "пир", acc.PeerEndpoint)
+		tn, err = tunnel.OpenWithFallbackParallel(ctx, opts, ports, portWait, parallelBatch)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("провайдер не пропускает WARP ни на одном порту: %w", err)
 	}
@@ -342,6 +351,36 @@ func addWARPRegistrationHost(cfg *config.Config) {
 		cfg.Groups[group] = append(hosts, warpRegisterHost)
 		return
 	}
+}
+
+// warpMultiHostEndpoints строит список кандидатов "IP:port" по нескольким
+// anycast-подсетям Cloudflare WARP (162.159.192-195.* и 188.114.96-99.*),
+// чередуя хосты на каждом порту: первый же батч проверяет порт 2408 сразу на
+// всех подсетях, а прошлый рабочий адрес идёт самым первым.
+func warpMultiHostEndpoints(savedEndpoint string) []string {
+	seen := make(map[string]struct{}, len(tunnel.WARPFallbackHosts)*len(tunnel.WARPTelegramPorts)+1)
+	out := make([]string, 0, len(tunnel.WARPFallbackHosts)*len(tunnel.WARPTelegramPorts)+1)
+	add := func(ep string) {
+		if ep == "" {
+			return
+		}
+		if _, ok := seen[ep]; ok {
+			return
+		}
+		seen[ep] = struct{}{}
+		out = append(out, ep)
+	}
+	if host, _, err := net.SplitHostPort(savedEndpoint); err == nil {
+		if _, err := netip.ParseAddr(host); err == nil {
+			add(savedEndpoint)
+		}
+	}
+	for _, port := range tunnel.WARPTelegramPorts {
+		for _, host := range tunnel.WARPFallbackHosts {
+			add(net.JoinHostPort(host, strconv.Itoa(port)))
+		}
+	}
+	return out
 }
 
 // warpPorts ставит первым порт, на котором туннель поднимался в прошлый раз.

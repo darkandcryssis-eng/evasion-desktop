@@ -73,6 +73,9 @@ type Options struct {
 	// LogLevel — уровень логов WireGuard. Пустая строка = Error (минимум).
 	// `verbose` печатает хендшейки и статусы (нужно для диагностики).
 	LogLevel string
+	// HandshakeJunk — сколько случайных UDP-пакетов (AmneziaWG Jc) отправить
+	// перед каждым WireGuard Handshake Initiation. 0 отключает маскировку.
+	HandshakeJunk int
 }
 
 // Open поднимает туннель.
@@ -139,7 +142,11 @@ func Open(opts Options) (*Tunnel, error) {
 		},
 	}
 
-	dev := device.NewDevice(tun, conn.NewDefaultBind(), wgLogger)
+	bind := conn.NewDefaultBind()
+	if opts.HandshakeJunk > 0 {
+		bind = newJunkBind(bind, opts.HandshakeJunk)
+	}
+	dev := device.NewDevice(tun, bind, wgLogger)
 
 	// Endpoint peer-а: wireguard-go внутри делает net.ResolveUDPAddr, он
 	// идёт через системный DNS. У владельца системный DNS режется провайдером,
@@ -388,16 +395,42 @@ func OpenWithFallbackParallel(ctx context.Context, opts Options, ports []int, pe
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
+	endpoints := make([]string, 0, len(ports))
+	for _, port := range ports {
+		endpoints = append(endpoints, fmt.Sprintf("%s:%d", host, port))
+	}
+	return OpenWithFallbackEndpoints(ctx, opts, endpoints, perPortTimeout, batchSize)
+}
+
+// OpenWithFallbackEndpoints перебирает готовые адреса "IP:port" батчами по
+// batchSize одновременно (используется для обхода по нескольким anycast-IP
+// Cloudflare WARP и портам сразу).
+func OpenWithFallbackEndpoints(ctx context.Context, opts Options, endpoints []string, perPortTimeout time.Duration, batchSize int) (*Tunnel, error) {
+	if opts.Account == nil {
+		return nil, fmt.Errorf("tunnel: не задан account")
+	}
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("tunnel: пустой список адресов для перебора")
+	}
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+
 	var lastErr error
-	for start := 0; start < len(ports); start += batchSize {
+	for start := 0; start < len(endpoints); start += batchSize {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		end := start + batchSize
-		if end > len(ports) {
-			end = len(ports)
+		if end > len(endpoints) {
+			end = len(endpoints)
 		}
-		batch := ports[start:end]
+		batch := endpoints[start:end]
 
 		bctx, bcancel := context.WithTimeout(ctx, perPortTimeout)
 		var (
@@ -406,15 +439,15 @@ func OpenWithFallbackParallel(ctx context.Context, opts Options, ports []int, pe
 			batchErr error
 			wg       sync.WaitGroup
 		)
-		for _, port := range batch {
+		for _, ep := range batch {
 			wg.Add(1)
-			go func(p int) {
+			go func(endpoint string) {
 				defer wg.Done()
 				if bctx.Err() != nil {
 					return
 				}
 				candidateAcc := *opts.Account
-				candidateAcc.PeerEndpoint = fmt.Sprintf("%s:%d", host, p)
+				candidateAcc.PeerEndpoint = endpoint
 				candidateOpts := opts
 				candidateOpts.Account = &candidateAcc
 
@@ -434,7 +467,7 @@ func OpenWithFallbackParallel(ctx context.Context, opts Options, ports []int, pe
 						winner = tn
 						bcancel()
 						mu.Unlock()
-						logger.Info("tunnel: рукопожатие прошло", "port", p)
+						logger.Info("tunnel: рукопожатие прошло", "endpoint", endpoint)
 						return
 					}
 					mu.Unlock()
@@ -447,7 +480,7 @@ func OpenWithFallbackParallel(ctx context.Context, opts Options, ports []int, pe
 					batchErr = werr
 				}
 				mu.Unlock()
-			}(port)
+			}(ep)
 		}
 		wg.Wait()
 		bcancel()
@@ -462,7 +495,27 @@ func OpenWithFallbackParallel(ctx context.Context, opts Options, ports []int, pe
 			lastErr = batchErr
 		}
 	}
-	return nil, fmt.Errorf("tunnel: ни один из %d портов не ответил рукопожатием: %w", len(ports), lastErr)
+	return nil, fmt.Errorf("tunnel: ни один из %d адресов не ответил рукопожатием: %w", len(endpoints), lastErr)
+}
+
+// WARPFallbackHosts — запасные anycast-IP Cloudflare WARP из разных подсетей
+// (162.159.192-195.* и 188.114.96-99.*): часть провайдеров блокирует только
+// основной 162.159.192.1, оставляя альтернативные подсети доступными.
+var WARPFallbackHosts = []string{
+	"162.159.192.1",
+	"162.159.193.1",
+	"162.159.195.1",
+	"188.114.96.1",
+	"188.114.97.1",
+	"188.114.98.1",
+	"188.114.99.1",
+}
+
+// WARPTelegramPorts — компактный набор приоритетных портов Cloudflare WARP для
+// быстрого параллельного перебора по всем WARPFallbackHosts в пределах 20с
+// таймаута звонка Telegram.
+var WARPTelegramPorts = []int{
+	2408, 500, 1701, 4500, 854, 894, 908, 942, 1074,
 }
 
 // WARPFallbackPorts — альтернативные UDP-порты, на которых Cloudflare держит

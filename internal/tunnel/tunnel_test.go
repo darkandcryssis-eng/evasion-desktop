@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.zx2c4.com/wireguard/conn"
+
 	"github.com/fitting-1c/evasion/internal/warp"
 )
 
@@ -265,5 +267,57 @@ func TestOpenWithFallbackParallel(t *testing.T) {
 	ccancel()
 	if _, err := OpenWithFallbackParallel(cctx, Options{Account: acc}, []int{65531, 65532}, 5*time.Second, 2); err == nil {
 		t.Fatal("expected error on cancelled context")
+	}
+}
+
+type recordingBind struct {
+	conn.Bind
+	sent [][]byte
+}
+
+func (r *recordingBind) Send(bufs [][]byte, _ conn.Endpoint) error {
+	for _, b := range bufs {
+		cp := append([]byte(nil), b...)
+		r.sent = append(r.sent, cp)
+	}
+	return nil
+}
+
+func TestJunkBindPrependsJunkOnlyOnHandshakeInitiation(t *testing.T) {
+	rec := &recordingBind{}
+	jb := newJunkBind(rec, 4)
+
+	// Non-handshake transport data (type 4) must pass through untouched.
+	dataPkt := make([]byte, 64)
+	dataPkt[0] = 4
+	if err := jb.Send([][]byte{dataPkt}, nil); err != nil {
+		t.Fatalf("Send data: %v", err)
+	}
+	if len(rec.sent) != 1 {
+		t.Fatalf("data packet should send 1 packet, got %d", len(rec.sent))
+	}
+
+	// WireGuard Handshake Initiation (148 bytes, type 1 0 0 0) must be preceded
+	// by 4 random junk packets whose first byte is outside 0x01..0x04.
+	rec.sent = nil
+	initPkt := make([]byte, 148)
+	initPkt[0] = 1
+	if err := jb.Send([][]byte{initPkt}, nil); err != nil {
+		t.Fatalf("Send handshake: %v", err)
+	}
+	if len(rec.sent) != 5 {
+		t.Fatalf("handshake should emit 4 junk + 1 init = 5 packets, got %d", len(rec.sent))
+	}
+	for i := 0; i < 4; i++ {
+		j := rec.sent[i]
+		if len(j) < wgJunkMinLen || len(j) > wgJunkMaxLen {
+			t.Fatalf("junk[%d] len=%d outside [%d,%d]", i, len(j), wgJunkMinLen, wgJunkMaxLen)
+		}
+		if j[0] <= 4 {
+			t.Fatalf("junk[%d][0]=%d must not collide with WireGuard message types 1..4", i, j[0])
+		}
+	}
+	if len(rec.sent[4]) != 148 || rec.sent[4][0] != 1 {
+		t.Fatalf("last packet must be the original 148B handshake initiation")
 	}
 }
