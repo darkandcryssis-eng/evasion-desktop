@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,14 +21,14 @@ const (
 	telegramCallTunnelPriority = 150
 	telegramCallWARPTrigger     = 4
 	telegramCallWARPRetry       = 30 * time.Second
-	telegramCallWARPDeadRetry   = 5 * time.Second
+	telegramCallWARPDeadRetry   = 1 * time.Second
 	telegramCallWARPBadPeerTTL  = 10 * time.Minute
 	telegramCallWARPPortWait    = 1800 * time.Millisecond
 	telegramCallWARPBatch       = 10
 	telegramCallWARPJunk        = 4
 	telegramCallWARPStateFile   = "warp-telegram.json"
-	telegramCallWARPDeadPackets = 12
-	telegramCallWARPDeadWindow  = 10 * time.Second
+	telegramCallWARPDeadPackets = 8
+	telegramCallWARPDeadWindow  = 5 * time.Second
 	telegramCallSocketIdle      = 90 * time.Second
 	telegramCallMaxSockets      = 64
 )
@@ -244,6 +245,8 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 
 	t.unansweredTx.Store(0)
 	var stalledSince time.Time
+	var sampleDsts []string
+	sampleSeen := make(map[string]struct{}, 4)
 
 	for {
 		pkt, err := handle.Recv()
@@ -265,7 +268,8 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 			t.sendPacket(handle, pkt)
 			continue
 		}
-		dstAddr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(dstIP, dstPort))
+		dstAP := netip.AddrPortFrom(dstIP, dstPort)
+		dstAddr := net.UDPAddrFromAddrPort(dstAP)
 		if _, err := relay.pc.WriteTo(payload, dstAddr); err != nil {
 			t.removeSocket(relay)
 			continue
@@ -274,7 +278,17 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 		n := t.unansweredTx.Add(1)
 		if n == 1 {
 			stalledSince = t.now()
-		} else if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
+			sampleDsts = sampleDsts[:0]
+			clear(sampleSeen)
+		}
+		if len(sampleDsts) < 4 {
+			s := dstAP.String()
+			if _, exists := sampleSeen[s]; !exists {
+				sampleSeen[s] = struct{}{}
+				sampleDsts = append(sampleDsts, s)
+			}
+		}
+		if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
 			peer := tn.Endpoint()
 			t.mu.Lock()
 			if !t.closed {
@@ -291,6 +305,7 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, смена адреса",
 				"пир", peer,
 				"отправлено_без_ответа", n,
+				"цели", strings.Join(sampleDsts, ","),
 				"повтор_через", telegramCallWARPDeadRetry.String())
 			return
 		}

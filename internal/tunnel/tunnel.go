@@ -204,24 +204,44 @@ func (t *Tunnel) ListenUDP(ipv6 bool) (net.PacketConn, error) {
 	return t.stack.ListenUDPAddrPort(netip.AddrPortFrom(ip, 0))
 }
 
-// dnsProbeQuery — минимальный DNS A-запрос для "." (root NS, 17 байт),
-// транзакция 0x53 0x47. Любой валидный DNS-ответ от 1.1.1.1:53 подтверждает,
-// что внутри WireGuard-туннеля проходит двусторонний UDP-трафик.
-var dnsProbeQuery = []byte{
-	0x53, 0x47, // Transaction ID
-	0x01, 0x00, // Standard query, RD=1
-	0x00, 0x01, // QDCOUNT=1
-	0x00, 0x00, // ANCOUNT=0
-	0x00, 0x00, // NSCOUNT=0
-	0x00, 0x00, // ARCOUNT=0
-	0x00,       // QNAME="."
-	0x00, 0x02, // QTYPE=NS
-	0x00, 0x01, // QCLASS=IN
+// buildDNSProbeQuery строит DNS-запрос для "." (NS IN) с заданным ID транзакции
+// и опциональным EDNS0-padding (чтобы проверить прохождение пакетов размера
+// STUN/TURN, а не только крошечных 17-байтных датаграмм).
+func buildDNSProbeQuery(txid uint16, padBytes int) []byte {
+	q := []byte{
+		byte(txid >> 8), byte(txid), // Transaction ID
+		0x01, 0x00, // Standard query, RD=1
+		0x00, 0x01, // QDCOUNT=1
+		0x00, 0x00, // ANCOUNT=0
+		0x00, 0x00, // NSCOUNT=0
+		0x00, 0x00, // ARCOUNT
+		0x00,       // QNAME="."
+		0x00, 0x02, // QTYPE=NS
+		0x00, 0x01, // QCLASS=IN
+	}
+	if padBytes > 0 {
+		q[11] = 1 // ARCOUNT=1 (OPT RR)
+		// OPT RR: NAME=0, TYPE=41, CLASS=1232, TTL=0, RDLEN=4+padBytes
+		rdlen := 4 + padBytes
+		q = append(q,
+			0x00,
+			0x00, 0x29,
+			0x04, 0xd0,
+			0x00, 0x00, 0x00, 0x00,
+			byte(rdlen>>8), byte(rdlen),
+			// EDNS0 Padding option (RFC 7830, code=12)
+			0x00, 0x0c,
+			byte(padBytes>>8), byte(padBytes),
+		)
+		q = append(q, make([]byte, padBytes)...)
+	}
+	return q
 }
 
 // ProbeUDP проверяет, что через поднятый туннель реально проходит двусторонний
-// UDP-обмен (а не только WireGuard-рукопожатие), отправляя минимальный DNS-запрос
-// на 1.1.1.1:53 и дожидаясь ответа в пределах ctx.
+// внешний UDP-обмен (а не только WireGuard-рукопожатие или локальный 1.1.1.1):
+// шлёт два DNS-запроса на 8.8.8.8:53 (обычный и ~128-байтный с EDNS0-padding,
+// сопоставимый со STUN/TURN) и ждёт оба ответа в пределах ctx.
 func (t *Tunnel) ProbeUDP(ctx context.Context) error {
 	pc, err := t.ListenUDP(false)
 	if err != nil {
@@ -242,26 +262,37 @@ func (t *Tunnel) ProbeUDP(ctx context.Context) error {
 	if dl, ok := ctx.Deadline(); ok {
 		_ = pc.SetDeadline(dl)
 	}
-	target := &net.UDPAddr{IP: net.IPv4(1, 1, 1, 1), Port: 53}
-	if _, err := pc.WriteTo(dnsProbeQuery, target); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("tunnel: UDP probe write: %w", err)
+	target := &net.UDPAddr{IP: net.IPv4(8, 8, 8, 8), Port: 53}
+	probes := []struct {
+		txid uint16
+		pad  int
+	}{
+		{txid: 0x5347, pad: 0},
+		{txid: 0x5348, pad: 96},
 	}
 	var buf [512]byte
-	for {
-		n, _, err := pc.ReadFrom(buf[:])
-		if err != nil {
+	for _, p := range probes {
+		q := buildDNSProbeQuery(p.txid, p.pad)
+		if _, err := pc.WriteTo(q, target); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("tunnel: UDP probe read: %w", err)
+			return fmt.Errorf("tunnel: UDP probe write: %w", err)
 		}
-		if n >= 12 && buf[0] == dnsProbeQuery[0] && buf[1] == dnsProbeQuery[1] {
-			return nil
+		for {
+			n, _, err := pc.ReadFrom(buf[:])
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("tunnel: UDP probe read: %w", err)
+			}
+			if n >= 12 && buf[0] == byte(p.txid>>8) && buf[1] == byte(p.txid) {
+				break
+			}
 		}
 	}
+	return nil
 }
 
 // DialContext открывает TCP-соединение через туннель.
