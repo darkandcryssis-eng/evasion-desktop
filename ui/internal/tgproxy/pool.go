@@ -44,7 +44,7 @@ func peerAlive(p peer) bool {
 	return true
 }
 
-func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route, bool) {
+func (r *router) takeWarm(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, bool) {
 	pool := r.pool
 	key := poolKey{dc, media}
 	for ctx.Err() == nil {
@@ -54,18 +54,26 @@ func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route,
 			pool.mu.Unlock()
 			return nil, route{}, false
 		}
-		index := 0
-		if media {
-			r.mu.Lock()
-			now := time.Now()
-			preferTLS := r.tlsFallbackActiveLocked(dc, media, now)
-			for i := 1; i < len(items); i++ {
-				a, b := items[i].route, items[index].route
-				if routeBefore(a, b, r.health[a.id], r.health[b.id], preferTLS, now) {
-					index = i
-				}
+		index := -1
+		r.mu.Lock()
+		now := time.Now()
+		preferTLS := r.tlsFallbackActiveLocked(dc, media, now)
+		for i, item := range items {
+			a := item.route
+			if avoid[a.id] {
+				continue
 			}
-			r.mu.Unlock()
+			if index < 0 || (media && routeBefore(a, items[index].route, r.health[a.id], r.health[items[index].route.id], preferTLS, now)) {
+				index = i
+			}
+			if !media {
+				break
+			}
+		}
+		r.mu.Unlock()
+		if index < 0 {
+			pool.mu.Unlock()
+			return nil, route{}, false
 		}
 		item := items[index]
 		copy(items[index:], items[index+1:])
@@ -94,8 +102,8 @@ func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route,
 }
 
 // Warm sockets contain no client init, auth key or user request. Each is used once.
-func (r *router) warm(dc int, media bool, candidate route) {
-	if candidate.tcp {
+func (r *router) warm(dc int, media bool, candidates ...route) {
+	if len(candidates) == 0 || candidates[0].tcp {
 		return
 	}
 	pool := r.pool
@@ -106,6 +114,21 @@ func (r *router) warm(dc int, media bool, candidate route) {
 		return
 	}
 	count := min(warmPerRoute-len(pool.idle[key]), warmLimit-pool.count)
+	counts := make(map[string]int, len(candidates))
+	for _, item := range pool.idle[key] {
+		counts[item.route.id]++
+	}
+	plan := make([]route, 0, count)
+	for range count {
+		best := candidates[0]
+		for _, candidate := range candidates[1:] {
+			if !candidate.tcp && counts[candidate.id] < counts[best.id] {
+				best = candidate
+			}
+		}
+		counts[best.id]++
+		plan = append(plan, best)
+	}
 	pool.filling[key] = true
 	pool.count += count
 	pool.wg.Add(1)
@@ -113,7 +136,7 @@ func (r *router) warm(dc int, media bool, candidate route) {
 	go func() {
 		defer pool.wg.Done()
 		defer func() { pool.mu.Lock(); pool.filling[key] = false; pool.mu.Unlock() }()
-		for range count {
+		for _, candidate := range plan {
 			select {
 			case pool.workers <- struct{}{}:
 			case <-pool.ctx.Done():

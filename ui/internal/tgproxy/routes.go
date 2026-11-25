@@ -294,20 +294,20 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 }
 
 func (r *router) connectAvoidSet(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, time.Duration, error) {
-	return r.connectWithSlots(ctx, dc, media, avoid, r.slots, 4*time.Second)
+	return r.connectWithSlots(ctx, dc, media, avoid, false, r.slots, 4*time.Second)
 }
 
 func (r *router) connectFailover(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, time.Duration, error) {
-	return r.connectWithSlots(ctx, dc, media, avoid, r.failover, 2500*time.Millisecond)
+	return r.connectWithSlots(ctx, dc, media, avoid, true, r.failover, 2500*time.Millisecond)
 }
 
-func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid map[string]bool, slots chan struct{}, dialTimeout time.Duration) (peer, route, time.Duration, error) {
+func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid map[string]bool, failover bool, slots chan struct{}, dialTimeout time.Duration) (peer, route, time.Duration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, route{}, 0, err
 	}
 	started := time.Now()
-	if len(avoid) == 0 {
-		if p, c, ok := r.takeWarm(ctx, dc, media); ok {
+	if len(avoid) == 0 || failover {
+		if p, c, ok := r.takeWarm(ctx, dc, media, avoid); ok {
 			return p, c, time.Since(started), nil
 		}
 	}
@@ -413,7 +413,7 @@ func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid
 		}
 		if len(others) > 0 {
 			available = others
-		} else if len(avoid) > 1 {
+		} else if failover || len(avoid) > 1 {
 			r.mu.Unlock()
 			return nil, route{}, 0, errors.New("no alternative Telegram routes available")
 		}
@@ -733,17 +733,24 @@ func (r *router) probeRoutes(ctx context.Context, dc int, media bool, n int) {
 
 // warmBest пополняет тёплый пул по лучшему проверенному маршруту.
 func (r *router) warmBest(dc int, media bool) {
-	best := r.bestCandidates(dc, media, 1)
+	count := 1
+	if media {
+		count = 2
+	}
+	best := r.bestCandidates(dc, media, count)
 	if len(best) == 0 {
 		return
 	}
 	r.mu.Lock()
 	verified := routeRank(r.health[best[0].id]) > 0
+	if len(best) > 1 && !r.health[best[1].id].success {
+		best = best[:1]
+	}
 	r.mu.Unlock()
 	if !verified {
 		return
 	}
-	r.warm(dc, media, best[0])
+	r.warm(dc, media, best...)
 }
 
 func (r *router) latencyHint(id string) time.Duration {

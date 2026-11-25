@@ -170,7 +170,11 @@ func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte
 				go drainAttempts(results, inflight)
 				s.up.Add(uint64(len(firstFrame)))
 				s.router.success(winner, o.channel.latency)
-				s.router.warm(h.dc, h.media, o.channel.route)
+				if h.media {
+					s.router.warmBest(h.dc, h.media)
+				} else {
+					s.router.warm(h.dc, h.media, o.channel.route)
+				}
 				s.log("INFO", "Есть обмен с Telegram", o.channel.label)
 				return o.channel, nil
 			}
@@ -323,7 +327,11 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 			continue
 		}
 		s.router.success(candidate.id, latency)
-		s.router.warm(h.dc, h.media, candidate)
+		if h.media {
+			s.router.warmBest(h.dc, h.media)
+		} else {
+			s.router.warm(h.dc, h.media, candidate)
+		}
 		return &relayChannel{
 			upstream:    upstream,
 			route:       candidate,

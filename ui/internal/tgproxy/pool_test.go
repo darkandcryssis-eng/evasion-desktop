@@ -95,11 +95,11 @@ func TestWarmSocketsAreSingleUseAndCloseReleasesIdle(t *testing.T) {
 	r.success(c.id, time.Millisecond)
 	r.warm(2, false, c)
 	waitWarm(t, r)
-	p, got, ok := r.takeWarm(context.Background(), 2, false)
+	p, got, ok := r.takeWarm(context.Background(), 2, false, nil)
 	if !ok || !got.fromPool {
 		t.Fatal("warm socket not used")
 	}
-	q, _, ok := r.takeWarm(context.Background(), 2, false)
+	q, _, ok := r.takeWarm(context.Background(), 2, false, nil)
 	if !ok || p == q {
 		t.Fatal("socket reused by two clients")
 	}
@@ -132,12 +132,41 @@ func TestWarmMediaUsesFasterVerifiedSocket(t *testing.T) {
 		})
 		r.pool.count++
 	}
-	p, candidate, ok := r.takeWarm(context.Background(), 2, true)
+	p, candidate, ok := r.takeWarm(context.Background(), 2, true, nil)
 	if ok {
 		defer p.Close()
 	}
 	if !ok || candidate.id != fast.id {
 		t.Fatalf("warm route = %q, want %q", candidate.id, fast.id)
+	}
+}
+
+func TestMediaFailoverUsesWarmAlternateWithoutDialing(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	candidates := routesFor(4, true)
+	broken, backup := candidates[0], candidates[1]
+	r.success(broken.id, time.Millisecond)
+	r.success(backup.id, time.Second)
+	key := poolKey{dc: 4, media: true}
+	for _, c := range []route{broken, backup} {
+		r.pool.idle[key] = append(r.pool.idle[key], &warmPeer{
+			p: &trackedPeer{}, route: c, created: time.Now(), expiry: time.AfterFunc(time.Hour, func() {}),
+		})
+		r.pool.count++
+	}
+	for range cap(r.failover) {
+		r.failover <- struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	p, got, _, err := r.connectFailover(ctx, 4, true, map[string]bool{broken.id: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if got.id != backup.id || !got.fromPool {
+		t.Fatalf("failover selected %v, want a warm socket for %s", got, backup.id)
 	}
 }
 
@@ -163,7 +192,7 @@ func TestWarmPoolRejectsClosedExpiredAndFailedRoutes(t *testing.T) {
 			if mode == "failed" {
 				r.failure(c.id)
 			}
-			if p, _, ok := r.takeWarm(context.Background(), 2, false); ok {
+			if p, _, ok := r.takeWarm(context.Background(), 2, false, nil); ok {
 				p.Close()
 				t.Fatal("stale warm connection handed out")
 			}

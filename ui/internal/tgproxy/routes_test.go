@@ -87,8 +87,8 @@ func TestLocalDialQueueDoesNotCoolDownRoute(t *testing.T) {
 	})
 	candidate := routesFor(4, true)[0]
 	r.success(candidate.id, time.Millisecond)
-	for range cap(r.slots) {
-		r.slots <- struct{}{}
+	for range cap(r.background) {
+		r.background <- struct{}{}
 	}
 	r.probeRoute(t.Context(), candidate, 20*time.Millisecond)
 	h := r.health[candidate.id]
@@ -151,6 +151,9 @@ func TestBackgroundDialsLeaveRoomForNewConnections(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("background dials did not start")
 		}
+	}
+	if got := len(r.slots); got != 0 {
+		t.Fatalf("background dials occupied %d foreground slots", got)
 	}
 	p, err := r.dialRoute(ctx, routesFor(2, false)[0])
 	if err != nil {

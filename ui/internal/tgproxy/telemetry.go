@@ -172,13 +172,8 @@ func (r *router) dialRouteWithSlots(ctx context.Context, slots chan struct{}, ca
 }
 
 func (r *router) dialBackground(ctx context.Context, candidate route) (peer, error) {
-	select {
-	case r.background <- struct{}{}:
-	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: %w", errDialQueue, ctx.Err())
-	}
-	defer func() { <-r.background }()
-	return r.dialRoute(ctx, candidate)
+	p, _, err := r.dialRouteWithSlots(ctx, r.background, candidate, 0)
+	return p, err
 }
 
 func (r *router) snapshot() []RouteStatus {
