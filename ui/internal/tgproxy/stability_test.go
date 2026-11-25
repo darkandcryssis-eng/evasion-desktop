@@ -43,6 +43,39 @@ func TestStabilitySelectionBeatsLatency(t *testing.T) {
 	}
 }
 
+func TestVerifiedMediaPrefersMeasuredFasterRoute(t *testing.T) {
+	now := time.Now()
+	a, b := route{media: true}, route{media: true}
+	fast := routeHealth{success: true, latency: 200 * time.Millisecond, mediaDownBPS: 2 << 20}
+	slow := routeHealth{success: true, latency: 20 * time.Millisecond, mediaDownBPS: 128 << 10}
+	if !routeBefore(a, b, fast, slow, false, now) {
+		t.Fatal("lower latency beat measured media delivery speed")
+	}
+	fast.success = false
+	if routeBefore(a, b, fast, slow, false, now) {
+		t.Fatal("unverified route beat verified route")
+	}
+	fast.success = true
+	a.media, b.media = false, false
+	if routeBefore(a, b, fast, slow, false, now) {
+		t.Fatal("media delivery speed affected a non-media route")
+	}
+}
+
+func TestMediaDeliverySampleDiscardsIdleWindows(t *testing.T) {
+	now := time.Now()
+	var sample mediaDeliverySample
+	if rate := sample.observe(now, 16<<10); rate != 0 {
+		t.Fatalf("first chunk generated a rate: %d", rate)
+	}
+	if rate := sample.observe(now.Add(3*time.Second), 256<<10); rate != 0 {
+		t.Fatalf("idle period generated a rate: %d", rate)
+	}
+	if rate := sample.observe(now.Add(3500*time.Millisecond), 256<<10); rate != 512<<10 {
+		t.Fatalf("delivery rate = %d, want %d", rate, 512<<10)
+	}
+}
+
 func TestNonTLSBreakTriggersWSSOverTLSFallback(t *testing.T) {
 	r := newRouter(nil, true)
 	rawTCP := tcpRoute(2, false)

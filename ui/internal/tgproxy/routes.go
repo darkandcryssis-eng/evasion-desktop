@@ -45,6 +45,7 @@ type routeHealth struct {
 	consecutiveDrops int
 	lastDropAt       time.Time
 	ewmaLifetime     time.Duration
+	mediaDownBPS     int64
 	retryAt          time.Time
 	latency          time.Duration
 	success          bool
@@ -327,11 +328,7 @@ func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid
 		}
 		sortRelays := func(list []route) {
 			sort.SliceStable(list, func(i, j int) bool {
-				hi, hj := r.health[list[i].id], r.health[list[j].id]
-				if routeRank(hi) != routeRank(hj) {
-					return routeRank(hi) > routeRank(hj)
-				}
-				return routeScore(hi, now) > routeScore(hj, now)
+				return routeBefore(list[i], list[j], r.health[list[i].id], r.health[list[j].id], false, now)
 			})
 		}
 		sortRelays(secureRelays)
@@ -667,10 +664,19 @@ func routeBefore(a, b route, ha, hb routeHealth, preferTLS bool, now time.Time) 
 		return routeRank(ha) > routeRank(hb)
 	}
 	sa, sb := routeScore(ha, now), routeScore(hb, now)
+	if a.media && b.media && ha.success && hb.success {
+		sa += mediaRouteBonus(ha)
+		sb += mediaRouteBonus(hb)
+	}
 	if sa != sb {
 		return sa > sb
 	}
 	return routeRank(ha) > 0 && ha.latency < hb.latency
+}
+
+func mediaRouteBonus(h routeHealth) float64 {
+	rate := float64(h.mediaDownBPS)
+	return 120 * rate / (rate + (256 << 10))
 }
 
 // bestCandidates возвращает до n маршрутов в порядке стабильности и латентности,

@@ -28,6 +28,9 @@ type reportService struct {
 	Steps     []reportStep `json:"steps"`
 }
 type reportRoute struct {
+	DC        int    `json:"dc"`
+	Media     bool   `json:"media"`
+	DownBPS   int64  `json:"downBps,omitempty"`
 	Code      string `json:"code"`
 	Transport string `json:"transport"`
 	Status    string `json:"status"`
@@ -45,6 +48,7 @@ type reportDisconnect struct {
 	Stage      string `json:"stage"`
 	Cause      string `json:"cause"`
 	DurationMS int64  `json:"durationMs"`
+	BytesDown  uint64 `json:"bytesDown"`
 	Recovered  bool   `json:"recovered"`
 }
 type reportTraffic struct {
@@ -143,17 +147,19 @@ func buildSafeReport(phase string, telegram TelegramState, services []ServiceDia
 		r.Services = append(r.Services, v)
 	}
 	for _, v := range routes {
-		r.Routes = append(r.Routes, reportRoute{Code: reportCode(v.Code), Transport: allowed(v.Kind, "WSS", "Резерв WSS", "TCP", "WSS · фиксированный адрес", "Туннель VLESS"), Status: allowed(v.Status, "untested", "checking", "verified", "opened", "cooldown", "failed"), CheckedAt: reportTime(v.CheckedAt), LatencyMS: max(0, v.LatencyMS), Failures: max(0, v.Failures), Stability: min(100, max(0, v.Stability)), Drops: max(0, v.Drops)})
+		kind, _ := strings.CutSuffix(v.Kind, " · медиа")
+		r.Routes = append(r.Routes, reportRoute{DC: max(0, v.DC), Media: v.Media, DownBPS: max(0, v.DownBPS), Code: reportCode(v.Code), Transport: allowed(kind, "WSS", "Резерв WSS", "Резерв WS", "TCP", "WSS · фиксированный адрес", "WSS · fronting", "VLESS", "Туннель VLESS"), Status: allowed(v.Status, "untested", "checking", "verified", "opened", "cooldown", "failed"), CheckedAt: reportTime(v.CheckedAt), LatencyMS: max(0, v.LatencyMS), Failures: max(0, v.Failures), Stability: min(100, max(0, v.Stability)), Drops: max(0, v.Drops)})
 	}
 	for _, d := range telegram.Disconnects[:min(len(telegram.Disconnects), 50)] {
 		r.Telegram.Disconnects = append(r.Telegram.Disconnects, reportDisconnect{
 			At:         reportTime(d.At),
-			Transport:  allowed(d.Transport, "wss", "wss_fixed", "wss_front", "relay_wss", "relay_ws", "tcp", "vless"),
+			Transport:  allowed(d.Transport, "wss", "wss_ip", "fronting", "wss_fixed", "wss_front", "relay_wss", "relay_ws", "tcp", "vless"),
 			DC:         max(0, d.DC),
 			Media:      d.Media,
-			Stage:      allowed(d.Stage, "connect", "first_reply", "relay_read", "relay_write", "switch"),
+			Stage:      allowed(d.Stage, "dial", "connect", "first_reply", "relay_read", "relay_write", "switch"),
 			Cause:      allowed(d.Cause, "reset", "timeout", "eof", "ws_close", "tls", "dns", "mtproto", "cancelled", "error"),
 			DurationMS: max(0, d.DurationMS),
+			BytesDown:  d.BytesDown,
 			Recovered:  d.Recovered,
 		})
 	}

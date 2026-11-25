@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/fitting-1c/evasion-ui/internal/tgproxy"
 )
 
 func TestLiveAppServiceReport(t *testing.T) {
@@ -63,6 +65,24 @@ func TestReportPreservesUsefulAllowlistedData(t *testing.T) {
 	b, err := os.ReadFile(path)
 	if err != nil || !json.Valid(b) {
 		t.Fatal("invalid report", err)
+	}
+}
+
+func TestReportPreservesMediaDeliveryWithoutRouteAddresses(t *testing.T) {
+	r := buildSafeReport("running", TelegramState{Disconnects: []TelegramDisconnect{
+		{DC: 2, Media: true, Stage: "relay_read", Transport: "relay_ws", BytesDown: 8192},
+	}}, nil, routeViews([]tgproxy.RouteStatus{
+		{ID: "private-host", Host: "private-host", DC: 2, Media: true, DownBPS: 524288, Kind: "Резерв WS · медиа"},
+	}))
+	if route := r.Routes[0]; route.DC != 2 || !route.Media || route.DownBPS != 524288 || route.Transport != "Резерв WS" {
+		t.Fatalf("lost media route data: %+v", route)
+	}
+	if r.Telegram.Disconnects[0].BytesDown != 8192 {
+		t.Fatal("lost disconnect delivery bytes")
+	}
+	b, err := json.Marshal(r)
+	if err != nil || strings.Contains(string(b), "private-host") {
+		t.Fatalf("unsafe diagnostic report: err=%v", err)
 	}
 }
 

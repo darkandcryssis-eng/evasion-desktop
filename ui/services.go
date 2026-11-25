@@ -29,6 +29,9 @@ type ServiceDiagnostic struct {
 	Steps     []ServiceStep `json:"steps"`
 }
 type TelegramRoute struct {
+	DC        int    `json:"dc"`
+	Media     bool   `json:"media"`
+	DownBPS   int64  `json:"downBps,omitempty"`
 	Code      string `json:"code"`
 	Reason    string `json:"reason"`
 	ID        string `json:"id"`
@@ -51,7 +54,7 @@ type SpeedSample struct {
 func routeViews(routes []tgproxy.RouteStatus) []TelegramRoute {
 	out := make([]TelegramRoute, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, TelegramRoute{Code: r.Code, Reason: r.Reason, ID: r.ID, Host: r.Host, Kind: r.Kind, Status: r.Status, LatencyMS: r.LatencyMS, Failures: r.Failures, Stability: r.Stability, Drops: r.Drops, CheckedAt: r.CheckedAt, RetryAt: r.RetryAt})
+		out = append(out, TelegramRoute{DC: r.DC, Media: r.Media, DownBPS: r.DownBPS, Code: r.Code, Reason: r.Reason, ID: r.ID, Host: r.Host, Kind: r.Kind, Status: r.Status, LatencyMS: r.LatencyMS, Failures: r.Failures, Stability: r.Stability, Drops: r.Drops, CheckedAt: r.CheckedAt, RetryAt: r.RetryAt})
 	}
 	return out
 }

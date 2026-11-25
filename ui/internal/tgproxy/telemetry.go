@@ -16,6 +16,9 @@ type SpeedSample struct {
 }
 
 type RouteStatus struct {
+	DC        int    `json:"dc"`
+	Media     bool   `json:"media"`
+	DownBPS   int64  `json:"downBps,omitempty"`
 	Code      string `json:"code"`
 	Reason    string `json:"reason"`
 	ID        string `json:"id"`
@@ -28,6 +31,40 @@ type RouteStatus struct {
 	Failures  int    `json:"failures"`
 	CheckedAt string `json:"checkedAt"`
 	RetryAt   string `json:"retryAt"`
+}
+
+type mediaDeliverySample struct {
+	start time.Time
+	last  time.Time
+	bytes int64
+}
+
+func (s *mediaDeliverySample) observe(now time.Time, delivered int) int64 {
+	if s.start.IsZero() || now.Sub(s.last) > 2*time.Second {
+		*s = mediaDeliverySample{start: now, last: now}
+		return 0
+	}
+	s.last = now
+	s.bytes += int64(delivered)
+	elapsed := now.Sub(s.start)
+	if s.bytes < 256<<10 || elapsed < 250*time.Millisecond {
+		return 0
+	}
+	rate := int64(float64(s.bytes) / elapsed.Seconds())
+	*s = mediaDeliverySample{start: now, last: now}
+	return rate
+}
+
+func (r *router) recordMediaRate(id string, rate int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.health[id]
+	if h.mediaDownBPS == 0 {
+		h.mediaDownBPS = rate
+	} else {
+		h.mediaDownBPS += (rate - h.mediaDownBPS) / 4
+	}
+	r.health[id] = h
 }
 
 func (s *Server) measure() {
@@ -149,6 +186,7 @@ func (r *router) snapshot() []RouteStatus {
 		h := r.health[id]
 		stabPct := int(stabilityScore(h, now)*100 + 0.5)
 		v := RouteStatus{Code: h.code, Reason: h.reason, ID: id, Host: candidate.host, Kind: "WSS", Status: "untested", LatencyMS: h.latency.Milliseconds(), Stability: stabPct, Drops: h.midStreamDrops, Failures: h.failures}
+		v.DC, v.Media, v.DownBPS = candidate.dc, candidate.media, h.mediaDownBPS
 		if candidate.address != "" && !candidate.tcp {
 			v.Kind = "WSS · фиксированный адрес"
 		}

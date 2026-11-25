@@ -520,6 +520,7 @@ func (s *Server) serve(client net.Conn) {
 
 	midFrame := false
 	switchesUsed := 0
+	var mediaRate mediaDeliverySample
 
 	trySwitch := func(stage string, causeErr error, extraFrame []byte) bool {
 		duration := time.Since(connectedAt)
@@ -568,6 +569,7 @@ func (s *Server) serve(client net.Conn) {
 				}
 				connUp = replayedBytes
 				connDown = 0
+				mediaRate = mediaDeliverySample{}
 				if replayedBytes > 0 {
 					s.up.Add(replayedBytes)
 				}
@@ -634,6 +636,11 @@ func (s *Server) serve(client net.Conn) {
 				_ = client.SetWriteDeadline(time.Now().Add(30 * time.Second))
 				written, writeErr := writeAll(client, out)
 				connDown += uint64(written)
+				if h.media && written > 0 {
+					if rate := mediaRate.observe(time.Now(), written); rate > 0 {
+						s.router.recordMediaRate(candidate.id, rate)
+					}
+				}
 				s.mu.Lock()
 				s.down.Add(uint64(written))
 				if written > 0 {

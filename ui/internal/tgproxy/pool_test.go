@@ -116,6 +116,31 @@ func TestWarmSocketsAreSingleUseAndCloseReleasesIdle(t *testing.T) {
 	}
 }
 
+func TestWarmMediaUsesFasterVerifiedSocket(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	candidates := routesFor(2, true)
+	slow, fast := candidates[0], candidates[1]
+	r.success(slow.id, time.Millisecond)
+	r.success(fast.id, time.Millisecond)
+	r.recordMediaRate(slow.id, 128<<10)
+	r.recordMediaRate(fast.id, 2<<20)
+	key := poolKey{dc: 2, media: true}
+	for _, c := range []route{slow, fast} {
+		r.pool.idle[key] = append(r.pool.idle[key], &warmPeer{
+			p: &trackedPeer{}, route: c, created: time.Now(), expiry: time.AfterFunc(time.Hour, func() {}),
+		})
+		r.pool.count++
+	}
+	p, candidate, ok := r.takeWarm(context.Background(), 2, true)
+	if ok {
+		defer p.Close()
+	}
+	if !ok || candidate.id != fast.id {
+		t.Fatalf("warm route = %q, want %q", candidate.id, fast.id)
+	}
+}
+
 func TestWarmPoolRejectsClosedExpiredAndFailedRoutes(t *testing.T) {
 	for _, mode := range []string{"closed", "expired", "failed"} {
 		t.Run(mode, func(t *testing.T) {

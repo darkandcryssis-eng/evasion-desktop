@@ -54,8 +54,23 @@ func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route,
 			pool.mu.Unlock()
 			return nil, route{}, false
 		}
-		item := items[0]
-		pool.idle[key] = items[1:]
+		index := 0
+		if media {
+			r.mu.Lock()
+			now := time.Now()
+			preferTLS := r.tlsFallbackActiveLocked(dc, media, now)
+			for i := 1; i < len(items); i++ {
+				a, b := items[i].route, items[index].route
+				if routeBefore(a, b, r.health[a.id], r.health[b.id], preferTLS, now) {
+					index = i
+				}
+			}
+			r.mu.Unlock()
+		}
+		item := items[index]
+		copy(items[index:], items[index+1:])
+		items[len(items)-1] = nil
+		pool.idle[key] = items[:len(items)-1]
 		pool.count--
 		item.expiry.Stop()
 		pool.mu.Unlock()
@@ -68,7 +83,11 @@ func (r *router) takeWarm(ctx context.Context, dc int, media bool) (peer, route,
 		}
 		candidate := item.route
 		candidate.fromPool = true
-		r.warm(dc, media, item.route)
+		if media {
+			r.warmBest(dc, media)
+		} else {
+			r.warm(dc, media, item.route)
+		}
 		return item.p, candidate, true
 	}
 	return nil, route{}, false
