@@ -32,11 +32,12 @@ var updateFirstCheck = 10 * time.Second
 var updateReleases = "https://github.com/darkandcryssis-eng/evasion-desktop/releases"
 
 const (
-	updateAsset     = "Evasion.exe"
-	updateAssetMac  = "Evasion-macOS.zip"
-	updateInterval  = 2 * time.Minute
-	updatedFromFlag = "--updated-from="
-	resumeFlag      = "--resume="
+	updateAsset           = "Evasion.exe"
+	updateAssetMac        = "Evasion-macOS.zip"
+	updateInterval        = 2 * time.Minute
+	updateDownloadTimeout = 15 * time.Minute
+	updatedFromFlag       = "--updated-from="
+	resumeFlag            = "--resume="
 	// Старая копия останавливает игровой фильтр и движок, до stopTimeout каждый.
 	oldCopyExitWait = 2*stopTimeout + 15*time.Second
 )
@@ -73,8 +74,17 @@ func newUpdater() *updater {
 		releases: updateReleases,
 		client:   &http.Client{},
 		exePath:  currentExecutable,
-		launch:   func(exe string, args ...string) error { return exec.Command(exe, args...).Start() },
+		launch:   launchUpdatedCopy,
 	}
+}
+
+func launchUpdatedCopy(exe string, args ...string) error {
+	cmd := exec.Command(exe, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+	return nil
 }
 
 func currentExecutable() (string, error) {
@@ -232,6 +242,8 @@ func (u *updater) expectedSum(ctx context.Context, tag string) (string, error) {
 
 // download пишет Evasion.exe релиза в dst и сверяет SHA-256 с файлом релиза.
 func (u *updater) download(ctx context.Context, tag, dst string) error {
+	ctx, cancel := context.WithTimeout(ctx, updateDownloadTimeout)
+	defer cancel()
 	want, err := u.expectedSum(ctx, tag)
 	if err != nil {
 		return err
@@ -298,7 +310,7 @@ func (u *updater) install(ctx context.Context, relaunchArgs []string) error {
 	u.mu.Lock()
 	if u.state.Downloading {
 		u.mu.Unlock()
-		return nil
+		return errors.New("обновление уже устанавливается")
 	}
 	if !u.state.Available {
 		u.mu.Unlock()
@@ -309,12 +321,13 @@ func (u *updater) install(ctx context.Context, relaunchArgs []string) error {
 	u.mu.Unlock()
 
 	err := u.replace(ctx, tag, relaunchArgs)
-	u.change(func(s *UpdateState) {
-		s.Downloading = false
-		if err != nil {
+	// A successful launch leaves installation locked until the caller exits.
+	if err != nil {
+		u.change(func(s *UpdateState) {
+			s.Downloading = false
 			s.Error = err.Error()
-		}
-	})
+		})
+	}
 	return err
 }
 
@@ -333,22 +346,25 @@ func (u *updater) replace(ctx context.Context, tag string, relaunchArgs []string
 		return fmt.Errorf("не удалось заменить %s: %w", exe, err)
 	}
 	if err := os.Rename(fresh, exe); err != nil {
-		_ = os.Rename(old, exe)
 		_ = os.Remove(fresh)
-		return fmt.Errorf("не удалось заменить %s: %w", exe, err)
+		return rollbackUpdate(old, exe, fmt.Errorf("не удалось заменить %s: %w", exe, err))
 	}
 	args := append([]string{updatedFromFlag + strconv.Itoa(os.Getpid())}, relaunchArgs...)
 	if err := u.launch(exe, args...); err != nil {
-		_ = os.Remove(exe)
-		_ = os.Rename(old, exe)
-		return fmt.Errorf("не удалось запустить новую версию: %w", err)
+		return rollbackUpdate(old, exe, fmt.Errorf("не удалось запустить новую версию: %w", err))
 	}
 	return nil
 }
 
-// finishUpdate вызывается новой копией до старта окна: ждёт выхода старой
-// (иначе сработает блокировка одного экземпляра) и убирает её файл.
-func finishUpdate(args []string) {
+func rollbackUpdate(old, exe string, cause error) error {
+	if err := os.Rename(old, exe); err != nil {
+		return errors.Join(cause, fmt.Errorf("не удалось восстановить %s из %s: %w", exe, old, err))
+	}
+	return cause
+}
+
+// waitForPreviousCopy ждёт выхода старой копии до проверки блокировки одного экземпляра.
+func waitForPreviousCopy(args []string) {
 	for _, arg := range args {
 		pid, err := strconv.Atoi(strings.TrimPrefix(arg, updatedFromFlag))
 		if !strings.HasPrefix(arg, updatedFromFlag) || err != nil {
@@ -358,6 +374,9 @@ func finishUpdate(args []string) {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
+}
+
+func removeUpdateFiles() {
 	if exe, err := currentExecutable(); err == nil {
 		_ = os.Remove(exe + ".old")
 		_ = os.Remove(exe + ".new")
