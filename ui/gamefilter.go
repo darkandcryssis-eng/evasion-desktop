@@ -317,9 +317,8 @@ func (a *App) startGameFilterLocked() error {
 	if gameRouteView(l.Base).Configured {
 		gameStartArgs = append(gameStartArgs, "--game-vless-profile", filepath.Join(l.Base, gameRouteFile))
 	}
-	l.Base = filepath.Join(l.Base, "game-runtime")
-	l.Runtime = l.Base
-	l.Engine = filepath.Join(l.Base, payloadEngine)
+	l = gameEngineLayout(l)
+	killStrayEngine(l.Engine)
 	if err = extractPayload(l); err != nil {
 		return err
 	}
@@ -328,6 +327,14 @@ func (a *App) startGameFilterLocked() error {
 	}
 	return a.games.awaitStartup()
 }
+
+func gameEngineLayout(l layout) layout {
+	l.Base = filepath.Join(l.Base, "game-runtime")
+	l.Runtime = l.Base
+	l.Engine = filepath.Join(l.Base, payloadEngine)
+	return l
+}
+
 func (a *App) StopGameFilter() error {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()

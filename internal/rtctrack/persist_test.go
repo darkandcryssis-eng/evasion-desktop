@@ -1,11 +1,41 @@
 package rtctrack
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestLoadBoundsLegacySnapshotByLastActivity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rtctrack.json")
+	file := snapshotFile{Version: snapshotVersion}
+	for i := maxTrackedPairs; i >= 0; i-- {
+		file.Entries = append(file.Entries, snapshotEntry{Port: uint16(i), Observed: 1, LastAt: time.Unix(int64(i), 0)})
+	}
+	data, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := Load(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Len() != maxTrackedPairs {
+		t.Fatalf("loaded %d pairs, want %d", tr.Len(), maxTrackedPairs)
+	}
+	if _, ok := tr.Snapshot()[Pair{Port: 0}]; ok {
+		t.Fatal("loaded oldest pair from oversized snapshot")
+	}
+	tr.Observe(Pair{Port: maxTrackedPairs + 1})
+	if _, ok := tr.Snapshot()[Pair{Port: 1}]; ok {
+		t.Fatal("oldest retained pair was not evicted")
+	}
+}
 
 func TestSaveLoadRoundtrip(t *testing.T) {
 	dir := t.TempDir()

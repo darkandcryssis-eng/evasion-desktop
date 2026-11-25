@@ -29,7 +29,7 @@ var errWindowsOnly = errors.New("эта функция доступна толь
 func hideConsole(*exec.Cmd)          {}
 func isElevated() (bool, bool)       { return true, true }
 func beforeEngineStart()             {}
-func killStrayEngines()              {}
+func killStrayEngine(string)         {}
 func clearConflicts() conflictReport { return conflictReport{} }
 func restartDiscord(string, bool) (discordStartResult, error) {
 	return discordStartResult{}, errWindowsOnly

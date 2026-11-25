@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -97,9 +98,12 @@ func Load(path string, now func() time.Time) (*Tracker, error) {
 		if file.Version != snapshotVersion {
 			return nil, fmt.Errorf("rtctrack: несовместимая версия %d (ожидаем %d)", file.Version, snapshotVersion)
 		}
-		t.mu.Lock()
+		sort.SliceStable(file.Entries, func(i, j int) bool { return file.Entries[i].LastAt.Before(file.Entries[j].LastAt) })
+		if len(file.Entries) > maxTrackedPairs {
+			file.Entries = file.Entries[len(file.Entries)-maxTrackedPairs:]
+		}
 		for _, e := range file.Entries {
-			t.stats[Pair{SNI: e.SNI, Port: e.Port}] = &Stat{
+			*t.get(Pair{SNI: e.SNI, Port: e.Port}) = Stat{
 				Observed:   e.Observed,
 				Settled:    e.Settled,
 				Reset:      e.Reset,
@@ -108,7 +112,6 @@ func Load(path string, now func() time.Time) (*Tracker, error) {
 				LastAt:     e.LastAt,
 			}
 		}
-		t.mu.Unlock()
 	case os.IsNotExist(err):
 		// Чистый старт — таблица пуста.
 	default:

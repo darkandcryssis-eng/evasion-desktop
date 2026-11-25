@@ -3,6 +3,7 @@
 // сливается обратно; во время работы — полное сияющее кольцо.
 import { useEffect, useRef } from "react";
 import { Icon } from "../ui";
+import { startVisibleLoop, watchWindowActivity } from "../windowActivity";
 
 export type OrbPhase = "stopped" | "starting" | "running" | "stopping" | "failed";
 
@@ -136,11 +137,12 @@ export function Orb({ phase, busy, disabled, label, onPress }: { phase: OrbPhase
       if (!reduced || !settled || Math.abs(wantEnergy - energy) > 0.01) schedule();
     };
     const schedule = () => { if (!raf && !disposed && !document.hidden) raf = requestAnimationFrame(draw); };
-    const onVisible = () => { last = 0; schedule(); };
-    document.addEventListener("visibilitychange", onVisible);
-    const poke = window.setInterval(schedule, 400);
-    schedule();
-    return () => { disposed = true; cancelAnimationFrame(raf); window.clearInterval(poke); document.removeEventListener("visibilitychange", onVisible); };
+    const unwatch = watchWindowActivity((active) => {
+      if (!active) { cancelAnimationFrame(raf); raf = 0; }
+      else last = 0;
+    });
+    const poke = startVisibleLoop(schedule, 400);
+    return () => { disposed = true; cancelAnimationFrame(raf); poke.stop(); unwatch(); };
   }, []);
 
   const transit = phase === "starting" || phase === "stopping" || busy;

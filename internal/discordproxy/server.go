@@ -213,21 +213,28 @@ func allowedTarget(address string) (string, error) {
 }
 
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	closed := make(chan struct{})
+	ctx, cancel := context.WithCancel(ctx)
+	listenerDone := make(chan struct{})
 	go func() {
-		select {
-		case <-ctx.Done():
-			_ = ln.Close()
-		case <-closed:
-		}
+		defer close(listenerDone)
+		<-ctx.Done()
+		_ = ln.Close()
 	}()
-	defer close(closed)
-	go s.reportLoop(ctx)
+	reportDone := make(chan struct{})
+	go func() {
+		defer close(reportDone)
+		s.reportLoop(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-listenerDone
+		s.wg.Wait()
+		<-reportDone
+	}()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				s.wg.Wait()
 				return ctx.Err()
 			}
 			return err

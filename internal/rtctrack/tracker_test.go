@@ -11,6 +11,25 @@ func fixedNow(t time.Time) func() time.Time {
 	return func() time.Time { return t }
 }
 
+func TestTrackerRetainsMostRecentlyUsedPairs(t *testing.T) {
+	tr := NewTracker(fixedNow(time.Unix(1000, 0)))
+	for i := range maxTrackedPairs {
+		tr.Observe(Pair{Port: uint16(i)})
+	}
+	tr.Settled(Pair{Port: 0})
+	tr.Observe(Pair{Port: maxTrackedPairs})
+	snapshot := tr.Snapshot()
+	if len(snapshot) != maxTrackedPairs || snapshot[Pair{Port: maxTrackedPairs}].Observed != 1 {
+		t.Fatal("new pair was not inserted within the limit")
+	}
+	if snapshot[Pair{Port: 0}].Settled != 1 {
+		t.Fatal("recently used pair was evicted")
+	}
+	if _, ok := snapshot[Pair{Port: 1}]; ok {
+		t.Fatal("least recently used pair was not evicted")
+	}
+}
+
 func TestObserveSettledResetCounters(t *testing.T) {
 	tr := NewTracker(fixedNow(time.Unix(1000, 0)))
 	p := Pair{SNI: "a.discord.media", Port: 443}

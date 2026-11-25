@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AppState, type StartOptions } from "./api";
 import { readPreference, savePreference } from "./preferences";
+import { startVisibleLoop } from "./windowActivity";
 
 export function useEngine() {
   const [state, setState] = useState<AppState | null>(null);
@@ -28,20 +29,15 @@ export function useEngine() {
 
   useEffect(() => {
     mounted.current = true;
-    let cancelled = false;
-    let timer: number | undefined;
-    const tick = async () => {
+    let fast = false;
+    const loop = startVisibleLoop(async () => {
       const next = acting.current ? null : await refresh();
-      if (cancelled) return;
-      const fast = next?.engine.phase === "starting" || next?.engine.phase === "stopping";
-      timer = window.setTimeout(tick, fast ? 500 : 2000);
-    };
-    void tick();
+      fast = next?.engine.phase === "starting" || next?.engine.phase === "stopping";
+    }, () => fast ? 500 : 2000);
     return () => {
-      cancelled = true;
+      loop.stop();
       mounted.current = false;
       ++version.current;
-      window.clearTimeout(timer);
     };
   }, [refresh]);
 

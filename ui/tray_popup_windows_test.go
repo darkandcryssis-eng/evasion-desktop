@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+func TestTrayPopupSkipsQueuedRefreshWhenHidden(t *testing.T) {
+	var calls int
+	p := trayPopup{view: func() trayView { calls++; return trayView{} }}
+	p.update()
+	if calls != 0 {
+		t.Fatal("hidden popup queried its view")
+	}
+	p.visible = true
+	p.update()
+	if calls != 1 {
+		t.Fatal("visible popup did not query its view")
+	}
+}
+
 // Native preview uses isolated actions: never starts an engine, proxy or service probe.
 func TestNativeTrayPreview(t *testing.T) {
 	if os.Getenv("EVASION_TRAY_PREVIEW") != "1" {

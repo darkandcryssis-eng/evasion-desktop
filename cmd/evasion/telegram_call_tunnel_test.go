@@ -174,10 +174,12 @@ func (f *fakePacketConn) Close() error {
 	return nil
 }
 
-func (f *fakePacketConn) LocalAddr() net.Addr                { return &net.UDPAddr{IP: net.IPv4(172, 16, 0, 2), Port: 40000} }
-func (f *fakePacketConn) SetDeadline(time.Time) error        { return nil }
-func (f *fakePacketConn) SetReadDeadline(time.Time) error    { return nil }
-func (f *fakePacketConn) SetWriteDeadline(time.Time) error   { return nil }
+func (f *fakePacketConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(172, 16, 0, 2), Port: 40000}
+}
+func (f *fakePacketConn) SetDeadline(time.Time) error      { return nil }
+func (f *fakePacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (f *fakePacketConn) SetWriteDeadline(time.Time) error { return nil }
 
 type fakeUDPTunnel struct {
 	mu     sync.Mutex
@@ -482,4 +484,82 @@ func TestWarpMultiHostEndpointsExclude(t *testing.T) {
 	if reordered[len(reordered)-1] != "162.159.195.1:2408" {
 		t.Fatalf("expected deprioritized endpoint last as fallback, got %q", reordered[len(reordered)-1])
 	}
+}
+
+func TestTelegramCallTunnelReleasesCaptureWhenCallEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fakeTn := &fakeUDPTunnel{}
+	var handleMu sync.Mutex
+	fakeHandle := newFakeTunnelHandle()
+
+	var nowMu sync.Mutex
+	curNow := time.Now()
+	tt := newTelegramCallTunnel(ctx, fakeTunnelOwner{}, nil)
+	tt.supported = true
+	tt.idleCheck = 5 * time.Millisecond
+	tt.now = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return curNow
+	}
+	var openCalls atomic.Int32
+	tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) {
+		openCalls.Add(1)
+		return fakeTn, nil
+	}
+	tt.openHandle = func() (tgTunnelConn, error) {
+		handleMu.Lock()
+		defer handleMu.Unlock()
+		return fakeHandle, nil
+	}
+	defer tt.Close()
+
+	waitFor := func(cond func() bool, msg string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for !cond() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !cond() {
+			t.Fatal(msg)
+		}
+	}
+
+	tt.NotifyUnanswered()
+	waitFor(func() bool { return tt.Stats().Active }, "expected tunnel to become active")
+
+	tgRaw, _ := buildInboundUDPPacket(
+		netip.MustParseAddrPort("192.168.1.50:54321"),
+		netip.MustParseAddrPort("91.108.16.100:599"),
+		[]byte("stun-req"),
+	)
+	fakeHandle.recvCh <- capture.Packet{Data: tgRaw, Dir: core.DirectionOutbound}
+	waitFor(func() bool { return tt.Stats().Sent == 1 }, "expected call packet to be relayed")
+
+	nowMu.Lock()
+	curNow = curNow.Add(telegramCallWARPIdle / 2)
+	nowMu.Unlock()
+	time.Sleep(30 * time.Millisecond)
+	if !tt.Stats().Active {
+		t.Fatal("tunnel released before the call went idle")
+	}
+
+	nowMu.Lock()
+	curNow = curNow.Add(telegramCallWARPIdle)
+	nowMu.Unlock()
+	waitFor(func() bool { return !tt.Stats().Active }, "expected idle tunnel to release the UDP capture")
+	fakeTn.mu.Lock()
+	closed := fakeTn.closed
+	fakeTn.mu.Unlock()
+	if !closed {
+		t.Fatal("expected idle WARP tunnel to be closed")
+	}
+
+	handleMu.Lock()
+	fakeHandle = newFakeTunnelHandle()
+	handleMu.Unlock()
+	tt.NotifyUnanswered()
+	waitFor(func() bool { return openCalls.Load() == 2 && tt.Stats().Active }, "expected the next call to reopen WARP without a retry delay")
 }

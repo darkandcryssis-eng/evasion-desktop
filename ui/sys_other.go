@@ -18,7 +18,7 @@ func hideConsole(*exec.Cmd)          {}
 func isElevated() (bool, bool)       { return false, false }
 func pidAlive(int) bool              { return false }
 func beforeEngineStart()             {}
-func killStrayEngines()              {}
+func killStrayEngine(string)         {}
 func clearConflicts() conflictReport { return conflictReport{} }
 func restartDiscord(string, bool) (discordStartResult, error) {
 	return discordStartResult{}, errWindowsOnly
