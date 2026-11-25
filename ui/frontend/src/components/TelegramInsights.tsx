@@ -46,7 +46,7 @@ export function RoutePanel() {
 }
 
 export function DisconnectJournalPanel({ disconnects = [], switches = 0 }: { disconnects?: TelegramDisconnect[]; switches?: number }) {
-  const recent = disconnects.slice(0, 12);
+  const recent = disconnects.slice(-12).reverse();
   return <Disclosure icon="pulse" title="Журнал обрывов" note={`Бесшовных переключений: ${switches}`} defaultOpen>
     {recent.length === 0 ? <p className="empty">Обрывов пока не зафиксировано. При сбое здесь появится причина (сброс, таймаут), маршрут и результат переключения.</p> :
       <div className="routes">{recent.map((d, i) => <div className="route" key={`${d.at}-${i}`}>
