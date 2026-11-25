@@ -101,3 +101,35 @@ func TestIsSTUNBindingRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSTUNOrTURNRequest(t *testing.T) {
+	stun := func(kind uint16, attrs int) []byte {
+		b := make([]byte, 20+attrs)
+		binary.BigEndian.PutUint16(b[0:], kind)
+		binary.BigEndian.PutUint16(b[2:], uint16(attrs))
+		binary.BigEndian.PutUint32(b[4:], 0x2112A442)
+		return b
+	}
+	for _, kind := range []uint16{0x0001, 0x0003, 0x0004, 0x0008, 0x0009} {
+		if !IsSTUNOrTURNRequest(stun(kind, 0)) || !IsSTUNOrTURNRequest(stun(kind, 64)) {
+			t.Fatalf("STUN/TURN 0x%04x не распознан", kind)
+		}
+	}
+	noCookie := stun(0x0003, 40)
+	noCookie[4] = 0
+	badLen := stun(0x0003, 40)[:56]
+	for name, p := range map[string][]byte{
+		"ответ binding":  stun(0x0101, 40),
+		"ответ allocate": stun(0x0103, 40),
+		"ошибка":         stun(0x0113, 40),
+		"чужой метод":    stun(0x0002, 40),
+		"без cookie":     noCookie,
+		"длина":          badLen,
+		"короткий":       stun(0x0003, 0)[:19],
+		"discovery":      buildDiscovery(discoveryTypeReq),
+	} {
+		if IsSTUNOrTURNRequest(p) {
+			t.Fatalf("%s: принят за запрос STUN/TURN", name)
+		}
+	}
+}

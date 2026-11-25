@@ -51,11 +51,16 @@ func TestNativeVoiceFilterSelectsOnlyDiscovery(t *testing.T) {
 			{"reinjected", 50010, 74, 1, 70, true, true, false, false},
 			{"stun-high", 50010, 100, 1, 80, true, false, true, true},
 			{"stun-low", 19300, 20, 1, 0, true, false, true, true},
-			{"stun-foreign-port", 3478, 100, 1, 80, true, false, false, true},
-			{"stun-google", 19302, 100, 1, 80, true, false, false, true},
+			{"stun-telegram-port", 3478, 100, 1, 80, true, false, true, true},
+			{"turn-allocate", 1400, 100, 3, 80, true, false, true, true},
+			{"turn-create-perm", 599, 60, 8, 40, true, false, true, true},
+			{"telegram-legacy-reflector", 597, 32, 0xabcd, 0x1234, true, false, true, false},
+			{"telegram-legacy-too-short", 597, 12, 0xabcd, 0x1234, true, false, false, false},
+			{"stun-quic-excluded", 443, 100, 1, 80, true, false, false, true},
 			{"discovery-19302", 19302, 74, 1, 70, true, false, true, false},
 			{"stun-incoming", 50010, 100, 1, 80, false, false, false, true},
 			{"stun-response", 50010, 100, 0x0101, 80, true, false, false, true},
+			{"turn-response", 1400, 100, 0x0103, 80, true, false, false, true},
 		} {
 			t.Run(fmt.Sprintf("%s/ipv6=%v", tc.name, ipv6), func(t *testing.T) {
 				header := 20
