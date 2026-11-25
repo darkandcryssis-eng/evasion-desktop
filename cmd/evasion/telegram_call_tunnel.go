@@ -33,7 +33,7 @@ const (
 	telegramCallSocketIdle      = 90 * time.Second
 	telegramCallMaxSockets      = 64
 	telegramCallReportEvery     = 5 * time.Second
-	telegramCallProbeWait       = 2500 * time.Millisecond
+	telegramCallProbeWait       = 900 * time.Millisecond
 	telegramCallExitInfoWait    = 6 * time.Second
 	telegramCallMaxTargets      = 12
 )
@@ -287,10 +287,23 @@ func (t *telegramCallTunnel) activate() {
 
 func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 	defer t.wg.Done()
+	// afterClose доделывает работу с туннелем, когда перехват уже снят:
+	// диагностика зависшего пира не должна задерживать чужой UDP в очереди
+	// WinDivert и переход на следующий адрес.
+	var afterClose func()
 	defer func() {
 		t.closeSockets()
 		_ = handle.Close()
-		_ = tn.Close()
+		if afterClose != nil {
+			t.wg.Add(1)
+			go func() {
+				defer t.wg.Done()
+				defer tn.Close()
+				afterClose()
+			}()
+		} else {
+			_ = tn.Close()
+		}
 		t.mu.Lock()
 		if t.handle == handle {
 			t.handle = nil
@@ -377,9 +390,12 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 				"отправлено_без_ответа", n,
 				"получено_всего", t.received.Load()-recvBase,
 				"цели_отпр/получ", targets.String(),
-				"диагноз", t.diagnoseStall(tn),
 				"повтор_через", telegramCallWARPDeadRetry.String())
 			reportedTx = t.sent.Load() - sentBase
+			afterClose = func() {
+				t.logger.Warn("звонок Telegram: диагноз зависшего WARP",
+					"пир", peer, "диагноз", t.diagnoseStall(tn))
+			}
 			return
 		}
 	}
