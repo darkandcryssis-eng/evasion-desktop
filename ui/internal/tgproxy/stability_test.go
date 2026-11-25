@@ -331,3 +331,22 @@ func TestUpstreamQuickAckTokenPassesThroughWithoutPayload(t *testing.T) {
 		t.Fatalf("abridged quick ack parse failed: hdr=%x sz=%d err=%v", hdr3, sz3, err)
 	}
 }
+
+func TestPlainWSFallbackIncludedOnColdConnect(t *testing.T) {
+	r := newRouter(func(ctx context.Context, c route) (peer, error) {
+		if c.community && c.plain {
+			return inertPeer{}, nil
+		}
+		return nil, errors.New("tls blocked")
+	}, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p, c, _, err := r.connect(ctx, 2, false)
+	if err != nil {
+		t.Fatalf("expected plain WS fallback to succeed on cold connect, got %v", err)
+	}
+	_ = p.Close()
+	if !c.community || !c.plain {
+		t.Fatalf("expected plain community WS route, got %+v", c)
+	}
+}

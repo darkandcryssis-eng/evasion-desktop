@@ -303,36 +303,69 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 		domains := r.domains.forDC(dc)
 		start := int(r.rotation % uint64(len(domains)))
 		r.rotation++
-		var relays []route
-		for pass := range 2 {
-			for i := range domains {
-				domain := domains[(start+i)%len(domains)]
-				// Prefer TLS-encrypted community WSS relays ahead of plain WS.
-				if pass == 0 {
-					relays = append(relays, relayRoute(dc, media, domain))
-				} else {
-					relays = append(relays, plainRelayRoute(dc, media, domain))
-				}
-			}
+		var secureRelays, plainRelays []route
+		for i := range domains {
+			domain := domains[(start+i)%len(domains)]
+			secureRelays = append(secureRelays, relayRoute(dc, media, domain))
+			plainRelays = append(plainRelays, plainRelayRoute(dc, media, domain))
 		}
-		sort.SliceStable(relays, func(i, j int) bool {
-			hi, hj := r.health[relays[i].id], r.health[relays[j].id]
-			if routeRank(hi) != routeRank(hj) {
-				return routeRank(hi) > routeRank(hj)
-			}
-			return routeScore(hi, now) > routeScore(hj, now)
-		})
-		count := 0
-		for _, candidate := range relays {
+		sortRelays := func(list []route) {
+			sort.SliceStable(list, func(i, j int) bool {
+				hi, hj := r.health[list[i].id], r.health[list[j].id]
+				if routeRank(hi) != routeRank(hj) {
+					return routeRank(hi) > routeRank(hj)
+				}
+				return routeScore(hi, now) > routeScore(hj, now)
+			})
+		}
+		sortRelays(secureRelays)
+		sortRelays(plainRelays)
+		// Reserve 2 of the 8 relay slots for plain ws:// when TLS fallback is
+		// not forced so cold connections can still succeed if TLS is blocked.
+		secureCap := 6
+		if preferTLS {
+			secureCap = 8
+		}
+		var picked []route
+		for _, candidate := range secureRelays {
 			if now.Before(r.health[candidate.id].retryAt) {
 				continue
 			}
-			candidates = append(candidates, candidate)
-			count++
-			if count == 8 {
+			picked = append(picked, candidate)
+			if len(picked) == secureCap {
 				break
 			}
 		}
+		for _, candidate := range plainRelays {
+			if len(picked) >= 8 {
+				break
+			}
+			if now.Before(r.health[candidate.id].retryAt) {
+				continue
+			}
+			picked = append(picked, candidate)
+		}
+		if len(picked) < 8 {
+			for _, candidate := range secureRelays {
+				if len(picked) >= 8 {
+					break
+				}
+				if now.Before(r.health[candidate.id].retryAt) {
+					continue
+				}
+				dup := false
+				for _, p := range picked {
+					if p.id == candidate.id {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					picked = append(picked, candidate)
+				}
+			}
+		}
+		candidates = append(candidates, picked...)
 	}
 	candidates = append(candidates, tcpRoute(dc, media))
 	if r.tunnel != nil {
