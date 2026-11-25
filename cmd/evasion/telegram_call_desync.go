@@ -75,9 +75,10 @@ func (s tgCallStrategy) String() string {
 }
 
 const (
-	tgCallRotateEvery = 3
-	tgCallFlowTTL     = 45 * time.Second
-	tgCallFlowCap     = 256
+	tgCallRotateEvery       = 3
+	tgCallFlowTTL           = 45 * time.Second
+	tgCallRecentReplyWindow = 5 * time.Second
+	tgCallFlowCap           = 256
 )
 
 type tgCallFlowState struct {
@@ -289,9 +290,21 @@ func (e *telegramCallEngine) advanceFlow(srcIP netip.Addr, srcPort uint16, dstIP
 	if kind == tgCallLegacy {
 		trigger = telegramReflectorBurst
 	}
-	recentlyAnswered := !e.lastReply.IsZero() && now.Sub(e.lastReply) < tgCallFlowTTL
+	recentlyAnswered := e.hasActiveDirectPathLocked(key, now)
 	e.flowUnanswered = !recentlyAnswered && st.replies == 0 && st.sent >= trigger
 	return st.stage, sendCover
+}
+
+func (e *telegramCallEngine) hasActiveDirectPathLocked(key telegramFlowKey, now time.Time) bool {
+	if !e.lastReply.IsZero() && now.Sub(e.lastReply) < tgCallRecentReplyWindow {
+		return true
+	}
+	for k, v := range e.flows {
+		if k.srcIP == key.srcIP && k.srcPort == key.srcPort && v.replies > 0 && now.Sub(v.last) < tgCallFlowTTL {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *telegramCallEngine) evictLocked(now time.Time) {
