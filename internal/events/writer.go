@@ -38,6 +38,7 @@ const (
 	MaxFileBytesDefault  = 10 << 20 // 10 МиБ
 	MaxRotatedDefault    = 5
 	writeBufferSize      = 64 << 10
+	rotationRetryDelay   = 5 * time.Second
 )
 
 // Writer — асинхронный приёмник событий. Пишет JSON Lines в активный файл,
@@ -52,9 +53,10 @@ type Writer struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	mu       sync.Mutex
-	file     *os.File
-	fileSize int64
+	mu          sync.Mutex
+	file        *os.File
+	fileSize    int64
+	rotateAfter time.Time
 }
 
 // Open открывает приёмник событий, создаёт/дописывает активный файл и
@@ -210,7 +212,7 @@ func (w *Writer) flush(batch []Event, buffer []byte) []Event {
 		buffer = buffer[:0]
 		return ok
 	}
-	rotate := true
+	rotate := w.rotateAfter.IsZero() || !time.Now().Before(w.rotateAfter)
 	for _, e := range batch {
 		data, err := json.Marshal(e)
 		if err != nil {
@@ -233,7 +235,12 @@ func (w *Writer) flush(batch []Event, buffer []byte) []Event {
 			if !flushBuffer() {
 				return batch[:0]
 			}
-			rotate = w.rotateLocked() == nil
+			if err := w.rotateLocked(); err != nil {
+				w.rotateAfter = time.Now().Add(rotationRetryDelay)
+				rotate = false
+			} else {
+				w.rotateAfter = time.Time{}
+			}
 			if w.openActive() != nil {
 				return batch[:0]
 			}
@@ -243,28 +250,40 @@ func (w *Writer) flush(batch []Event, buffer []byte) []Event {
 	return batch[:0]
 }
 
-// rotateLocked закрывает активный файл и переименовывает его в rotated-слот.
+// rotateLocked сначала убирает активный файл из-под записи, затем сдвигает архивы.
 func (w *Writer) rotateLocked() error {
 	oldPath := w.cfg.Path
+	staged := oldPath + ".rotating"
 	err := w.file.Close()
 	w.file = nil
 	if err != nil {
 		return fmt.Errorf("events: закрытие активного файла при ротации: %w", err)
 	}
-	// Сдвигаем rotated-слоты: events.4 → events.5 (с удалением events.5).
-	for i := w.cfg.MaxRotated; i >= 1; i-- {
-		src := fmt.Sprintf("%s.%d", oldPath, i)
-		dst := fmt.Sprintf("%s.%d", oldPath, i+1)
-		if i == w.cfg.MaxRotated {
-			_ = os.Remove(src)
-			continue
+	if info, err := os.Lstat(staged); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("events: не файл: %s", staged)
 		}
-		if _, err := os.Stat(src); err == nil {
-			_ = os.Rename(src, dst)
-		}
+		return w.archiveStaged(staged)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	if err := os.Rename(oldPath, oldPath+".1"); err != nil {
+	if err := os.Rename(oldPath, staged); err != nil {
 		return fmt.Errorf("events: переименование активного файла при ротации: %w", err)
 	}
+	if err := w.archiveStaged(staged); err != nil {
+		return errors.Join(err, os.Rename(staged, oldPath))
+	}
 	return nil
+}
+
+func (w *Writer) archiveStaged(staged string) error {
+	oldPath := w.cfg.Path
+	for i := w.cfg.MaxRotated - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", oldPath, i)
+		dst := fmt.Sprintf("%s.%d", oldPath, i+1)
+		if err := os.Rename(src, dst); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return os.Rename(staged, oldPath+".1")
 }
