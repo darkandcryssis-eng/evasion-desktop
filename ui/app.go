@@ -62,8 +62,9 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	removeUpdateFiles()
 	a.startReliabilityLog()
-	// Подчистить оставшийся подпроцесс этой установки Evasion.
+	// Подчистить оставшиеся подпроцессы этой установки Evasion.
 	// В фоне, чтобы не тормозить появление окна.
 	go func() {
 		a.lifecycle.Lock()
@@ -71,8 +72,16 @@ func (a *App) startup(ctx context.Context) {
 		a.tuner.mu.Lock()
 		tuning := a.tuner.busy
 		a.tuner.mu.Unlock()
-		if a.engine.snapshot().Phase == phaseStopped && !tuning {
-			killStrayEngines()
+		if a.shuttingDown || tuning {
+			return
+		}
+		if l, err := resolveLayout(); err == nil {
+			if a.engine.snapshot().Phase == phaseStopped {
+				killStrayEngine(l.Engine)
+			}
+			if a.games.snapshot().Phase == phaseStopped {
+				killStrayEngine(gameEngineLayout(l).Engine)
+			}
 		}
 	}()
 	a.startTray()
@@ -218,7 +227,7 @@ func (a *App) startEngineLocked(opts StartOptions, suppressDiscordRestart bool) 
 	// Снять любые конкурирующие evasion.exe перед запуском: два движка дерутся
 	// за WinDivert handle и не дают обновить runtime. Свой процесс ещё не поднят.
 	began := time.Now()
-	killStrayEngines()
+	killStrayEngine(l.Engine)
 	// Чужой перехват (zapret, GoodbyeDPI, byedpi) на том же трафике ломает десинк.
 	conflicts := clearConflicts()
 	cleaned := time.Now()

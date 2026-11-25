@@ -80,6 +80,8 @@ type Writer struct {
 	// closeOnce защищает от повторного закрытия: Close может быть вызван и
 	// по завершении работы, и из обработчика сигнала.
 	closeOnce sync.Once
+	closeErr  error
+	admission sync.RWMutex
 	// closed закрывается при остановке и служит признаком для Enqueue.
 	closed chan struct{}
 	// done закрывается, когда горутина записи дописала всё и вышла.
@@ -131,11 +133,20 @@ func NewWriter(s Store, cfg WriterConfig) (*Writer, error) {
 //
 // Вызывается с горячего пути: не блокируется и не выделяет памяти.
 func (w *Writer) Enqueue(o Observation) bool {
-	// Проверка закрытия до отправки обязательна: запись в закрытый канал
-	// вызвала бы панику, а паника на горячем пути уронила бы движок.
+	if w.tryEnqueueObservation(o) {
+		return true
+	}
+	w.drop()
+	return false
+}
+
+func (w *Writer) tryEnqueueObservation(o Observation) bool {
+	if !w.admission.TryRLock() {
+		return false
+	}
+	defer w.admission.RUnlock()
 	select {
 	case <-w.closed:
-		w.drop()
 		return false
 	default:
 	}
@@ -146,7 +157,6 @@ func (w *Writer) Enqueue(o Observation) bool {
 	default:
 		// Очередь полна. Отбрасываем, а не ждём: ожидание здесь означало бы,
 		// что замедление диска замедляет обход.
-		w.drop()
 		return false
 	}
 }
@@ -157,6 +167,10 @@ func (w *Writer) Enqueue(o Observation) bool {
 // молча, а сообщаются через возвращаемое значение: потеря истории решений
 // лишила бы возможности разобрать прошлое поведение автопилота.
 func (w *Writer) EnqueueEvent(e StrategyEvent) bool {
+	if !w.admission.TryRLock() {
+		return false
+	}
+	defer w.admission.RUnlock()
 	select {
 	case <-w.closed:
 		return false
@@ -287,8 +301,11 @@ const flushTimeout = 30 * time.Second
 // вызывающий считал бы их сохранёнными.
 func (w *Writer) Close() error {
 	w.closeOnce.Do(func() {
+		w.admission.Lock()
 		close(w.closed)
+		w.admission.Unlock()
+		<-w.done
+		w.closeErr = w.store.Close()
 	})
-	<-w.done
-	return w.store.Close()
+	return w.closeErr
 }

@@ -576,6 +576,34 @@ func TestWriterConcurrentEnqueue(t *testing.T) {
 	}
 }
 
+type writerCloseCountingStore struct {
+	*Memory
+	closes int
+	err    error
+}
+
+func (s *writerCloseCountingStore) Close() error {
+	s.closes++
+	return s.err
+}
+
+func TestWriterCloseClosesUnderlyingStoreOnce(t *testing.T) {
+	want := errors.New("close failed")
+	s := &writerCloseCountingStore{Memory: NewMemory(), err: want}
+	w, err := NewWriter(s, WriterConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := w.Close(); !errors.Is(err, want) {
+			t.Fatalf("Close: got %v, want %v", err, want)
+		}
+	}
+	if s.closes != 1 {
+		t.Fatalf("underlying store closed %d times, want 1", s.closes)
+	}
+}
+
 // TestMemoryObservationsOrderAndFilter: хранилище в памяти отдаёт сырые
 // наблюдения по возрастанию времени и уважает фильтры запроса. Нужно прогреву
 // оценок и тестам, которые проверяют его без диска.

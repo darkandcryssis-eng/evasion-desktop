@@ -18,7 +18,7 @@ import (
 var assets embed.FS
 
 func main() {
-	finishUpdate(os.Args[1:])
+	waitForPreviousCopy(os.Args[1:])
 	app := NewApp()
 	err := wails.Run(&options.App{
 		Title:            "Evasion",

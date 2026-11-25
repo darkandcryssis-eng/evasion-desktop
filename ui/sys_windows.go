@@ -77,11 +77,7 @@ func processRunning(image string) bool {
 }
 
 // Only retire an orphan of this installation's embedded engine.
-func killStrayEngines() {
-	l, err := resolveLayout()
-	if err != nil {
-		return
-	}
+func killStrayEngine(expected string) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return
@@ -98,7 +94,7 @@ func killStrayEngines() {
 		}
 		var buffer [32768]uint16
 		size := uint32(len(buffer))
-		if windows.QueryFullProcessImageName(h, 0, &buffer[0], &size) == nil && sameEngineImage(windows.UTF16ToString(buffer[:size]), l.Engine) {
+		if windows.QueryFullProcessImageName(h, 0, &buffer[0], &size) == nil && sameEngineImage(windows.UTF16ToString(buffer[:size]), expected) {
 			if windows.TerminateProcess(h, 0) == nil {
 				_, _ = windows.WaitForSingleObject(h, 1000)
 			}
