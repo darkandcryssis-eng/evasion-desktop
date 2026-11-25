@@ -37,6 +37,8 @@ type TelegramRoute struct {
 	Status    string `json:"status"`
 	LatencyMS int64  `json:"latencyMs"`
 	Failures  int    `json:"failures"`
+	Stability int    `json:"stability"`
+	Drops     int    `json:"drops"`
 	CheckedAt string `json:"checkedAt"`
 	RetryAt   string `json:"retryAt"`
 }
@@ -49,7 +51,7 @@ type SpeedSample struct {
 func routeViews(routes []tgproxy.RouteStatus) []TelegramRoute {
 	out := make([]TelegramRoute, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, TelegramRoute{Code: r.Code, Reason: r.Reason, ID: r.ID, Host: r.Host, Kind: r.Kind, Status: r.Status, LatencyMS: r.LatencyMS, Failures: r.Failures, CheckedAt: r.CheckedAt, RetryAt: r.RetryAt})
+		out = append(out, TelegramRoute{Code: r.Code, Reason: r.Reason, ID: r.ID, Host: r.Host, Kind: r.Kind, Status: r.Status, LatencyMS: r.LatencyMS, Failures: r.Failures, Stability: r.Stability, Drops: r.Drops, CheckedAt: r.CheckedAt, RetryAt: r.RetryAt})
 	}
 	return out
 }

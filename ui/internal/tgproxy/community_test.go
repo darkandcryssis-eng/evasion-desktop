@@ -43,11 +43,14 @@ func TestFetchCommunityDomainsUsesOnlyValidatedPayload(t *testing.T) {
 
 func TestDirectRoutesIncludeFrontingAfterFixedAddress(t *testing.T) {
 	routes := routesFor(2, false)
-	if len(routes) != 3 {
-		t.Fatalf("route count = %d", len(routes))
+	if len(routes) != 6 {
+		t.Fatalf("route count = %d, want 6 (kws + zws)", len(routes))
 	}
 	front := routes[2]
 	if !front.fronting || front.address != "149.154.167.220:443" || front.host != "kws2.web.telegram.org" {
 		t.Fatalf("invalid fronting route: %+v", front)
+	}
+	if routes[3].host != "zws2.web.telegram.org" || !routes[3].isEncryptedWSS() {
+		t.Fatalf("missing WebZ WSS fallback route: %+v", routes[3])
 	}
 }

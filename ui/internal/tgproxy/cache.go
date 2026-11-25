@@ -12,11 +12,14 @@ import (
 )
 
 type savedRoute struct {
-	DC        int       `json:"dc"`
-	Media     bool      `json:"media"`
-	ID        string    `json:"id"`
-	LatencyMS int64     `json:"latencyMs"`
-	At        time.Time `json:"at"`
+	DC             int       `json:"dc"`
+	Media          bool      `json:"media"`
+	ID             string    `json:"id"`
+	LatencyMS      int64     `json:"latencyMs"`
+	Successes      int       `json:"successes,omitempty"`
+	MidStreamDrops int       `json:"midStreamDrops,omitempty"`
+	AvgLifetimeMS  int64     `json:"avgLifetimeMs,omitempty"`
+	At             time.Time `json:"at"`
 }
 type routeCacheData struct {
 	Schema  int          `json:"schema"`
@@ -93,7 +96,13 @@ func (r *router) enableCache(path, network string) {
 	for id, v := range entries {
 		route, _ := routeFromCache(v, r.community)
 		r.known[id] = route
-		r.health[id] = routeHealth{preferred: true, latency: time.Duration(v.LatencyMS) * time.Millisecond}
+		r.health[id] = routeHealth{
+			preferred:      true,
+			latency:        time.Duration(v.LatencyMS) * time.Millisecond,
+			successes:      max(0, v.Successes),
+			midStreamDrops: max(0, v.MidStreamDrops),
+			ewmaLifetime:   time.Duration(max(0, v.AvgLifetimeMS)) * time.Millisecond,
+		}
 	}
 	go func() {
 		defer close(c.done)
@@ -118,6 +127,10 @@ func (r *router) enableCache(path, network string) {
 }
 
 func (c *routeCache) remember(r route, latency time.Duration) {
+	c.rememberWithStats(r, latency, 1, 0, 0)
+}
+
+func (c *routeCache) rememberWithStats(r route, latency time.Duration, successes, drops int, avgLifetime time.Duration) {
 	if r.tcp || r.dc == 0 {
 		return
 	}
@@ -131,7 +144,16 @@ func (c *routeCache) remember(r route, latency time.Duration) {
 		}
 		delete(c.entries, oldest)
 	}
-	c.entries[r.id] = savedRoute{DC: r.dc, Media: r.media, ID: r.id, LatencyMS: max(0, latency.Milliseconds()), At: time.Now().UTC()}
+	c.entries[r.id] = savedRoute{
+		DC:             r.dc,
+		Media:          r.media,
+		ID:             r.id,
+		LatencyMS:      max(0, latency.Milliseconds()),
+		Successes:      max(0, successes),
+		MidStreamDrops: max(0, drops),
+		AvgLifetimeMS:  max(0, avgLifetime.Milliseconds()),
+		At:             time.Now().UTC(),
+	}
 	c.mu.Unlock()
 	select {
 	case c.signal <- struct{}{}:

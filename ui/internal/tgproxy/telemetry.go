@@ -23,6 +23,8 @@ type RouteStatus struct {
 	Kind      string `json:"kind"`
 	Status    string `json:"status"`
 	LatencyMS int64  `json:"latencyMs"`
+	Stability int    `json:"stability"`
+	Drops     int    `json:"drops"`
 	Failures  int    `json:"failures"`
 	CheckedAt string `json:"checkedAt"`
 	RetryAt   string `json:"retryAt"`
@@ -130,7 +132,8 @@ func (r *router) snapshot() []RouteStatus {
 	now := time.Now()
 	for id, candidate := range r.known {
 		h := r.health[id]
-		v := RouteStatus{Code: h.code, Reason: h.reason, ID: id, Host: candidate.host, Kind: "WSS", Status: "untested", LatencyMS: h.latency.Milliseconds(), Failures: h.failures}
+		stabPct := int(stabilityScore(h, now)*100 + 0.5)
+		v := RouteStatus{Code: h.code, Reason: h.reason, ID: id, Host: candidate.host, Kind: "WSS", Status: "untested", LatencyMS: h.latency.Milliseconds(), Stability: stabPct, Drops: h.midStreamDrops, Failures: h.failures}
 		if candidate.address != "" && !candidate.tcp {
 			v.Kind = "WSS · фиксированный адрес"
 		}

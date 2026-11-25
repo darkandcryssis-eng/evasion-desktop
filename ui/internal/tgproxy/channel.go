@@ -257,3 +257,52 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 	}
 	return &relayChannel{upstream: upstream, route: candidate, latency: latency, encrypt: tgEnc, decrypt: tgDec, firstReply: firstReply, label: label}, false, nil
 }
+
+// switchChannel opens a replacement upstream route after an active channel
+// breaks mid-stream, avoiding the failed route. If replayFrame is non-empty,
+// it replays that unacknowledged client frame and verifies the first reply.
+func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, replayFrame []byte) (*relayChannel, error) {
+	switchCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	upstream, candidate, latency, err := s.router.connectAvoid(switchCtx, h.dc, h.media, avoid)
+	if err != nil {
+		return nil, err
+	}
+	stopClose := context.AfterFunc(switchCtx, func() { _ = upstream.Close() })
+	label := telegramRouteLabel(candidate, h.dc)
+	init, tgEnc, tgDec, err := relayHandshake(h)
+	if err == nil {
+		err = upstream.WritePacket(bytes.NewReader(init), int64(len(init)))
+	}
+	var firstReply []byte
+	if err == nil && len(replayFrame) > 0 {
+		encoded := append([]byte(nil), replayFrame...)
+		tgEnc.XORKeyStream(encoded, encoded)
+		err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded)))
+		if err == nil {
+			firstReply, err = readFirstUpstream(switchCtx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
+		}
+	}
+	if err == nil && !stopClose() {
+		err = switchCtx.Err()
+	}
+	if err != nil {
+		stopClose()
+		_ = upstream.Close()
+		if ctx.Err() == nil {
+			s.router.failure(candidate.id, err)
+		}
+		return nil, err
+	}
+	s.router.success(candidate.id, latency)
+	s.router.warm(h.dc, h.media, candidate)
+	return &relayChannel{
+		upstream:   upstream,
+		route:      candidate,
+		latency:    latency,
+		encrypt:    tgEnc,
+		decrypt:    tgDec,
+		firstReply: firstReply,
+		label:      label,
+	}, nil
+}

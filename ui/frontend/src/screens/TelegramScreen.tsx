@@ -5,7 +5,7 @@ import { PageHeader } from "../components/PageHeader";
 import { TelegramStatus } from "../components/TelegramStatus";
 import { Disclosure } from "../components/Disclosure";
 import { Toggle } from "../components/Toggle";
-import { SpeedGraph, RoutePanel } from "../components/TelegramInsights";
+import { DisconnectJournalPanel, RoutePanel, SpeedGraph } from "../components/TelegramInsights";
 
 export function TelegramScreen({ state, motion, onRefresh }: { state?: TelegramState; motion: boolean; onRefresh: () => unknown }) {
   const [busy, setBusy] = useState(false);
@@ -35,10 +35,11 @@ export function TelegramScreen({ state, motion, onRefresh }: { state?: TelegramS
       <TelegramStatus state={state} motion={motion} onRefresh={onRefresh} />
       <SpeedGraph samples={state?.speeds} running={!!state?.running} />
       <RoutePanel />
+      <DisconnectJournalPanel disconnects={state?.disconnects} switches={state?.switches} />
       <Disclosure summary={<><Send size={17} /><span><strong>Параметры подключения</strong><small>Обычно менять не требуется</small></span></>}>
         <div className="disclosure__body"><label className="control-row"><span>Локальный порт</span><input className="telegram-port-input" type="number" min={1024} max={65535} value={port ?? state?.port ?? 17655} disabled={state?.running || busy} onChange={(e) => setPort(e.target.value)} /></label><div className="setting-row"><div><strong>Резервные узлы сообщества</strong><small>Использовать, если прямой маршрут заблокирован. Сообщения защищены шифрованием Telegram.</small></div><Toggle checked={community ?? state?.community ?? true} disabled={state?.running || busy} label="Резервные узлы сообщества" onChange={setCommunity} /></div><p className="local-note">Прокси доступен только на этом компьютере. Он не меняет параметры стороннего TgWsProxy.</p></div>
       </Disclosure>
-      <p className="local-note">Трафик сообщений остаётся зашифрованным Telegram. После обрыва повреждённый канал закрывается, чтобы клиент переподключился через доступный маршрут.</p>
+      <p className="local-note">Трафик сообщений остаётся зашифрованным Telegram. При обрыве прокси сначала пытается бесшовно переключиться на резервный маршрут, и только при неудаче закрывает канал.</p>
     </div>
   );
 }
