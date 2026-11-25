@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -76,6 +77,11 @@ type Options struct {
 	// HandshakeJunk — сколько случайных UDP-пакетов (AmneziaWG Jc) отправить
 	// перед каждым WireGuard Handshake Initiation. 0 отключает маскировку.
 	HandshakeJunk int
+	// VerifyUDP — после WireGuard-рукопожатия дополнительно проверить реальный
+	// двусторонний UDP-обмен внутри туннеля (DNS-запрос на 1.1.1.1:53), чтобы
+	// отсеивать endpoint-ы, на которых провайдер пропускает рукопожатие, но
+	// режет транспортные пакеты WireGuard.
+	VerifyUDP bool
 }
 
 // Open поднимает туннель.
@@ -197,6 +203,138 @@ func (t *Tunnel) ListenUDP(ipv6 bool) (net.PacketConn, error) {
 		return nil, fmt.Errorf("tunnel: адрес для UDP (ipv6=%v) не задан", ipv6)
 	}
 	return t.stack.ListenUDPAddrPort(netip.AddrPortFrom(ip, 0))
+}
+
+// buildDNSProbeQuery строит DNS-запрос для "." (NS IN) с заданным ID транзакции
+// и опциональным EDNS0-padding (чтобы проверить прохождение пакетов размера
+// STUN/TURN, а не только крошечных 17-байтных датаграмм).
+func buildDNSProbeQuery(txid uint16, padBytes int) []byte {
+	q := []byte{
+		byte(txid >> 8), byte(txid), // Transaction ID
+		0x01, 0x00, // Standard query, RD=1
+		0x00, 0x01, // QDCOUNT=1
+		0x00, 0x00, // ANCOUNT=0
+		0x00, 0x00, // NSCOUNT=0
+		0x00, 0x00, // ARCOUNT
+		0x00,       // QNAME="."
+		0x00, 0x02, // QTYPE=NS
+		0x00, 0x01, // QCLASS=IN
+	}
+	if padBytes > 0 {
+		q[11] = 1 // ARCOUNT=1 (OPT RR)
+		// OPT RR: NAME=0, TYPE=41, CLASS=1232, TTL=0, RDLEN=4+padBytes
+		rdlen := 4 + padBytes
+		q = append(q,
+			0x00,
+			0x00, 0x29,
+			0x04, 0xd0,
+			0x00, 0x00, 0x00, 0x00,
+			byte(rdlen>>8), byte(rdlen),
+			// EDNS0 Padding option (RFC 7830, code=12)
+			0x00, 0x0c,
+			byte(padBytes>>8), byte(padBytes),
+		)
+		q = append(q, make([]byte, padBytes)...)
+	}
+	return q
+}
+
+// ProbeUDP проверяет, что через поднятый туннель реально проходит двусторонний
+// внешний UDP-обмен (а не только WireGuard-рукопожатие или локальный 1.1.1.1):
+// шлёт два DNS-запроса на 8.8.8.8:53 (обычный и ~128-байтный с EDNS0-padding,
+// сопоставимый со STUN/TURN) и ждёт оба ответа в пределах ctx.
+func (t *Tunnel) ProbeUDP(ctx context.Context) error {
+	pc, err := t.ListenUDP(false)
+	if err != nil {
+		return err
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = pc.Close()
+		case <-done:
+		}
+	}()
+	defer func() {
+		close(done)
+		_ = pc.Close()
+	}()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = pc.SetDeadline(dl)
+	}
+	target := &net.UDPAddr{IP: net.IPv4(8, 8, 8, 8), Port: 53}
+	probes := []struct {
+		txid uint16
+		pad  int
+	}{
+		{txid: 0x5347, pad: 0},
+		{txid: 0x5348, pad: 96},
+	}
+	var buf [512]byte
+	for _, p := range probes {
+		q := buildDNSProbeQuery(p.txid, p.pad)
+		if _, err := pc.WriteTo(q, target); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("tunnel: UDP probe write: %w", err)
+		}
+		for {
+			n, _, err := pc.ReadFrom(buf[:])
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("tunnel: UDP probe read: %w", err)
+			}
+			if n >= 12 && buf[0] == byte(p.txid>>8) && buf[1] == byte(p.txid) {
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// ExitInfo сообщает, через какой узел Cloudflare туннель выходит в интернет
+// (colo, страна и внешний адрес из /cdn-cgi/trace). Нужен для диагностики:
+// anycast-адрес пира не говорит, в какой дата-центр провайдер привёл туннель.
+func (t *Tunnel) ExitInfo(ctx context.Context) (string, error) {
+	client := &http.Client{Transport: &http.Transport{
+		DialContext:       t.stack.DialContext,
+		DisableKeepAlives: true,
+	}}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://1.1.1.1/cdn-cgi/trace", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("tunnel: trace: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return "", fmt.Errorf("tunnel: trace: %w", err)
+	}
+	return parseTrace(string(body)), nil
+}
+
+func parseTrace(body string) string {
+	fields := map[string]string{}
+	for _, line := range strings.Split(body, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			fields[k] = v
+		}
+	}
+	out := make([]string, 0, 4)
+	for _, k := range []string{"colo", "loc", "ip", "warp"} {
+		if v := fields[k]; v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // DialContext открывает TCP-соединение через туннель.
@@ -461,6 +599,9 @@ func OpenWithFallbackEndpoints(ctx context.Context, opts Options, endpoints []st
 					return
 				}
 				werr := tn.WaitHandshake(bctx)
+				if werr == nil && opts.VerifyUDP {
+					werr = tn.ProbeUDP(bctx)
+				}
 				if werr == nil {
 					mu.Lock()
 					if winner == nil {

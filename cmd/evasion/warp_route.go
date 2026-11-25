@@ -271,10 +271,10 @@ func warpWorthy(err error) bool {
 // openWARP регистрирует устройство при первом обращении, подбирает порт, на
 // котором провайдер пропускает WARP, и проверяет туннель настоящим соединением.
 func openWARP(ctx context.Context, dir string, logger *slog.Logger) (warpDialer, error) {
-	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, 1, 0, false, logger)
+	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, 1, 0, false, nil, logger)
 }
 
-func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, parallelBatch, handshakeJunk int, multiHost bool, logger *slog.Logger) (*tunnel.Tunnel, error) {
+func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, parallelBatch, handshakeJunk int, multiHost bool, exclude map[string]struct{}, logger *slog.Logger) (*tunnel.Tunnel, error) {
 	path := filepath.Join(dir, stateFile)
 	acc, err := loadWARPAccount(path)
 	if err != nil {
@@ -302,11 +302,11 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 	}
 	started := time.Now()
 	quiet := slog.New(slog.DiscardHandler)
-	opts := tunnel.Options{Account: acc, Logger: quiet, HandshakeJunk: handshakeJunk}
+	opts := tunnel.Options{Account: acc, Logger: quiet, HandshakeJunk: handshakeJunk, VerifyUDP: multiHost}
 	var tn *tunnel.Tunnel
 	if multiHost {
-		endpoints := warpMultiHostEndpoints(acc.PeerEndpoint)
-		logger.Info("резерв WARP: перебор адресов", "адресов", len(endpoints), "параллельно", max(1, parallelBatch), "мусор", handshakeJunk)
+		endpoints := warpMultiHostEndpoints(acc.PeerEndpoint, exclude)
+		logger.Info("резерв WARP: перебор адресов", "адресов", len(endpoints), "параллельно", max(1, parallelBatch), "мусор", handshakeJunk, "исключено", len(exclude))
 		tn, err = tunnel.OpenWithFallbackEndpoints(ctx, opts, endpoints, portWait, parallelBatch)
 	} else {
 		ports := warpPorts(acc.PeerEndpoint)
@@ -316,14 +316,16 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 	if err != nil {
 		return nil, fmt.Errorf("провайдер не пропускает WARP ни на одном порту: %w", err)
 	}
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	conn, err := tn.DialContext(pctx, "tcp", warpProbeAddr)
-	cancel()
-	if err != nil {
-		_ = tn.Close()
-		return nil, fmt.Errorf("туннель поднят, но соединение через него не проходит: %w", err)
+	if !multiHost {
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		conn, err := tn.DialContext(pctx, "tcp", warpProbeAddr)
+		cancel()
+		if err != nil {
+			_ = tn.Close()
+			return nil, fmt.Errorf("туннель поднят, но соединение через него не проходит: %w", err)
+		}
+		_ = conn.Close()
 	}
-	_ = conn.Close()
 	// Рабочий порт запоминается: следующий подъём начнётся с него.
 	if endpoint := tn.Endpoint(); endpoint != "" && endpoint != acc.PeerEndpoint {
 		acc.PeerEndpoint = endpoint
@@ -356,10 +358,12 @@ func addWARPRegistrationHost(cfg *config.Config) {
 // warpMultiHostEndpoints строит список кандидатов "IP:port" по нескольким
 // anycast-подсетям Cloudflare WARP (162.159.192-195.* и 188.114.96-99.*),
 // чередуя хосты на каждом порту: первый же батч проверяет порт 2408 сразу на
-// всех подсетях, а прошлый рабочий адрес идёт самым первым.
-func warpMultiHostEndpoints(savedEndpoint string) []string {
+// всех подсетях, а прошлый рабочий адрес идёт самым первым. Адреса из deprioritize
+// (недавно переставшие отвечать) переносятся в конец списка как последний резерв,
+// чтобы при отказе всех остальных адресов не терять единственный доступный пир.
+func warpMultiHostEndpoints(savedEndpoint string, deprioritize map[string]struct{}) []string {
 	seen := make(map[string]struct{}, len(tunnel.WARPFallbackHosts)*len(tunnel.WARPTelegramPorts)+1)
-	out := make([]string, 0, len(tunnel.WARPFallbackHosts)*len(tunnel.WARPTelegramPorts)+1)
+	all := make([]string, 0, len(tunnel.WARPFallbackHosts)*len(tunnel.WARPTelegramPorts)+1)
 	add := func(ep string) {
 		if ep == "" {
 			return
@@ -368,7 +372,7 @@ func warpMultiHostEndpoints(savedEndpoint string) []string {
 			return
 		}
 		seen[ep] = struct{}{}
-		out = append(out, ep)
+		all = append(all, ep)
 	}
 	if host, _, err := net.SplitHostPort(savedEndpoint); err == nil {
 		if _, err := netip.ParseAddr(host); err == nil {
@@ -380,7 +384,19 @@ func warpMultiHostEndpoints(savedEndpoint string) []string {
 			add(net.JoinHostPort(host, strconv.Itoa(port)))
 		}
 	}
-	return out
+	if len(deprioritize) == 0 {
+		return all
+	}
+	preferred := make([]string, 0, len(all))
+	deferred := make([]string, 0, len(deprioritize))
+	for _, ep := range all {
+		if _, slow := deprioritize[ep]; slow {
+			deferred = append(deferred, ep)
+		} else {
+			preferred = append(preferred, ep)
+		}
+	}
+	return append(preferred, deferred...)
 }
 
 // warpPorts ставит первым порт, на котором туннель поднимался в прошлый раз.

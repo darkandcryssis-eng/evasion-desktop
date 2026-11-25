@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,19 +18,79 @@ import (
 )
 
 const (
-	telegramCallTunnelFilter   = "outbound and udp and udp.DstPort != 443 and udp.DstPort != 53 and not loopback and not impostor"
-	telegramCallTunnelPriority = 150
+	telegramCallTunnelFilter    = "outbound and udp and udp.DstPort != 443 and udp.DstPort != 53 and not loopback and not impostor"
+	telegramCallTunnelPriority  = 150
 	telegramCallWARPTrigger     = 4
-	telegramCallWARPRetry       = 3 * time.Minute
-	telegramCallWARPPortWait    = 1400 * time.Millisecond
+	telegramCallWARPRetry       = 30 * time.Second
+	telegramCallWARPDeadRetry   = 1 * time.Second
+	telegramCallWARPBadPeerTTL  = 10 * time.Minute
+	telegramCallWARPPortWait    = 1800 * time.Millisecond
 	telegramCallWARPBatch       = 10
 	telegramCallWARPJunk        = 4
 	telegramCallWARPStateFile   = "warp-telegram.json"
-	telegramCallWARPDeadPackets = 12
-	telegramCallWARPDeadWindow  = 10 * time.Second
+	telegramCallWARPDeadPackets = 8
+	telegramCallWARPDeadWindow  = 5 * time.Second
 	telegramCallSocketIdle      = 90 * time.Second
 	telegramCallMaxSockets      = 64
+	telegramCallReportEvery     = 5 * time.Second
+	telegramCallProbeWait       = 900 * time.Millisecond
+	telegramCallExitInfoWait    = 6 * time.Second
+	telegramCallMaxTargets      = 12
 )
+
+// Необязательные возможности туннеля для диагностики звонка.
+type tgTunnelProber interface {
+	ProbeUDP(context.Context) error
+}
+
+type tgTunnelExitInfo interface {
+	ExitInfo(context.Context) (string, error)
+}
+
+type tgTargetCount struct {
+	tx, rx int64
+}
+
+// tgTargetStats считает пакеты звонка по адресам назначения: по ним видно,
+// молчат все реле Telegram или только часть.
+type tgTargetStats struct {
+	mu    sync.Mutex
+	order []netip.AddrPort
+	byDst map[netip.AddrPort]*tgTargetCount
+}
+
+func (s *tgTargetStats) add(dst netip.AddrPort, tx, rx int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.byDst[dst]
+	if c == nil {
+		if len(s.order) >= telegramCallMaxTargets {
+			return
+		}
+		if s.byDst == nil {
+			s.byDst = make(map[netip.AddrPort]*tgTargetCount)
+		}
+		c = &tgTargetCount{}
+		s.byDst[dst] = c
+		s.order = append(s.order, dst)
+	}
+	c.tx += tx
+	c.rx += rx
+}
+
+func (s *tgTargetStats) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var b strings.Builder
+	for i, dst := range s.order {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		c := s.byDst[dst]
+		fmt.Fprintf(&b, "%s:%d/%d", dst, c.tx, c.rx)
+	}
+	return b.String()
+}
 
 type tgUDPTunnel interface {
 	ListenUDP(ipv6 bool) (net.PacketConn, error)
@@ -73,21 +135,22 @@ type telegramCallTunnel struct {
 	owner      telegramUDPOwner
 	logger     *slog.Logger
 	now        func() time.Time
-	openTunnel func(context.Context) (tgUDPTunnel, error)
+	openTunnel func(context.Context, map[string]struct{}) (tgUDPTunnel, error)
 	openHandle func() (tgTunnelConn, error)
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	closed  bool
-	opening bool
-	active  bool
-	retryAt time.Time
-	peer    string
-	tn      tgUDPTunnel
-	handle  tgTunnelConn
-	sockets map[tgLocalSocketKey]*tgSocketRelay
+	mu       sync.Mutex
+	closed   bool
+	opening  bool
+	active   bool
+	retryAt  time.Time
+	peer     string
+	badPeers map[string]time.Time
+	tn       tgUDPTunnel
+	handle   tgTunnelConn
+	sockets  map[tgLocalSocketKey]*tgSocketRelay
 
 	sendMu sync.Mutex
 	wg     sync.WaitGroup
@@ -107,12 +170,13 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 		owner:     owner,
 		logger:    logger,
 		now:       time.Now,
-		openTunnel: func(c context.Context) (tgUDPTunnel, error) {
-			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, telegramCallWARPJunk, true, logger)
+		openTunnel: func(c context.Context, exclude map[string]struct{}) (tgUDPTunnel, error) {
+			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, telegramCallWARPJunk, true, exclude, logger)
 		},
 		openHandle: openTelegramCallTunnelHandle,
 		ctx:        ctx,
 		cancel:     cancel,
+		badPeers:   make(map[string]time.Time),
 		sockets:    make(map[tgLocalSocketKey]*tgSocketRelay),
 	}
 }
@@ -135,11 +199,33 @@ func (t *telegramCallTunnel) NotifyUnanswered() {
 	go t.activate()
 }
 
+func (t *telegramCallTunnel) activeBadPeersLocked(now time.Time) map[string]struct{} {
+	if len(t.badPeers) == 0 {
+		return nil
+	}
+	var out map[string]struct{}
+	for ep, until := range t.badPeers {
+		if now.After(until) {
+			delete(t.badPeers, ep)
+			continue
+		}
+		if out == nil {
+			out = make(map[string]struct{}, len(t.badPeers))
+		}
+		out[ep] = struct{}{}
+	}
+	return out
+}
+
 func (t *telegramCallTunnel) activate() {
 	defer t.wg.Done()
 
+	t.mu.Lock()
+	exclude := t.activeBadPeersLocked(t.now())
+	t.mu.Unlock()
+
 	t.logger.Info("звонок Telegram: запуск резервного UDP-туннеля WARP")
-	tn, err := t.openTunnel(t.ctx)
+	tn, err := t.openTunnel(t.ctx, exclude)
 	if err != nil {
 		t.mu.Lock()
 		t.opening = false
@@ -201,10 +287,23 @@ func (t *telegramCallTunnel) activate() {
 
 func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 	defer t.wg.Done()
+	// afterClose доделывает работу с туннелем, когда перехват уже снят:
+	// диагностика зависшего пира не должна задерживать чужой UDP в очереди
+	// WinDivert и переход на следующий адрес.
+	var afterClose func()
 	defer func() {
 		t.closeSockets()
 		_ = handle.Close()
-		_ = tn.Close()
+		if afterClose != nil {
+			t.wg.Add(1)
+			go func() {
+				defer t.wg.Done()
+				defer tn.Close()
+				afterClose()
+			}()
+		} else {
+			_ = tn.Close()
+		}
 		t.mu.Lock()
 		if t.handle == handle {
 			t.handle = nil
@@ -218,6 +317,24 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 
 	t.unansweredTx.Store(0)
 	var stalledSince time.Time
+	targets := &tgTargetStats{}
+	sentBase, recvBase := t.sent.Load(), t.received.Load()
+	lastReport := t.now()
+	var reportedTx int64
+	report := func(msg string) {
+		tx, rx := t.sent.Load()-sentBase, t.received.Load()-recvBase
+		t.logger.Info(msg, "пир", tn.Endpoint(), "отправлено", tx, "получено", rx,
+			"цели_отпр/получ", targets.String())
+		reportedTx = tx
+		lastReport = t.now()
+	}
+	defer func() {
+		if t.sent.Load()-sentBase != reportedTx {
+			report("звонок Telegram через WARP: итог")
+		}
+	}()
+	t.wg.Add(1)
+	go t.logExitInfo(tn)
 
 	for {
 		pkt, err := handle.Recv()
@@ -234,34 +351,92 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 			t.sendPacket(handle, pkt)
 			continue
 		}
-		relay := t.getOrCreateSocket(handle, tn, tgLocalSocketKey{ip: srcIP, port: srcPort}, pkt.Reinject)
+		relay := t.getOrCreateSocket(handle, tn, tgLocalSocketKey{ip: srcIP, port: srcPort}, pkt.Reinject, targets)
 		if relay == nil {
 			t.sendPacket(handle, pkt)
 			continue
 		}
-		dstAddr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(dstIP, dstPort))
+		dstAP := netip.AddrPortFrom(dstIP, dstPort)
+		dstAddr := net.UDPAddrFromAddrPort(dstAP)
 		if _, err := relay.pc.WriteTo(payload, dstAddr); err != nil {
 			t.removeSocket(relay)
 			continue
 		}
 		t.sent.Add(1)
+		targets.add(dstAP, 1, 0)
 		n := t.unansweredTx.Add(1)
 		if n == 1 {
 			stalledSince = t.now()
-		} else if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
+		}
+		if t.now().Sub(lastReport) >= telegramCallReportEvery {
+			report("звонок Telegram через WARP: сводка")
+		}
+		if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
+			peer := tn.Endpoint()
 			t.mu.Lock()
 			if !t.closed {
-				t.retryAt = t.now().Add(telegramCallWARPRetry)
+				now := t.now()
+				if peer != "" {
+					if t.badPeers == nil {
+						t.badPeers = make(map[string]time.Time)
+					}
+					t.badPeers[peer] = now.Add(telegramCallWARPBadPeerTTL)
+				}
+				t.retryAt = now.Add(telegramCallWARPDeadRetry)
 			}
 			t.mu.Unlock()
-			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, возврат на прямой путь",
-				"отправлено_без_ответа", n)
+			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, смена адреса",
+				"пир", peer,
+				"отправлено_без_ответа", n,
+				"получено_всего", t.received.Load()-recvBase,
+				"цели_отпр/получ", targets.String(),
+				"повтор_через", telegramCallWARPDeadRetry.String())
+			reportedTx = t.sent.Load() - sentBase
+			afterClose = func() {
+				t.logger.Warn("звонок Telegram: диагноз зависшего WARP",
+					"пир", peer, "диагноз", t.diagnoseStall(tn))
+			}
 			return
 		}
 	}
 }
 
-func (t *telegramCallTunnel) getOrCreateSocket(handle tgTunnelConn, tn tgUDPTunnel, key tgLocalSocketKey, reinject any) *tgSocketRelay {
+// diagnoseStall отличает «провайдер перестал пропускать данные туннеля» от
+// «туннель жив, но адреса Telegram через этот выход Cloudflare молчат»:
+// во втором случае смена порта или адреса пира сама по себе не помогает.
+func (t *telegramCallTunnel) diagnoseStall(tn tgUDPTunnel) string {
+	prober, ok := tn.(tgTunnelProber)
+	if !ok {
+		return "проверка недоступна"
+	}
+	ctx, cancel := context.WithTimeout(t.ctx, telegramCallProbeWait)
+	defer cancel()
+	if err := prober.ProbeUDP(ctx); err != nil {
+		return "туннель перестал пропускать данные (контрольный UDP без ответа)"
+	}
+	return "туннель жив (контрольный UDP прошёл), молчат адреса Telegram"
+}
+
+func (t *telegramCallTunnel) logExitInfo(tn tgUDPTunnel) {
+	defer t.wg.Done()
+	src, ok := tn.(tgTunnelExitInfo)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.ctx, telegramCallExitInfoWait)
+	defer cancel()
+	info, err := src.ExitInfo(ctx)
+	if t.ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		t.logger.Info("звонок Telegram: выход WARP не определён", "пир", tn.Endpoint(), "err", err)
+		return
+	}
+	t.logger.Info("звонок Telegram: выход WARP", "пир", tn.Endpoint(), "узел", info)
+}
+
+func (t *telegramCallTunnel) getOrCreateSocket(handle tgTunnelConn, tn tgUDPTunnel, key tgLocalSocketKey, reinject any, targets *tgTargetStats) *tgSocketRelay {
 	now := t.now()
 	t.mu.Lock()
 	if t.closed {
@@ -331,11 +506,11 @@ func (t *telegramCallTunnel) getOrCreateSocket(handle tgTunnelConn, tn tgUDPTunn
 	t.wg.Add(1)
 	t.mu.Unlock()
 
-	go t.readSocket(handle, relay)
+	go t.readSocket(handle, relay, targets)
 	return relay
 }
 
-func (t *telegramCallTunnel) readSocket(handle tgTunnelConn, relay *tgSocketRelay) {
+func (t *telegramCallTunnel) readSocket(handle tgTunnelConn, relay *tgSocketRelay, targets *tgTargetStats) {
 	defer t.wg.Done()
 	defer t.removeSocket(relay)
 
@@ -370,6 +545,7 @@ func (t *telegramCallTunnel) readSocket(handle tgTunnelConn, relay *tgSocketRela
 		})
 		t.unansweredTx.Store(0)
 		t.received.Add(1)
+		targets.add(src, 0, 1)
 	}
 }
 
