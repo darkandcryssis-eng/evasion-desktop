@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { LogLine } from "../api";
-import { advance, emptyFlow, resume, STEP } from "../logFlow";
+import { emptyFlow, resume, STEP } from "../logFlow";
 import { phrases } from "../logPhrases";
+import { startVisibleLoop } from "../windowActivity";
 
 const TAB_HEIGHT = 34, TAB_WIDTH = 124, TAB_RADIUS = 16, NOTCH = 18, RADIUS = 22;
 
@@ -29,10 +30,10 @@ export function LogStream({ logs, live, motion, session = "" }: { logs: LogLine[
   const kept = useRef(rows[rows.length - 1]?.id ?? -1);
   useEffect(() => {
     if (!live) { flow = emptyFlow(); kept.current = -1; setRows([]); return; }
-    flow = resume(flow, session, source.current, Date.now());
-    setRows(flow.rows);
-    const timer = window.setInterval(() => { flow = advance(flow, source.current, Date.now()); setRows(flow.rows); }, STEP);
-    return () => window.clearInterval(timer);
+    return startVisibleLoop(() => {
+      flow = resume(flow, session, source.current, Date.now());
+      setRows(flow.rows);
+    }, STEP).stop;
   }, [live, session]);
   return (
     <div className="stream" aria-hidden="true" data-still={!motion || undefined}>

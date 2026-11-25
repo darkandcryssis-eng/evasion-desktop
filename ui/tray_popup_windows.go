@@ -146,7 +146,6 @@ func startTrayPopup(view func() trayView, action func(string), ready func(toggle
 			p.buttons[id] = h
 		}
 		p.makeFonts()
-		p.update()
 		post := func(message uintptr) func() { return func() { trayU("PostMessageW", p.hwnd, message, 0, 0) } }
 		ready(post(trayToggleMessage), post(trayRefreshMessage), post(trayHideMessage), post(trayDestroyMessage))
 		var msg trayMessage
@@ -193,9 +192,7 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) (resul
 		}
 		return 0
 	case trayRefreshMessage:
-		if p.visible {
-			p.update()
-		}
+		p.update()
 		return 0
 	case trayHideMessage, 0x10:
 		p.hide()
@@ -423,6 +420,9 @@ func (p *trayPopup) track() {
 }
 
 func (p *trayPopup) update() {
+	if !p.visible {
+		return
+	}
 	if next := p.view(); next != p.state {
 		p.sync(next)
 	}

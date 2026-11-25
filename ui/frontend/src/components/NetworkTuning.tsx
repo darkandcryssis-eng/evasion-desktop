@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Activity, ShieldCheck } from "lucide-react";
 import { api, NetworkTuningView } from "../api";
 import { loadOptions } from "../preferences";
+import { startVisibleLoop } from "../windowActivity";
 import { Toggle } from "./Toggle";
 import { StatusBadge } from "./StatusBadge";
 
@@ -15,7 +16,7 @@ export function NetworkTuning() {
  const [view,setView]=useState<NetworkTuningView>();
  const [pending,setPending]=useState(false);
  const [error,setError]=useState("");
- useEffect(()=>{let alive=true;const refresh=async()=>{try{const next=await api.getNetworkTuning(loadOptions());if(alive)setView(next)}catch(e){if(alive)setError(String(e))}};void refresh();const timer=window.setInterval(()=>void refresh(),1500);return()=>{alive=false;window.clearInterval(timer)}},[]);
+ useEffect(()=>{let alive=true;const loop=startVisibleLoop(async()=>{try{const next=await api.getNetworkTuning(loadOptions());if(alive)setView(next)}catch(e){if(alive)setError(String(e))}},1500);return()=>{alive=false;loop.stop()}},[]);
  const health=view?.health;
  const phase=health?.phase??"waiting";
  const changeTelegram=async(enabled:boolean)=>{setPending(true);setError("");try{await api.setNetworkTuningSettings(true,enabled);setView(await api.getNetworkTuning(loadOptions()))}catch(e){setError(String(e))}finally{setPending(false)}};

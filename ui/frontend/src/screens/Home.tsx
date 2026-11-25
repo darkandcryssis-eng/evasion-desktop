@@ -61,7 +61,6 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   // WinDivert may be installed in runtime even when it isn't embedded.
   // The backend validates installed driver files when starting the engine.
   const ready = !!state && state.elevated && state.payload.engine && (state.payload.config || state.userConfig);
-  const elapsed = useElapsed(state?.engine.startedAt, running);
   const tuning = usePoll<NetworkTuningView>(() => api.getNetworkTuning(options), 3000).value;
 
   const logs = [...(state?.engine.logs ?? []), ...(state?.telegram?.logs ?? [])].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).slice(-400);
@@ -88,7 +87,6 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   // The ring names itself until it is pressed: the hint goes the moment the bypass starts.
   const invite = !!state && !locked && !active && !lit;
   const [lead, strong] = headline[phase];
-  const [hours, minutes, seconds] = elapsed.split(":");
 
   return (
     <div className="home">
@@ -116,9 +114,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
           <div className="aurora" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
           <LogStream logs={logs} live={running} motion={motion} session={state?.engine.startedAt} />
           <LogShowcase>
-            <div className="timer" aria-label={running ? `В сети ${elapsed}` : "Сессия не начата"}>
-              <b>{hours}</b><i>:</i><b>{minutes}</b><i>:</i><b>{seconds}</b>
-            </div>
+            <SessionTimer startedAt={state?.engine.startedAt} running={running} />
             <div className="pane__meta">
               <div><strong>{running && hello ? <Ticker value={hello.complete + hello.assembled} /> : "—"}</strong><span>соединений</span></div>
               <div><strong>{yt?.fresh && active ? yt.switches : "—"}</strong><span>замен способа</span></div>
@@ -181,6 +177,14 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
 }
 
 const orbit: BrandName[] = ["discord", "youtube", "telegram"];
+
+function SessionTimer({ startedAt, running }: { startedAt?: string; running: boolean }) {
+  const elapsed = useElapsed(startedAt, running);
+  const [hours, minutes, seconds] = elapsed.split(":");
+  return <div className="timer" aria-label={running ? `В сети ${elapsed}` : "Сессия не начата"}>
+    <b>{hours}</b><i>:</i><b>{minutes}</b><i>:</i><b>{seconds}</b>
+  </div>;
+}
 
 function ServiceTile({ brand, name, note, tone, label, live, onClick }: { brand: BrandName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
   return (

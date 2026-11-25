@@ -29,6 +29,7 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; }
+:root[data-window-hidden] *, :root[data-window-hidden] *::before, :root[data-window-hidden] *::after { animation-play-state: paused !important; }
 * { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 html, body, #root { height: 100%; margin: 0; overflow: hidden; background: var(--bg); }
 body { font: 400 13px/1.5 var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; font-synthesis: none; user-select: none; cursor: default; font-feature-settings: "cv11", "ss01", "tnum"; transition: background .6s var(--swift), color .6s var(--swift); }
