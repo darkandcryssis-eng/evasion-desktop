@@ -103,7 +103,13 @@ func (r *router) takeWarm(ctx context.Context, dc int, media bool, avoid map[str
 
 // Warm sockets contain no client init, auth key or user request. Each is used once.
 func (r *router) warm(dc int, media bool, candidates ...route) {
-	if len(candidates) == 0 || candidates[0].tcp {
+	var warmable []route
+	for _, candidate := range candidates {
+		if !candidate.tcp {
+			warmable = append(warmable, candidate)
+		}
+	}
+	if len(warmable) == 0 {
 		return
 	}
 	pool := r.pool
@@ -114,15 +120,15 @@ func (r *router) warm(dc int, media bool, candidates ...route) {
 		return
 	}
 	count := min(warmPerRoute-len(pool.idle[key]), warmLimit-pool.count)
-	counts := make(map[string]int, len(candidates))
+	counts := make(map[string]int, len(warmable))
 	for _, item := range pool.idle[key] {
 		counts[item.route.id]++
 	}
 	plan := make([]route, 0, count)
 	for range count {
-		best := candidates[0]
-		for _, candidate := range candidates[1:] {
-			if !candidate.tcp && counts[candidate.id] < counts[best.id] {
+		best := warmable[0]
+		for _, candidate := range warmable[1:] {
+			if counts[candidate.id] < counts[best.id] {
 				best = candidate
 			}
 		}

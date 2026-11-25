@@ -242,3 +242,22 @@ func TestWarmPoolCapacityIsBoundedAcrossDataCenters(t *testing.T) {
 		t.Fatal("refill reservation leaked")
 	}
 }
+
+func TestWarmBestSkipsTopRankedTunnel(t *testing.T) {
+	r := newRouter(func(context.Context, route) (peer, error) { return &trackedPeer{}, nil })
+	defer r.pool.close()
+	r.tunnel = func(context.Context, route) (peer, error) { return &trackedPeer{}, nil }
+	tunnel := tunnelRoute(2, true)
+	ws := routesFor(2, true)[0]
+	r.success(tunnel.id, time.Millisecond)
+	r.success(ws.id, 10*time.Millisecond)
+	r.warmBest(2, true)
+	r.pool.wg.Wait()
+	p, candidate, ok := r.takeWarm(context.Background(), 2, true, nil)
+	if ok {
+		defer p.Close()
+	}
+	if !ok || candidate.id != ws.id {
+		t.Fatalf("warmed route = %q (ok=%v), want %q", candidate.id, ok, ws.id)
+	}
+}

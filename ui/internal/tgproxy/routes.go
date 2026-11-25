@@ -737,17 +737,31 @@ func (r *router) warmBest(dc int, media bool) {
 	if media {
 		count = 2
 	}
-	best := r.bestCandidates(dc, media, count)
-	if len(best) == 0 {
+	candidates := r.bestCandidates(dc, media, count+2)
+	if len(candidates) == 0 {
 		return
 	}
+	best := make([]route, 0, count)
 	r.mu.Lock()
-	verified := routeRank(r.health[best[0].id]) > 0
-	if len(best) > 1 && !r.health[best[1].id].success {
-		best = best[:1]
+	for _, candidate := range candidates {
+		if candidate.tcp {
+			continue
+		}
+		h := r.health[candidate.id]
+		if len(best) == 0 {
+			if routeRank(h) <= 0 {
+				continue
+			}
+		} else if !h.success {
+			continue
+		}
+		best = append(best, candidate)
+		if len(best) == count {
+			break
+		}
 	}
 	r.mu.Unlock()
-	if !verified {
+	if len(best) == 0 {
 		return
 	}
 	r.warm(dc, media, best...)
