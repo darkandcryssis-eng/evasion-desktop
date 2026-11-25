@@ -314,7 +314,7 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 		if err != nil {
 			stopClose()
 			_ = upstream.Close()
-			if ctx.Err() == nil {
+			if switchCtx.Err() == nil {
 				s.router.failure(candidate.id, err)
 			}
 			lastErr = err
