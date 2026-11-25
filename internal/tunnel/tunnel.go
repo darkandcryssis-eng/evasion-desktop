@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -50,6 +51,8 @@ type Tunnel struct {
 	stack    *netstack.Net
 	logger   *slog.Logger
 	endpoint string
+	ipv4     netip.Addr
+	ipv6     netip.Addr
 }
 
 // Endpoint возвращает адрес пира ("IP:порт"), с которым поднят туннель.
@@ -70,6 +73,9 @@ type Options struct {
 	// LogLevel — уровень логов WireGuard. Пустая строка = Error (минимум).
 	// `verbose` печатает хендшейки и статусы (нужно для диагностики).
 	LogLevel string
+	// HandshakeJunk — сколько случайных UDP-пакетов (AmneziaWG Jc) отправить
+	// перед каждым WireGuard Handshake Initiation. 0 отключает маскировку.
+	HandshakeJunk int
 }
 
 // Open поднимает туннель.
@@ -136,7 +142,11 @@ func Open(opts Options) (*Tunnel, error) {
 		},
 	}
 
-	dev := device.NewDevice(tun, conn.NewDefaultBind(), wgLogger)
+	bind := conn.NewDefaultBind()
+	if opts.HandshakeJunk > 0 {
+		bind = newJunkBind(bind, opts.HandshakeJunk)
+	}
+	dev := device.NewDevice(tun, bind, wgLogger)
 
 	// Endpoint peer-а: wireguard-go внутри делает net.ResolveUDPAddr, он
 	// идёт через системный DNS. У владельца системный DNS режется провайдером,
@@ -165,7 +175,28 @@ func Open(opts Options) (*Tunnel, error) {
 		return nil, fmt.Errorf("tunnel: Up: %w", err)
 	}
 
-	return &Tunnel{device: dev, stack: netStack, logger: logger, endpoint: endpoint}, nil
+	return &Tunnel{
+		device:   dev,
+		stack:    netStack,
+		logger:   logger,
+		endpoint: endpoint,
+		ipv4:     opts.Account.IPv4,
+		ipv6:     opts.Account.IPv6,
+	}, nil
+}
+
+// ListenUDP открывает несвязанный UDP-сокет внутри туннеля для IPv4 или IPv6.
+// Один сокет обслуживает все удалённые направления с сохранением внешнего
+// порта (Cone NAT), что нужно для STUN/TURN/DTLS/SRTP в звонках Telegram.
+func (t *Tunnel) ListenUDP(ipv6 bool) (net.PacketConn, error) {
+	ip := t.ipv4
+	if ipv6 {
+		ip = t.ipv6
+	}
+	if !ip.IsValid() {
+		return nil, fmt.Errorf("tunnel: адрес для UDP (ipv6=%v) не задан", ipv6)
+	}
+	return t.stack.ListenUDPAddrPort(netip.AddrPortFrom(ip, 0))
 }
 
 // DialContext открывает TCP-соединение через туннель.
@@ -265,6 +296,12 @@ func (t *Tunnel) hasHandshake() bool {
 // при успехе — возвращаем, при неудаче — закрываем и пробуем следующий.
 // Если все провалились, возвращаем ошибку с перечислением попыток.
 func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (*Tunnel, error) {
+	return OpenWithFallbackContext(context.Background(), opts, ports, perPortTimeout)
+}
+
+// OpenWithFallbackContext — как OpenWithFallback, но немедленно прерывает
+// перебор портов при отмене ctx.
+func OpenWithFallbackContext(ctx context.Context, opts Options, ports []int, perPortTimeout time.Duration) (*Tunnel, error) {
 	if opts.Account == nil {
 		return nil, fmt.Errorf("tunnel: не задан account")
 	}
@@ -293,6 +330,9 @@ func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (
 
 	var lastErr error
 	for i, port := range ports {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		candidateAcc := *opts.Account
 		candidateAcc.PeerEndpoint = fmt.Sprintf("%s:%d", host, port)
 		candidateOpts := opts
@@ -306,8 +346,8 @@ func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), perPortTimeout)
-		err = tn.WaitHandshake(ctx)
+		pctx, cancel := context.WithTimeout(ctx, perPortTimeout)
+		err = tn.WaitHandshake(pctx)
 		cancel()
 		if err == nil {
 			logger.Info("tunnel: рукопожатие прошло", "port", port, "попыток", i+1)
@@ -315,9 +355,167 @@ func OpenWithFallback(opts Options, ports []int, perPortTimeout time.Duration) (
 		}
 		tn.Close()
 		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		logger.Debug("tunnel: порт не ответил", "port", port, "ошибка", err)
 	}
 	return nil, fmt.Errorf("tunnel: ни один из %d портов не ответил рукопожатием: %w", len(ports), lastErr)
+}
+
+// OpenWithFallbackParallel перебирает порты endpoint-а батчами по batchSize
+// одновременно: первый порт, ответивший WireGuard-рукопожатием, выигрывает,
+// остальные в батче немедленно закрываются. Укладывает перебор всех 41 портов
+// WARP в несколько секунд вместо минуты.
+func OpenWithFallbackParallel(ctx context.Context, opts Options, ports []int, perPortTimeout time.Duration, batchSize int) (*Tunnel, error) {
+	if batchSize <= 1 {
+		return OpenWithFallbackContext(ctx, opts, ports, perPortTimeout)
+	}
+	if opts.Account == nil {
+		return nil, fmt.Errorf("tunnel: не задан account")
+	}
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("tunnel: пустой список портов для перебора")
+	}
+	origEndpoint := opts.Account.PeerEndpoint
+	host, _, err := net.SplitHostPort(origEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("tunnel: endpoint %q не разбирается: %w", origEndpoint, err)
+	}
+	if _, err := netip.ParseAddr(host); err != nil {
+		resolved, rerr := resolveEndpoint(origEndpoint)
+		if rerr != nil {
+			return nil, rerr
+		}
+		host, _, _ = net.SplitHostPort(resolved)
+	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+
+	endpoints := make([]string, 0, len(ports))
+	for _, port := range ports {
+		endpoints = append(endpoints, fmt.Sprintf("%s:%d", host, port))
+	}
+	return OpenWithFallbackEndpoints(ctx, opts, endpoints, perPortTimeout, batchSize)
+}
+
+// OpenWithFallbackEndpoints перебирает готовые адреса "IP:port" батчами по
+// batchSize одновременно (используется для обхода по нескольким anycast-IP
+// Cloudflare WARP и портам сразу).
+func OpenWithFallbackEndpoints(ctx context.Context, opts Options, endpoints []string, perPortTimeout time.Duration, batchSize int) (*Tunnel, error) {
+	if opts.Account == nil {
+		return nil, fmt.Errorf("tunnel: не задан account")
+	}
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("tunnel: пустой список адресов для перебора")
+	}
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+
+	var lastErr error
+	for start := 0; start < len(endpoints); start += batchSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := start + batchSize
+		if end > len(endpoints) {
+			end = len(endpoints)
+		}
+		batch := endpoints[start:end]
+
+		bctx, bcancel := context.WithTimeout(ctx, perPortTimeout)
+		var (
+			mu       sync.Mutex
+			winner   *Tunnel
+			batchErr error
+			wg       sync.WaitGroup
+		)
+		for _, ep := range batch {
+			wg.Add(1)
+			go func(endpoint string) {
+				defer wg.Done()
+				if bctx.Err() != nil {
+					return
+				}
+				candidateAcc := *opts.Account
+				candidateAcc.PeerEndpoint = endpoint
+				candidateOpts := opts
+				candidateOpts.Account = &candidateAcc
+
+				tn, oerr := Open(candidateOpts)
+				if oerr != nil {
+					mu.Lock()
+					if batchErr == nil {
+						batchErr = oerr
+					}
+					mu.Unlock()
+					return
+				}
+				werr := tn.WaitHandshake(bctx)
+				if werr == nil {
+					mu.Lock()
+					if winner == nil {
+						winner = tn
+						bcancel()
+						mu.Unlock()
+						logger.Info("tunnel: рукопожатие прошло", "endpoint", endpoint)
+						return
+					}
+					mu.Unlock()
+					_ = tn.Close()
+					return
+				}
+				_ = tn.Close()
+				mu.Lock()
+				if batchErr == nil {
+					batchErr = werr
+				}
+				mu.Unlock()
+			}(ep)
+		}
+		wg.Wait()
+		bcancel()
+
+		if winner != nil {
+			return winner, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if batchErr != nil {
+			lastErr = batchErr
+		}
+	}
+	return nil, fmt.Errorf("tunnel: ни один из %d адресов не ответил рукопожатием: %w", len(endpoints), lastErr)
+}
+
+// WARPFallbackHosts — запасные anycast-IP Cloudflare WARP из разных подсетей
+// (162.159.192-195.* и 188.114.96-99.*): часть провайдеров блокирует только
+// основной 162.159.192.1, оставляя альтернативные подсети доступными.
+var WARPFallbackHosts = []string{
+	"162.159.192.1",
+	"162.159.193.1",
+	"162.159.195.1",
+	"188.114.96.1",
+	"188.114.97.1",
+	"188.114.98.1",
+	"188.114.99.1",
+}
+
+// WARPTelegramPorts — компактный набор приоритетных портов Cloudflare WARP для
+// быстрого параллельного перебора по всем WARPFallbackHosts в пределах 20с
+// таймаута звонка Telegram.
+var WARPTelegramPorts = []int{
+	2408, 500, 1701, 4500, 854, 894, 908, 942, 1074,
 }
 
 // WARPFallbackPorts — альтернативные UDP-порты, на которых Cloudflare держит

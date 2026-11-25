@@ -99,17 +99,36 @@ func appendStrictEndpoint(dst []string, ep string) []string {
 	return append(dst, ep)
 }
 
-// voiceFilter captures Discord IP discovery requests on any non-QUIC port and
-// STUN Binding requests on the Discord media ports. RTP, ordinary UDP and DNS
-// stay in the kernel rather than making a userspace round trip.
-// buildVoiceDecoys validates both signatures again.
-const voiceFilter = "outbound and udp and udp.DstPort != 443 and (" + voiceDiscoveryMatch + " or " + voiceSTUNMatch + ") and not impostor"
+// voiceFilter captures Discord IP discovery requests on any non-QUIC port,
+// STUN/TURN requests (narrowed in userspace to Discord media ports, Telegram
+// DC/reflector CIDRs, and Telegram Desktop sockets), DTLS ClientHello for
+// Telegram calls, legacy Telegram reflector ports 596-599, and matching
+// inbound replies for Telegram call telemetry/adaptation. RTP, ordinary UDP,
+// and DNS stay in the kernel.
+const voiceFilter = "((outbound and udp and udp.DstPort != 443 and (" +
+	voiceDiscoveryMatch + " or " + voiceSTUNMatch + " or " + telegramDTLSMatch + " or " + telegramReflectorMatch +
+	")) or " + telegramInboundReplyMatch + ") and not impostor"
 
 const (
 	voiceDiscoveryMatch = "(udp.PayloadLength == 74 and udp.Payload16[0] == 0x0001 and udp.Payload16[1] == 70)"
-	// STUN opens the WebRTC media path (screen share). Limited to the Discord
-	// media port ranges so that other applications' STUN is left alone.
-	voiceSTUNMatch  = "(udp.PayloadLength >= 20 and udp.Payload16[0] == 0x0001 and udp.Payload32[1] == 0x2112A442 and " + voiceMediaPorts + ")"
+	// STUN Binding (0x0001) and TURN Allocate/Refresh/CreatePermission/ChannelBind
+	// open WebRTC media paths (Discord screen share, Telegram calls). Userspace
+	// filters down to Discord media ports, Telegram CIDRs, and Telegram Desktop
+	// sockets so other applications' STUN is left alone.
+	voiceSTUNMatch = "(udp.PayloadLength >= 20 and udp.Payload32[1] == 0x2112A442 and " +
+		"(udp.Payload16[0] == 0x0001 or udp.Payload16[0] == 0x0003 or udp.Payload16[0] == 0x0004 or udp.Payload16[0] == 0x0008 or udp.Payload16[0] == 0x0009))"
+	// DTLS 1.0/1.2/1.3 handshake record (0x16 0xFE); narrowed in userspace to
+	// ClientHello (byte 13 == 0x01) on Telegram call targets.
+	telegramDTLSMatch = "(udp.PayloadLength >= 25 and udp.Payload16[0] == 0x16FE)"
+	// Legacy non-TURN Telegram call reflectors use UDP ports 596-599.
+	telegramReflectorMatch = "(udp.DstPort >= 596 and udp.DstPort <= 599 and udp.PayloadLength >= 16)"
+	// Inbound STUN/TURN, DTLS, or legacy reflector replies are observed and
+	// immediately reinjected untouched so Telegram call desync knows whether a
+	// strategy elicited a server/peer response.
+	telegramInboundReplyMatch = "(inbound and udp and udp.SrcPort != 443 and (" +
+		"(udp.PayloadLength >= 20 and udp.Payload32[1] == 0x2112A442) or " +
+		"(udp.PayloadLength >= 13 and udp.Payload16[0] == 0x16FE) or " +
+		"(udp.SrcPort >= 596 and udp.SrcPort <= 599)))"
 	voiceMediaPorts = "(((udp.DstPort >= 19294 and udp.DstPort <= 19344) and udp.DstPort != 19302) or (udp.DstPort >= 50000 and udp.DstPort <= 50100))"
 )
 
@@ -324,31 +343,96 @@ func startUDPScan(ctx context.Context, filter string, logger *slog.Logger) (func
 	}, nil
 }
 
+type voiceTargetKind uint8
+
+const (
+	voiceTargetNone voiceTargetKind = iota
+	voiceTargetDiscord
+	voiceTargetTelegram
+)
+
+func classifyVoiceTarget(buf []byte, d packet.Dissection, payloadBytes []byte, tgOwner telegramUDPOwner, tgFlows *telegramReflectorTracker) voiceTargetKind {
+	if discordvoice.IsIPDiscoveryRequest(payloadBytes) {
+		return voiceTargetDiscord
+	}
+	u, ok := d.UDP(buf)
+	if !ok {
+		return voiceTargetNone
+	}
+	dstPort := u.DstPort()
+	if dstPort == 443 {
+		return voiceTargetNone
+	}
+	srcIP := packetSrcIP(buf, d)
+	dstIP := packetDstIP(buf, d)
+	if discordvoice.IsSTUNOrTURNRequest(payloadBytes) {
+		if isTelegramCallIP(dstIP) || (tgOwner != nil && tgOwner.OwnsUDP(srcIP, u.SrcPort())) {
+			if isTelegramReflectorPort(dstPort) {
+				tgFlows.MarkHandled(srcIP, u.SrcPort(), dstIP, dstPort)
+			}
+			return voiceTargetTelegram
+		}
+		if isVoiceMediaPort(dstPort) && discordvoice.IsSTUNBindingRequest(payloadBytes) {
+			return voiceTargetDiscord
+		}
+		return voiceTargetNone
+	}
+	if isTelegramReflectorPort(dstPort) && len(payloadBytes) >= 16 && isTelegramCallIP(dstIP) {
+		if tgFlows == nil || tgFlows.Allow(srcIP, u.SrcPort(), dstIP, dstPort) {
+			return voiceTargetTelegram
+		}
+	}
+	return voiceTargetNone
+}
+
+func packetSrcIP(buf []byte, d packet.Dissection) netip.Addr {
+	if h, ok := d.IPv4(buf); ok {
+		addr, _ := netip.AddrFromSlice(h.Src())
+		return addr.Unmap()
+	}
+	if h, ok := d.IPv6(buf); ok {
+		addr, _ := netip.AddrFromSlice(h.Src())
+		return addr.Unmap()
+	}
+	return netip.Addr{}
+}
+
+func packetDstIP(buf []byte, d packet.Dissection) netip.Addr {
+	if h, ok := d.IPv4(buf); ok {
+		addr, _ := netip.AddrFromSlice(h.Dst())
+		return addr.Unmap()
+	}
+	if h, ok := d.IPv6(buf); ok {
+		addr, _ := netip.AddrFromSlice(h.Dst())
+		return addr.Unmap()
+	}
+	return netip.Addr{}
+}
+
 // buildVoiceDecoys решает, что отправить для исходящего UDP-пакета pkt. Если это
-// пакет начала голоса Discord (IP discovery), возвращает decoy'и ПЕРЕД настоящим
-// пакетом и applied=true; иначе (nil, false), и вызывающий шлёт пакет как есть.
-//
-// Чистая и без состояния: Discord шлёт IP discovery только в начале соединения
-// (и ретрансмитит при молчании), поэтому decoy на каждый такой пакет корректен —
-// повтор это свежая попытка, которой decoy тоже нужен. Вынесено отдельно, чтобы
-// проверять решение без WinDivert (тот же приём разделения, что у quicDesyncPacket).
+// пакет начала голоса Discord (IP discovery / STUN) или звонка Telegram
+// (STUN/TURN к адресам Telegram), возвращает decoy'и ПЕРЕД настоящим пакетом и
+// applied=true; иначе (nil, false), и вызывающий шлёт пакет как есть.
 func buildVoiceDecoys(pkt capture.Packet, fool discordvoice.Fooling, ttl uint8, repeats int, payload voicePayload) ([]capture.Packet, bool) {
+	pkts, target := buildVoiceDecoysFor(pkt, fool, ttl, repeats, payload, nil, nil)
+	return pkts, target != voiceTargetNone
+}
+
+func buildVoiceDecoysFor(pkt capture.Packet, fool discordvoice.Fooling, ttl uint8, repeats int, payload voicePayload, tgOwner telegramUDPOwner, tgFlows *telegramReflectorTracker) ([]capture.Packet, voiceTargetKind) {
 	if pkt.Dir != core.DirectionOutbound {
-		return nil, false
+		return nil, voiceTargetNone
 	}
 	d, err := packet.Dissect(pkt.Data)
 	if err != nil || d.Protocol != packet.ProtoUDP {
-		return nil, false
+		return nil, voiceTargetNone
 	}
 	payloadBytes, ok := d.Payload(pkt.Data)
 	if !ok {
-		return nil, false
+		return nil, voiceTargetNone
 	}
-	if !discordvoice.IsIPDiscoveryRequest(payloadBytes) {
-		u, ok := d.UDP(pkt.Data)
-		if !ok || !isVoiceMediaPort(u.DstPort()) || !discordvoice.IsSTUNBindingRequest(payloadBytes) {
-			return nil, false
-		}
+	target := classifyVoiceTarget(pkt.Data, d, payloadBytes, tgOwner, tgFlows)
+	if target == voiceTargetNone {
+		return nil, voiceTargetNone
 	}
 
 	// Нагрузка decoy — НЕ копия настоящего IP discovery, а подменные байты той
@@ -392,14 +476,14 @@ func buildVoiceDecoys(pkt capture.Packet, fool discordvoice.Fooling, ttl uint8, 
 			if err != nil {
 				// Собрать decoy не вышло — честно отказываемся от приёма и шлём
 				// оригинал как есть (1.6), а не рвём голос.
-				return nil, false
+				return nil, voiceTargetNone
 			}
 			out = append(out, capture.Packet{Data: decoy, Dir: pkt.Dir, Reinject: pkt.Reinject})
 		}
 	}
 	// Настоящий пакет — последним, после decoy'ев.
 	out = append(out, pkt)
-	return out, true
+	return out, target
 }
 
 // voiceCoverSNI — имя в поддельном QUIC Initial: разрешённый в РФ сайт с QUIC.
@@ -498,22 +582,72 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 	// фильтр голос вообще: датаграмм=0 значит исходящего UDP (кроме 443) нет
 	// совсем (голосовой канал не подключён); датаграмм>0, применено=0 — UDP
 	// есть, но форму IP discovery не распознаём.
-	var acted, dgrams int
-	var lastReport time.Time
+	var acted, actedTelegram, dgrams int
+	var lastReport, lastTelegramReport time.Time
+	owner := newTelegramUDPOwner()
+	tgEngine := newTelegramCallEngine(owner, newTelegramReflectorTracker())
+	tgTunnel := newTelegramCallTunnel(ctx, owner, logger)
+	defer tgTunnel.Close()
+	logStop := func() {
+		tg := tgEngine.Stats()
+		ws := tgTunnel.Stats()
+		logger.Info("десинк голоса остановлен",
+			"применено", acted, "применено_telegram", actedTelegram, "датаграмм_udp", dgrams,
+			"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies,
+			"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received)
+	}
 	for {
 		pkt, err := conn.Recv()
 		if err != nil {
 			// Финальная сводка печатается всегда, даже при нулях: ноль датаграмм
 			// — это ответ (голос не на этих портах / канал не подключался), а не
 			// отсутствие данных.
-			logger.Info("десинк голоса остановлен",
-				"применено", acted, "датаграмм_udp", dgrams)
+			logStop()
 			return
+		}
+		if pkt.Dir == core.DirectionInbound {
+			tgEngine.ObserveInbound(pkt)
+			if err := conn.Send(pkt); err != nil {
+				logger.Warn("десинк голоса: не удалось пропустить входящий пакет", "ошибка", err)
+			}
+			if ctx.Err() != nil {
+				logStop()
+				return
+			}
+			continue
 		}
 		dgrams++
 
+		if pkts, ok := tgEngine.BuildDecoys(pkt); ok {
+			for _, p := range pkts {
+				if err := conn.Send(p); err != nil {
+					logger.Warn("десинк голоса: не удалось отправить пакет", "ошибка", err)
+				}
+			}
+			acted++
+			actedTelegram++
+			tg := tgEngine.Stats()
+			if tg.FlowUnanswered {
+				tgTunnel.NotifyUnanswered()
+			}
+			if actedTelegram == 1 || time.Since(lastTelegramReport) >= voiceReportEvery {
+				ws := tgTunnel.Stats()
+				logger.Info("десинк голоса применён (звонок Telegram)",
+					"применено_telegram", actedTelegram, "stun", tg.STUN, "dtls", tg.DTLS,
+					"ответов", tg.Replies, "стратегия", tg.Strategy, "целей", tg.Targets,
+					"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received,
+					"применено", acted, "датаграмм_udp", dgrams)
+				lastTelegramReport = time.Now()
+			}
+			if ctx.Err() != nil {
+				logStop()
+				return
+			}
+			continue
+		}
+
 		ttl := hops.Default.FakeTTL(voicePacketDestination(pkt), 1, voiceDecoyTTL)
-		if pkts, applied := buildVoiceDecoys(pkt, fool, ttl, voiceDecoyRepeats, payload); applied {
+		if pkts, target := buildVoiceDecoysFor(pkt, fool, ttl, voiceDecoyRepeats, payload, nil, nil); target == voiceTargetDiscord {
 			pkts = append(buildVoiceCovers(pkt, voiceDecoyRepeats), pkts...)
 			for _, p := range pkts {
 				if err := conn.Send(p); err != nil {
@@ -527,8 +661,7 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 				lastReport = time.Now()
 			}
 			if ctx.Err() != nil {
-				logger.Info("десинк голоса остановлен",
-					"применено", acted, "датаграмм_udp", dgrams)
+				logStop()
 				return
 			}
 			continue
@@ -541,13 +674,17 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 		// петли не отличить от «голос не идёт». Печатается не чаще
 		// voiceReportEvery и только когда датаграммы вообще были.
 		if dgrams > 0 && time.Since(lastReport) >= voiceReportEvery {
+			tg := tgEngine.Stats()
+			ws := tgTunnel.Stats()
 			logger.Info("десинк голоса: сводка",
-				"датаграмм_udp", dgrams, "применено", acted)
+				"датаграмм_udp", dgrams, "применено", acted, "применено_telegram", actedTelegram,
+				"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies,
+				"telegram_стратегия", tg.Strategy,
+				"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received)
 			lastReport = time.Now()
 		}
 		if ctx.Err() != nil {
-			logger.Info("десинк голоса остановлен",
-				"применено", acted, "датаграмм_udp", dgrams)
+			logStop()
 			return
 		}
 	}

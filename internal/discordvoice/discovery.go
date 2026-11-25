@@ -59,12 +59,16 @@ func IsIPDiscovery(payload []byte) bool {
 	return t == discoveryTypeReq || t == discoveryTypeResp
 }
 
-// Заголовок STUN (RFC 5389): тип, длина атрибутов, magic cookie, 12 байт
-// идентификатора транзакции.
+// Заголовок STUN/TURN (RFC 5389 / RFC 5766): тип, длина атрибутов, magic
+// cookie, 12 байт идентификатора транзакции.
 const (
-	stunHeaderLen      = 20
-	stunBindingRequest = 0x0001
-	stunMagicCookie    = 0x2112A442
+	stunHeaderLen               = 20
+	stunBindingRequest          = 0x0001
+	stunAllocateRequest         = 0x0003
+	stunRefreshRequest          = 0x0004
+	stunCreatePermissionRequest = 0x0008
+	stunChannelBindRequest      = 0x0009
+	stunMagicCookie             = 0x2112A442
 )
 
 // IsSTUNBindingRequest сообщает, что нагрузка UDP — запрос STUN Binding.
@@ -78,6 +82,25 @@ func IsSTUNBindingRequest(payload []byte) bool {
 		return false
 	}
 	if binary.BigEndian.Uint16(payload[0:]) != stunBindingRequest {
+		return false
+	}
+	if binary.BigEndian.Uint32(payload[4:]) != stunMagicCookie {
+		return false
+	}
+	n := int(binary.BigEndian.Uint16(payload[2:]))
+	return n%4 == 0 && n == len(payload)-stunHeaderLen
+}
+
+// IsSTUNOrTURNRequest сообщает, что нагрузка UDP — запрос STUN Binding или
+// TURN (Allocate, Refresh, CreatePermission, ChannelBind), используемый
+// WebRTC и звонками Telegram.
+func IsSTUNOrTURNRequest(payload []byte) bool {
+	if len(payload) < stunHeaderLen {
+		return false
+	}
+	switch binary.BigEndian.Uint16(payload[0:]) {
+	case stunBindingRequest, stunAllocateRequest, stunRefreshRequest, stunCreatePermissionRequest, stunChannelBindRequest:
+	default:
 		return false
 	}
 	if binary.BigEndian.Uint32(payload[4:]) != stunMagicCookie {
