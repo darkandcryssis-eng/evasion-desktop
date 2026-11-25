@@ -122,3 +122,29 @@ func TestProviderSelectAndAutoFit(t *testing.T) {
 		t.Fatalf("expected restored overlap-yandex, got %s", name)
 	}
 }
+
+type recordingBaseProvider struct {
+	failures []string
+}
+
+func (b *recordingBaseProvider) Select(proxy.ConnMeta) proxy.Selection { return proxy.Selection{} }
+func (b *recordingBaseProvider) ReportFailure(sni string, _ core.StrategyID) {
+	b.failures = append(b.failures, sni)
+}
+
+func TestNonTelegramSNIFailureWithSharedIDForwardsToBase(t *testing.T) {
+	base := &recordingBaseProvider{}
+	p, err := NewProvider(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tgID := p.ActiveProfile()
+	p.ReportFailure("discord.com", tgID)
+	p.ReportFailure("discord.com", tgID)
+	if len(base.failures) != 2 {
+		t.Fatalf("expected 2 failures forwarded to base, got %v", base.failures)
+	}
+	if name, _ := p.ActiveProfile(); name != "overlap-vk" {
+		t.Fatalf("Discord failure must not advance Telegram profile, got %s", name)
+	}
+}
