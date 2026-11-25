@@ -284,7 +284,7 @@ func (e *telegramCallEngine) advanceFlow(srcIP netip.Addr, srcPort uint16, dstIP
 	e.lastStr = st.stage
 	trigger := telegramCallWARPTrigger
 	if kind == tgCallLegacy {
-		trigger = telegramReflectorMaxPackets
+		trigger = telegramReflectorBurst
 	}
 	e.flowUnanswered = st.replies == 0 && st.sent >= trigger
 	return st.stage, sendCover

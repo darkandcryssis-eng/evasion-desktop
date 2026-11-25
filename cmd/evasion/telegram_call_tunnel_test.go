@@ -376,3 +376,59 @@ func TestTelegramCallTunnelRetryBackoff(t *testing.T) {
 		t.Fatalf("expected backoff to suppress second open attempt, got %d calls", calls.Load())
 	}
 }
+
+func TestTelegramCallTunnelReleasesDeadTunnel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fakeTn := &fakeUDPTunnel{}
+	fakeHandle := newFakeTunnelHandle()
+
+	var nowMu sync.Mutex
+	curNow := time.Now()
+	tt := newTelegramCallTunnel(ctx, fakeTunnelOwner{}, nil)
+	tt.supported = true
+	tt.now = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return curNow
+	}
+	tt.openTunnel = func(context.Context) (tgUDPTunnel, error) { return fakeTn, nil }
+	tt.openHandle = func() (tgTunnelConn, error) { return fakeHandle, nil }
+	defer tt.Close()
+
+	tt.NotifyUnanswered()
+	deadline := time.Now().Add(2 * time.Second)
+	for !tt.Stats().Active && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !tt.Stats().Active {
+		t.Fatal("expected tunnel to become active")
+	}
+
+	tgRaw, _ := buildInboundUDPPacket(
+		netip.MustParseAddrPort("192.168.1.50:54321"),
+		netip.MustParseAddrPort("91.108.16.100:599"),
+		[]byte("stun-req"),
+	)
+	fakeHandle.recvCh <- capture.Packet{Data: tgRaw, Dir: core.DirectionOutbound}
+	for tt.Stats().Sent < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Advance clock past dead window and send remaining unanswered packets.
+	nowMu.Lock()
+	curNow = curNow.Add(telegramCallWARPDeadWindow + time.Second)
+	nowMu.Unlock()
+	for i := 1; i < telegramCallWARPDeadPackets; i++ {
+		fakeHandle.recvCh <- capture.Packet{Data: tgRaw, Dir: core.DirectionOutbound}
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for tt.Stats().Active && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if tt.Stats().Active {
+		t.Fatal("expected dead WARP tunnel to release capture and become inactive")
+	}
+}

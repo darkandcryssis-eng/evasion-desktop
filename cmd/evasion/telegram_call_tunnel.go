@@ -21,9 +21,11 @@ const (
 	telegramCallWARPTrigger    = 4
 	telegramCallWARPRetry      = 3 * time.Minute
 	telegramCallWARPPortWait   = 1200 * time.Millisecond
-	telegramCallWARPStateFile  = "warp-telegram.json"
-	telegramCallSocketIdle     = 90 * time.Second
-	telegramCallMaxSockets     = 64
+	telegramCallWARPStateFile   = "warp-telegram.json"
+	telegramCallWARPDeadPackets = 12
+	telegramCallWARPDeadWindow  = 10 * time.Second
+	telegramCallSocketIdle      = 90 * time.Second
+	telegramCallMaxSockets      = 64
 )
 
 type tgUDPTunnel interface {
@@ -88,8 +90,9 @@ type telegramCallTunnel struct {
 	sendMu sync.Mutex
 	wg     sync.WaitGroup
 
-	sent     atomic.Int64
-	received atomic.Int64
+	sent         atomic.Int64
+	received     atomic.Int64
+	unansweredTx atomic.Int64
 }
 
 func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logger *slog.Logger) *telegramCallTunnel {
@@ -211,6 +214,9 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 		t.mu.Unlock()
 	}()
 
+	t.unansweredTx.Store(0)
+	var stalledSince time.Time
+
 	for {
 		pkt, err := handle.Recv()
 		if err != nil {
@@ -237,6 +243,19 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 			continue
 		}
 		t.sent.Add(1)
+		n := t.unansweredTx.Add(1)
+		if n == 1 {
+			stalledSince = t.now()
+		} else if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
+			t.mu.Lock()
+			if !t.closed {
+				t.retryAt = t.now().Add(telegramCallWARPRetry)
+			}
+			t.mu.Unlock()
+			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, возврат на прямой путь",
+				"отправлено_без_ответа", n)
+			return
+		}
 	}
 }
 
@@ -347,6 +366,7 @@ func (t *telegramCallTunnel) readSocket(handle tgTunnelConn, relay *tgSocketRela
 			Dir:      core.DirectionInbound,
 			Reinject: makeInboundReinject(reinject),
 		})
+		t.unansweredTx.Store(0)
 		t.received.Add(1)
 	}
 }
