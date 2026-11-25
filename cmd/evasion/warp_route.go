@@ -358,10 +358,10 @@ func addWARPRegistrationHost(cfg *config.Config) {
 // warpMultiHostEndpoints строит список кандидатов "IP:port" по нескольким
 // anycast-подсетям Cloudflare WARP (162.159.192-195.* и 188.114.96-99.*),
 // чередуя хосты на каждом порту: первый же батч проверяет порт 2408 сразу на
-// всех подсетях, а прошлый рабочий адрес идёт самым первым. Адреса из exclude
-// (недавно переставшие отвечать) пропускаются; если исключены все — возвращается
-// полный список.
-func warpMultiHostEndpoints(savedEndpoint string, exclude map[string]struct{}) []string {
+// всех подсетях, а прошлый рабочий адрес идёт самым первым. Адреса из deprioritize
+// (недавно переставшие отвечать) переносятся в конец списка как последний резерв,
+// чтобы при отказе всех остальных адресов не терять единственный доступный пир.
+func warpMultiHostEndpoints(savedEndpoint string, deprioritize map[string]struct{}) []string {
 	seen := make(map[string]struct{}, len(tunnel.WARPFallbackHosts)*len(tunnel.WARPTelegramPorts)+1)
 	all := make([]string, 0, len(tunnel.WARPFallbackHosts)*len(tunnel.WARPTelegramPorts)+1)
 	add := func(ep string) {
@@ -384,19 +384,19 @@ func warpMultiHostEndpoints(savedEndpoint string, exclude map[string]struct{}) [
 			add(net.JoinHostPort(host, strconv.Itoa(port)))
 		}
 	}
-	if len(exclude) == 0 {
+	if len(deprioritize) == 0 {
 		return all
 	}
-	filtered := make([]string, 0, len(all))
+	preferred := make([]string, 0, len(all))
+	deferred := make([]string, 0, len(deprioritize))
 	for _, ep := range all {
-		if _, skip := exclude[ep]; !skip {
-			filtered = append(filtered, ep)
+		if _, slow := deprioritize[ep]; slow {
+			deferred = append(deferred, ep)
+		} else {
+			preferred = append(preferred, ep)
 		}
 	}
-	if len(filtered) == 0 {
-		return all
-	}
-	return filtered
+	return append(preferred, deferred...)
 }
 
 // warpPorts ставит первым порт, на котором туннель поднимался в прошлый раз.

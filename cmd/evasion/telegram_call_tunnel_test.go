@@ -470,23 +470,16 @@ func TestWarpMultiHostEndpointsExclude(t *testing.T) {
 	if len(all) == 0 || all[0] != "162.159.195.1:2408" {
 		t.Fatalf("expected saved endpoint first, got %v", all[:min(3, len(all))])
 	}
-	filtered := warpMultiHostEndpoints("162.159.195.1:2408", map[string]struct{}{
+	reordered := warpMultiHostEndpoints("162.159.195.1:2408", map[string]struct{}{
 		"162.159.195.1:2408": {},
 	})
-	if len(filtered) != len(all)-1 {
-		t.Fatalf("expected 1 excluded endpoint, got %d vs %d", len(filtered), len(all))
+	if len(reordered) != len(all) {
+		t.Fatalf("expected deprioritized list to keep all %d endpoints, got %d", len(all), len(reordered))
 	}
-	for _, ep := range filtered {
-		if ep == "162.159.195.1:2408" {
-			t.Fatal("excluded endpoint still present in filtered list")
-		}
+	if reordered[0] == "162.159.195.1:2408" {
+		t.Fatal("deprioritized endpoint should not stay first")
 	}
-	excludeAll := make(map[string]struct{}, len(all))
-	for _, ep := range all {
-		excludeAll[ep] = struct{}{}
-	}
-	fallback := warpMultiHostEndpoints("162.159.195.1:2408", excludeAll)
-	if len(fallback) != len(all) {
-		t.Fatalf("expected fallback to full list when all excluded, got %d vs %d", len(fallback), len(all))
+	if reordered[len(reordered)-1] != "162.159.195.1:2408" {
+		t.Fatalf("expected deprioritized endpoint last as fallback, got %q", reordered[len(reordered)-1])
 	}
 }
