@@ -71,6 +71,54 @@ func TestWriterBacksOffRotationAfterFailure(t *testing.T) {
 	}
 }
 
+func TestFailedPartialArchiveShiftIsRolledBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	for _, suffix := range []string{"", ".1", ".3", ".4"} {
+		if err := os.WriteFile(path+suffix, []byte("data"+suffix), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocker := path + ".2"
+	if err := os.Mkdir(blocker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := &Writer{cfg: Config{Path: path, MaxRotated: 4}}
+	for range 2 {
+		if err := w.openActive(); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.rotateLocked(); err == nil {
+			t.Fatal("rotation succeeded past the blocked archive slot")
+		}
+		for _, suffix := range []string{"", ".1", ".3", ".4"} {
+			data, err := os.ReadFile(path + suffix)
+			if err != nil || string(data) != "data"+suffix {
+				t.Fatalf("file %q = %q, %v; want %q", suffix, data, err, "data"+suffix)
+			}
+		}
+		for _, suffix := range []string{".rotating", ".retiring"} {
+			if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+				t.Fatalf("unfinished rotation file %q: %v", suffix, err)
+			}
+		}
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.openActive(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.rotateLocked(); err != nil {
+		t.Fatal(err)
+	}
+	for slot, want := range map[string]string{".1": "data", ".2": "data.1", ".4": "data.3"} {
+		data, err := os.ReadFile(path + slot)
+		if err != nil || string(data) != want {
+			t.Fatalf("archive %q after retry = %q, %v; want %q", slot, data, err, want)
+		}
+	}
+}
+
 func TestWriterKeepsLoggingAfterRotationRenameFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	blocker := path + ".1"

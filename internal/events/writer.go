@@ -241,7 +241,7 @@ func (w *Writer) flush(batch []Event, buffer []byte) []Event {
 			} else {
 				w.rotateAfter = time.Time{}
 			}
-			if w.openActive() != nil {
+			if w.file == nil && w.openActive() != nil {
 				return batch[:0]
 			}
 		}
@@ -251,39 +251,90 @@ func (w *Writer) flush(batch []Event, buffer []byte) []Event {
 }
 
 // rotateLocked сначала убирает активный файл из-под записи, затем сдвигает архивы.
-func (w *Writer) rotateLocked() error {
+func (w *Writer) rotateLocked() (err error) {
 	oldPath := w.cfg.Path
 	staged := oldPath + ".rotating"
-	err := w.file.Close()
+	retiring := oldPath + ".retiring"
+	for _, path := range []string{staged, retiring} {
+		if err := requireVacant(path); err != nil {
+			return err
+		}
+	}
+	err = w.file.Close()
 	w.file = nil
 	if err != nil {
 		return fmt.Errorf("events: закрытие активного файла при ротации: %w", err)
 	}
-	if info, err := os.Lstat(staged); err == nil {
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("events: не файл: %s", staged)
+
+	type rename struct{ from, to string }
+	var moves []rename
+	defer func() {
+		if err == nil {
+			return
 		}
-		return w.archiveStaged(staged)
-	} else if !errors.Is(err, os.ErrNotExist) {
+		for i := len(moves) - 1; i >= 0; i-- {
+			m := moves[i]
+			if undoErr := requireVacant(m.from); undoErr != nil {
+				err = errors.Join(err, undoErr)
+				return
+			}
+			if undoErr := os.Rename(m.to, m.from); undoErr != nil {
+				err = errors.Join(err, undoErr)
+				return
+			}
+		}
+	}()
+	move := func(from, to string, optional bool) error {
+		info, err := os.Lstat(from)
+		if optional && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("events: не файл: %s", from)
+		}
+		if err := requireVacant(to); err != nil {
+			return err
+		}
+		if err := os.Rename(from, to); err != nil {
+			return err
+		}
+		moves = append(moves, rename{from, to})
+		return nil
+	}
+	if err := move(oldPath, staged, false); err != nil {
 		return err
 	}
-	if err := os.Rename(oldPath, staged); err != nil {
-		return fmt.Errorf("events: переименование активного файла при ротации: %w", err)
+	if err := move(fmt.Sprintf("%s.%d", oldPath, w.cfg.MaxRotated), retiring, true); err != nil {
+		return err
 	}
-	if err := w.archiveStaged(staged); err != nil {
-		return errors.Join(err, os.Rename(staged, oldPath))
+	retired := len(moves) == 2
+	for i := w.cfg.MaxRotated - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", oldPath, i)
+		dst := fmt.Sprintf("%s.%d", oldPath, i+1)
+		if err := move(src, dst, true); err != nil {
+			return err
+		}
+	}
+	if err := move(staged, oldPath+".1", false); err != nil {
+		return err
+	}
+	moves = nil
+	if retired {
+		return os.Remove(retiring)
 	}
 	return nil
 }
 
-func (w *Writer) archiveStaged(staged string) error {
-	oldPath := w.cfg.Path
-	for i := w.cfg.MaxRotated - 1; i >= 1; i-- {
-		src := fmt.Sprintf("%s.%d", oldPath, i)
-		dst := fmt.Sprintf("%s.%d", oldPath, i+1)
-		if err := os.Rename(src, dst); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+func requireVacant(path string) error {
+	_, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	return os.Rename(staged, oldPath+".1")
+	if err == nil {
+		return fmt.Errorf("events: файл уже существует: %s", path)
+	}
+	return err
 }
