@@ -307,3 +307,27 @@ func (f *failOnSecondWritePeer) WritePacket(r io.Reader, size int64) error {
 	}
 	return f.peer.WritePacket(r, size)
 }
+
+func TestUpstreamQuickAckTokenPassesThroughWithoutPayload(t *testing.T) {
+	// Intermediate (0xee) quick ack: 4 bytes with MSB set on byte 3, followed by
+	// a normal 4-byte payload frame.
+	quickAck := []byte{0x11, 0x22, 0x33, 0x84}
+	normalFrame := []byte{0x04, 0x00, 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef}
+	stream := bytes.NewReader(append(append([]byte(nil), quickAck...), normalFrame...))
+
+	hdr1, sz1, err := readUpstreamPacketHeader(stream, 0xee)
+	if err != nil || sz1 != 0 || !bytes.Equal(hdr1, quickAck) {
+		t.Fatalf("quick ack parse failed: hdr=%x sz=%d err=%v", hdr1, sz1, err)
+	}
+	hdr2, sz2, err := readUpstreamPacketHeader(stream, 0xee)
+	if err != nil || sz2 != 4 || !bytes.Equal(hdr2, normalFrame[:4]) {
+		t.Fatalf("following frame parse failed: hdr=%x sz=%d err=%v", hdr2, sz2, err)
+	}
+
+	// Abridged (0xef) quick ack: MSB set on byte 0 -> 4-byte token, 0 payload.
+	abridgedAck := []byte{0x81, 0x02, 0x03, 0x04}
+	hdr3, sz3, err := readUpstreamPacketHeader(bytes.NewReader(abridgedAck), 0xef)
+	if err != nil || sz3 != 0 || !bytes.Equal(hdr3, abridgedAck) {
+		t.Fatalf("abridged quick ack parse failed: hdr=%x sz=%d err=%v", hdr3, sz3, err)
+	}
+}

@@ -297,13 +297,22 @@ func startUpstreamReader(ctx context.Context, upstream peer, firstReply []byte, 
 		}
 		decReader := &cipher.StreamReader{S: dec, R: raw}
 		for {
-			header, size, err := readPacketHeader(decReader, protocol)
+			header, size, err := readUpstreamPacketHeader(decReader, protocol)
 			if err != nil {
 				select {
 				case ch <- upstreamChunkMsg{err: err}:
 				case <-ctx.Done():
 				}
 				return
+			}
+			if size == 0 {
+				// Standalone 4-byte quick-acknowledgment token from Telegram.
+				select {
+				case ch <- upstreamChunkMsg{data: header, midFrame: false}:
+				case <-ctx.Done():
+					return
+				}
+				continue
 			}
 			if size <= bufferedDownFrameMax {
 				frame := make([]byte, len(header)+int(size))
