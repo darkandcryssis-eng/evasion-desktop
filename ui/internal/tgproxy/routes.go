@@ -396,18 +396,7 @@ func (r *router) connectAvoidSet(ctx context.Context, dc int, media bool, avoid 
 	}
 	sort.SliceStable(available, func(i, j int) bool {
 		ci, cj := available[i], available[j]
-		if preferTLS && ci.isEncryptedWSS() != cj.isEncryptedWSS() {
-			return ci.isEncryptedWSS()
-		}
-		a, b := r.health[ci.id], r.health[cj.id]
-		if routeRank(a) != routeRank(b) {
-			return routeRank(a) > routeRank(b)
-		}
-		sa, sb := routeScore(a, now), routeScore(b, now)
-		if sa != sb {
-			return sa > sb
-		}
-		return routeRank(a) > 0 && a.latency < b.latency
+		return routeBefore(ci, cj, r.health[ci.id], r.health[cj.id], preferTLS, now)
 	})
 	if len(avoid) > 0 {
 		others := available[:0:0]
@@ -463,10 +452,12 @@ func (r *router) connectAvoidSet(ctx context.Context, dc int, media bool, avoid 
 		}
 		go func(i int, candidate route, delay time.Duration) {
 			r.mu.Lock()
-			verified := routeRank(r.health[candidate.id]) > 0
+			h := r.health[candidate.id]
 			r.mu.Unlock()
-			if verified && (!preferTLS || candidate.isEncryptedWSS()) {
+			if routeRank(h) > 0 && (h.success || !preferTLS || candidate.isEncryptedWSS()) {
 				delay = time.Duration(i) * 75 * time.Millisecond
+			} else if preferTLS {
+				delay = max(delay, time.Duration(i)*75*time.Millisecond)
 			}
 			timer := time.NewTimer(delay)
 			select {
@@ -476,14 +467,11 @@ func (r *router) connectAvoidSet(ctx context.Context, dc int, media bool, avoid 
 				return
 			case <-timer.C:
 			}
-			started := time.Now()
-			attemptCtx, attemptCancel := context.WithTimeout(raceCtx, 4*time.Second)
-			p, err := r.dialRoute(attemptCtx, candidate)
-			attemptCancel()
+			p, elapsed, err := r.dialRouteTimed(raceCtx, candidate, 4*time.Second)
 			if err != nil && raceCtx.Err() == nil {
 				r.failure(candidate.id, err)
 			}
-			results <- result{p: p, route: candidate, elapsed: time.Since(started), err: err}
+			results <- result{p: p, route: candidate, elapsed: elapsed, err: err}
 		}(i, candidate, delay)
 	}
 	for remaining := len(available); remaining > 0; remaining-- {
@@ -659,6 +647,23 @@ func routeScore(h routeHealth, now time.Time) float64 {
 	return stab*1000.0 - latMS*0.1
 }
 
+func routeBefore(a, b route, ha, hb routeHealth, preferTLS bool, now time.Time) bool {
+	if ha.success != hb.success {
+		return ha.success
+	}
+	if preferTLS && a.isEncryptedWSS() != b.isEncryptedWSS() {
+		return a.isEncryptedWSS()
+	}
+	if routeRank(ha) != routeRank(hb) {
+		return routeRank(ha) > routeRank(hb)
+	}
+	sa, sb := routeScore(ha, now), routeScore(hb, now)
+	if sa != sb {
+		return sa > sb
+	}
+	return routeRank(ha) > 0 && ha.latency < hb.latency
+}
+
 // bestCandidates возвращает до n маршрутов в порядке стабильности и латентности,
 // пропуская те, что ещё отдыхают после сбоя.
 func (r *router) bestCandidates(dc int, media bool, n int) []route {
@@ -679,18 +684,7 @@ func (r *router) bestCandidates(dc int, media bool, n int) []route {
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		ci, cj := candidates[i], candidates[j]
-		if preferTLS && ci.isEncryptedWSS() != cj.isEncryptedWSS() {
-			return ci.isEncryptedWSS()
-		}
-		a, b := r.health[ci.id], r.health[cj.id]
-		if routeRank(a) != routeRank(b) {
-			return routeRank(a) > routeRank(b)
-		}
-		sa, sb := routeScore(a, now), routeScore(b, now)
-		if sa != sb {
-			return sa > sb
-		}
-		return routeRank(a) > 0 && a.latency < b.latency
+		return routeBefore(ci, cj, r.health[ci.id], r.health[cj.id], preferTLS, now)
 	})
 	var out []route
 	for _, candidate := range candidates {

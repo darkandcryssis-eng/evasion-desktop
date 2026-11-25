@@ -111,7 +111,7 @@ func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make(chan channelOutcome, 16)
-	routed := make(chan time.Duration, 16)
+	routed := make(chan *channelAttempt, 16)
 	var attempts []*channelAttempt
 	inflight := 0
 	launch := func(avoid string) {
@@ -136,7 +136,9 @@ func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte
 	}
 	launch("")
 	hedge := time.NewTimer(hedgeDelayFor(0))
+	hedge.Stop()
 	defer hedge.Stop()
+	var hedgeC <-chan time.Time
 	hedged := false
 	var lastErr error
 	for {
@@ -144,14 +146,17 @@ func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte
 		case <-ctx.Done():
 			go drainAttempts(results, inflight)
 			return nil, ctx.Err()
-		case hint := <-routed:
-			if !hedged && inflight == 1 {
-				hedge.Reset(hedgeDelayFor(hint))
+		case a := <-routed:
+			if !hedged && !a.done && inflight == 1 {
+				c, _ := a.route()
+				hedge.Reset(hedgeDelayFor(s.router.latencyHint(c.id)))
+				hedgeC = hedge.C
 			}
-		case <-hedge.C:
-			if !hedged && inflight == 1 {
+		case <-hedgeC:
+			hedgeC = nil
+			if avoid := pendingRoute(); !hedged && inflight == 1 && avoid != "" {
 				hedged = true
-				launch(pendingRoute())
+				launch(avoid)
 			}
 		case o := <-results:
 			inflight--
@@ -175,6 +180,8 @@ func (s *Server) openChannel(ctx context.Context, h handshake, firstFrame []byte
 				return o.channel, nil
 			}
 			lastErr = o.err
+			hedge.Stop()
+			hedgeC = nil
 			if ctx.Err() != nil {
 				go drainAttempts(results, inflight)
 				return nil, ctx.Err()
@@ -209,7 +216,7 @@ func drainAttempts(results <-chan channelOutcome, inflight int) {
 
 // openAttempt — одна попытка: маршрут, рукопожатие, первый кадр, первый ответ.
 // connectErr сообщает, что не нашлось маршрута вовсе (повторять бессмысленно).
-func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte, avoid string, a *channelAttempt, routed chan<- time.Duration) (*relayChannel, bool, error) {
+func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte, avoid string, a *channelAttempt, routed chan<- *channelAttempt) (*relayChannel, bool, error) {
 	upstream, candidate, latency, err := s.router.connectAvoid(ctx, h.dc, h.media, avoid)
 	if err != nil {
 		return nil, true, err
@@ -218,7 +225,7 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 	a.candidate, a.known = candidate, true
 	a.mu.Unlock()
 	select {
-	case routed <- s.router.latencyHint(candidate.id):
+	case routed <- a:
 	default:
 	}
 	// Отмена попытки (победил другой маршрут) закрывает сокет сразу: иначе

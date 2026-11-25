@@ -97,6 +97,30 @@ func TestLocalDialQueueDoesNotCoolDownRoute(t *testing.T) {
 	}
 }
 
+func TestForegroundDialBudgetStartsAfterQueue(t *testing.T) {
+	const budget = 100 * time.Millisecond
+	candidate := routesFor(2, true)[0]
+	r := newRouter(func(ctx context.Context, _ route) (peer, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) < budget/2 {
+			return nil, errors.New("queue consumed the network dial budget")
+		}
+		return inertPeer{}, nil
+	})
+	for range cap(r.slots) {
+		r.slots <- struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	timer := time.AfterFunc(2*budget, func() { <-r.slots })
+	defer timer.Stop()
+	p, _, err := r.dialRouteTimed(ctx, candidate, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+}
+
 func TestBackgroundDialsLeaveRoomForNewConnections(t *testing.T) {
 	started := make(chan struct{}, 8)
 	r := newRouter(func(ctx context.Context, candidate route) (peer, error) {

@@ -59,14 +59,24 @@ func (s *Server) measure() {
 }
 
 func (r *router) dialRoute(ctx context.Context, candidate route) (peer, error) {
+	p, _, err := r.dialRouteTimed(ctx, candidate, 0)
+	return p, err
+}
+
+func (r *router) dialRouteTimed(ctx context.Context, candidate route, timeout time.Duration) (peer, time.Duration, error) {
 	select {
 	case r.slots <- struct{}{}:
 	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: %w", errDialQueue, ctx.Err())
+		return nil, 0, fmt.Errorf("%w: %w", errDialQueue, ctx.Err())
 	}
 	defer func() { <-r.slots }()
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %w", errDialQueue, err)
+		return nil, 0, fmt.Errorf("%w: %w", errDialQueue, err)
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	r.mu.Lock()
 	r.known[candidate.id] = candidate
@@ -84,9 +94,10 @@ func (r *router) dialRoute(ctx context.Context, candidate route) (peer, error) {
 		h.inflight--
 		r.health[candidate.id] = h
 		r.mu.Unlock()
-		return nil, errors.New("локальный VLESS-канал Telegram не настроен")
+		return nil, 0, errors.New("локальный VLESS-канал Telegram не настроен")
 	}
 	p, err := dial(ctx, candidate)
+	elapsed := time.Since(started)
 	r.mu.Lock()
 	h = r.health[candidate.id]
 	h.inflight--
@@ -96,13 +107,13 @@ func (r *router) dialRoute(ctx context.Context, candidate route) (peer, error) {
 			h.opened = true
 			h.code, h.reason = "", ""
 			if !h.success {
-				h.latency = time.Since(started)
+				h.latency = elapsed
 			}
 		}
 	}
 	r.health[candidate.id] = h
 	r.mu.Unlock()
-	return p, err
+	return p, elapsed, err
 }
 
 func (r *router) dialBackground(ctx context.Context, candidate route) (peer, error) {

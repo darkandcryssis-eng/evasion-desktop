@@ -62,6 +62,39 @@ func TestNonTLSBreakTriggersWSSOverTLSFallback(t *testing.T) {
 	}
 }
 
+func TestTLSFallbackDoesNotQueueUnverifiedRoutesAheadOfWorkingPlainWS(t *testing.T) {
+	plain := plainRelayRoute(2, true, communityDomains[0])
+	first := make(chan string, 1)
+	r := newRouter(func(ctx context.Context, c route) (peer, error) {
+		select {
+		case first <- c.id:
+		default:
+		}
+		if c.id == plain.id {
+			return inertPeer{}, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, true)
+	r.known[plain.id] = plain
+	r.success(plain.id, 1200*time.Millisecond)
+	r.recordDrop(tcpRoute(2, true), 8*time.Second, syscall.ECONNRESET)
+
+	if best := r.bestCandidates(2, true, 1); len(best) != 1 || best[0].id != plain.id {
+		t.Fatalf("expected verified plain media route before unverified WSS routes, got %+v", best)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	p, route, _, err := r.connect(ctx, 2, true)
+	if err != nil || route.id != plain.id {
+		t.Fatalf("expected working plain media route, got %+v (%v)", route, err)
+	}
+	_ = p.Close()
+	if got := <-first; got != plain.id {
+		t.Fatalf("unverified route %s dialed before verified media route %s", got, plain.id)
+	}
+}
+
 func TestSeamlessSwitchKeepsClientAliveAcrossUpstreamBreak(t *testing.T) {
 	v := vectors(t)[0]
 	frame := unhex(t, v.Plain)
