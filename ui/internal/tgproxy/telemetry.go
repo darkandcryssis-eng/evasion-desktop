@@ -39,10 +39,24 @@ type mediaDeliverySample struct {
 	bytes int64
 }
 
+func (s *mediaDeliverySample) flush() int64 {
+	if s.start.IsZero() || s.bytes < 256<<10 {
+		return 0
+	}
+	elapsed := s.last.Sub(s.start)
+	if elapsed < 250*time.Millisecond {
+		elapsed = 250 * time.Millisecond
+	}
+	rate := int64(float64(s.bytes) / elapsed.Seconds())
+	*s = mediaDeliverySample{}
+	return rate
+}
+
 func (s *mediaDeliverySample) observe(now time.Time, delivered int) int64 {
 	if s.start.IsZero() || now.Sub(s.last) > 2*time.Second {
+		rate := s.flush()
 		*s = mediaDeliverySample{start: now, last: now}
-		return 0
+		return rate
 	}
 	s.last = now
 	s.bytes += int64(delivered)

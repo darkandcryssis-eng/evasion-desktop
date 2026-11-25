@@ -76,6 +76,22 @@ func TestMediaDeliverySampleDiscardsIdleWindows(t *testing.T) {
 	}
 }
 
+func TestMediaDeliverySampleFlushesFastBursts(t *testing.T) {
+	now := time.Now()
+	var sample mediaDeliverySample
+	if rate := sample.observe(now, 16<<10); rate != 0 {
+		t.Fatalf("first chunk generated a rate: %d", rate)
+	}
+	// Fast route delivers 512 KiB in 100 ms (< 250 ms window).
+	if rate := sample.observe(now.Add(100*time.Millisecond), 512<<10); rate != 0 {
+		t.Fatalf("expected burst under 250ms to buffer, got %d", rate)
+	}
+	// After >2s of silence, the completed fast burst is credited rather than dropped.
+	if rate := sample.observe(now.Add(3*time.Second), 16<<10); rate != 2048<<10 {
+		t.Fatalf("fast burst rate = %d, want %d", rate, 2048<<10)
+	}
+}
+
 func TestNonTLSBreakTriggersWSSOverTLSFallback(t *testing.T) {
 	r := newRouter(nil, true)
 	rawTCP := tcpRoute(2, false)

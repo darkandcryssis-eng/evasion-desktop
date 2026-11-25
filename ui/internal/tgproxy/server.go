@@ -521,6 +521,13 @@ func (s *Server) serve(client net.Conn) {
 	midFrame := false
 	switchesUsed := 0
 	var mediaRate mediaDeliverySample
+	defer func() {
+		if h.media {
+			if rate := mediaRate.flush(); rate > 0 {
+				s.router.recordMediaRate(candidate.id, rate)
+			}
+		}
+	}()
 
 	trySwitch := func(stage string, causeErr error, extraFrame []byte) bool {
 		duration := time.Since(connectedAt)
