@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"net/netip"
 	"sync"
 	"time"
@@ -12,6 +13,22 @@ import (
 	"github.com/fitting-1c/evasion/internal/packet"
 	"github.com/fitting-1c/evasion/internal/quic"
 )
+
+// isInboundCallReply reports whether an inbound UDP payload is a genuine
+// server/peer reply (STUN/TURN response, non-ClientHello DTLS handshake, or
+// legacy reflector traffic) rather than a peer's outbound probe (STUN request
+// or DTLS ClientHello).
+func isInboundCallReply(srcPort uint16, payload []byte) bool {
+	if len(payload) >= 20 && binary.BigEndian.Uint32(payload[4:8]) == 0x2112A442 {
+		// RFC 5389 class bit 8 (0x0100) is set only on Success/Error Responses,
+		// not on Requests (0x0000) or Indications (0x0010).
+		return binary.BigEndian.Uint16(payload[0:2])&0x0100 != 0
+	}
+	if len(payload) >= 14 && payload[0] == 0x16 && payload[1] == 0xfe {
+		return payload[13] != 0x01
+	}
+	return isTelegramReflectorPort(srcPort) && len(payload) >= 16
+}
 
 // isDTLSClientHello reports whether payload is a DTLS 1.0/1.2/1.3 handshake
 // record carrying a ClientHello (content type 0x16, version 0xFE 0x..,
@@ -126,6 +143,10 @@ func (e *telegramCallEngine) ObserveInbound(pkt capture.Packet) bool {
 	}
 	u, ok := d.UDP(pkt.Data)
 	if !ok {
+		return false
+	}
+	payload, ok := d.Payload(pkt.Data)
+	if !ok || !isInboundCallReply(u.SrcPort(), payload) {
 		return false
 	}
 	srcIP := packetSrcIP(pkt.Data, d)

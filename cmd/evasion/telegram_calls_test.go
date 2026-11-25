@@ -323,7 +323,13 @@ func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
 		t.Fatalf("strategy after rotation = %q, want badsum-compact", got)
 	}
 
-	// Inbound STUN reply on reverse 5-tuple locks the winning strategy.
+	// Peer's own inbound STUN Binding request (0x0001) must NOT count as a reply.
+	peerProbe := buildInboundUDPPacketIPv4(t, "149.154.167.50", 1400, 53000, stunPayload(0x0001, 32))
+	if eng.ObserveInbound(peerProbe) {
+		t.Fatal("inbound peer STUN request must not count as a reply")
+	}
+
+	// Inbound STUN reply (0x0103) on reverse 5-tuple locks the winning strategy.
 	reply := buildInboundUDPPacketIPv4(t, "149.154.167.50", 1400, 53000, stunPayload(0x0103, 32))
 	if !eng.ObserveInbound(reply) {
 		t.Fatal("expected inbound reply on reverse 5-tuple to be recorded")
