@@ -285,17 +285,16 @@ type upstreamChunkMsg struct {
 	err      error
 }
 
-func startUpstreamReader(ctx context.Context, upstream peer, firstReply []byte, dec cipher.Stream, protocol byte) (<-chan upstreamChunkMsg, <-chan struct{}) {
+func startUpstreamReader(ctx context.Context, upstream peer, firstHeader []byte, dec cipher.Stream, protocol byte) (<-chan upstreamChunkMsg, <-chan struct{}) {
 	ch := make(chan upstreamChunkMsg, 4)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer close(ch)
-		raw := io.Reader(upstream)
-		if len(firstReply) > 0 {
-			raw = io.MultiReader(bytes.NewReader(firstReply), upstream)
+		var decReader io.Reader = &cipher.StreamReader{S: dec, R: upstream}
+		if len(firstHeader) > 0 {
+			decReader = io.MultiReader(bytes.NewReader(firstHeader), decReader)
 		}
-		decReader := &cipher.StreamReader{S: dec, R: raw}
 		for {
 			header, size, err := readUpstreamPacketHeader(decReader, protocol)
 			if err != nil {
@@ -443,7 +442,7 @@ func (s *Server) serve(client net.Conn) {
 	s.mu.Unlock()
 
 	upCtx, upCancel := context.WithCancel(ctx)
-	upCh, upDone := startUpstreamReader(upCtx, upstream, channel.firstReply, tgDec, h.protocol)
+	upCh, upDone := startUpstreamReader(upCtx, upstream, channel.firstHeader, tgDec, h.protocol)
 
 	clientCh := make(chan clientFrameMsg, 1)
 	clientDone := make(chan struct{})
@@ -557,7 +556,16 @@ func (s *Server) serve(client net.Conn) {
 		if len(extraFrame) > 0 {
 			replay = append(replay, extraFrame)
 		}
-		if !midFrame && !pendingOverflow && switchesUsed < maxSeamlessSwitches && ctx.Err() == nil {
+		switch {
+		case midFrame:
+			ev.RecoveryFailure = "partial_frame"
+		case pendingOverflow:
+			ev.RecoveryFailure = "replay_limit"
+		case switchesUsed >= maxSeamlessSwitches:
+			ev.RecoveryFailure = "switch_limit"
+		case ctx.Err() != nil:
+			ev.RecoveryFailure = "cancelled"
+		default:
 			replacement, switchErr := s.switchChannel(ctx, h, candidate.id, replay)
 			if switchErr == nil {
 				switchesUsed++
@@ -589,9 +597,17 @@ func (s *Server) serve(client net.Conn) {
 				s.mu.Unlock()
 				s.log("INFO", "Маршрут Telegram переключён без обрыва", ev.RouteLabel+" → "+label)
 				upCtx, upCancel = context.WithCancel(ctx)
-				upCh, upDone = startUpstreamReader(upCtx, upstream, replacement.firstReply, tgDec, h.protocol)
+				upCh, upDone = startUpstreamReader(upCtx, upstream, replacement.firstHeader, tgDec, h.protocol)
 				s.pingGuardian()
 				return true
+			}
+			switch {
+			case ctx.Err() != nil:
+				ev.RecoveryFailure = "cancelled"
+			case errors.Is(switchErr, context.DeadlineExceeded):
+				ev.RecoveryFailure = "switch_timeout"
+			default:
+				ev.RecoveryFailure = "replacement_failed"
 			}
 		}
 		s.journal.record(ev)

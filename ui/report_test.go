@@ -86,6 +86,22 @@ func TestReportPreservesMediaDeliveryWithoutRouteAddresses(t *testing.T) {
 	}
 }
 
+func TestReportKeepsRecentDisconnectsAndSafeRecoveryReason(t *testing.T) {
+	disconnects := make([]TelegramDisconnect, 51)
+	disconnects[0].DC = 5
+	disconnects[1].RecoveryFailure = "private-detail"
+	disconnects[50] = TelegramDisconnect{DC: 2, RecoveryFailure: "partial_frame"}
+	r := buildSafeReport("running", TelegramState{Disconnects: disconnects}, nil, nil)
+	got := r.Telegram.Disconnects
+	if len(got) != 50 || got[0].DC == 5 || got[0].RecoveryFailure != "" ||
+		got[49].DC != 2 || got[49].RecoveryFailure != "partial_frame" {
+		t.Fatalf("incorrect disconnect selection or sanitization: count=%d first=%+v last=%+v", len(got), got[0], got[len(got)-1])
+	}
+	if safeBuild("419EBC68ED30") != "419ebc68ed30" || safeBuild("private-data") != "" {
+		t.Fatal("report build ID was not sanitized")
+	}
+}
+
 func TestGameReportPreservesObservationAndSanitizesStage(t *testing.T) {
 	v := GameFilterView{Adaptive: GameAdaptiveState{Stage: "balanced", Helping: 1, Responsive: 2}}
 	r := safeGameReport(v)

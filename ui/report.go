@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,6 +15,8 @@ import (
 
 	wr "github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+var appBuild string
 
 type reportStep struct {
 	Stage  string `json:"stage"`
@@ -41,15 +44,16 @@ type reportRoute struct {
 	Drops     int    `json:"drops,omitempty"`
 }
 type reportDisconnect struct {
-	At         string `json:"at"`
-	Transport  string `json:"transport"`
-	DC         int    `json:"dc"`
-	Media      bool   `json:"media"`
-	Stage      string `json:"stage"`
-	Cause      string `json:"cause"`
-	DurationMS int64  `json:"durationMs"`
-	BytesDown  uint64 `json:"bytesDown"`
-	Recovered  bool   `json:"recovered"`
+	At              string `json:"at"`
+	Transport       string `json:"transport"`
+	DC              int    `json:"dc"`
+	Media           bool   `json:"media"`
+	Stage           string `json:"stage"`
+	Cause           string `json:"cause"`
+	DurationMS      int64  `json:"durationMs"`
+	BytesDown       uint64 `json:"bytesDown"`
+	Recovered       bool   `json:"recovered"`
+	RecoveryFailure string `json:"recoveryFailure,omitempty"`
 }
 type reportTraffic struct {
 	Running     bool               `json:"running"`
@@ -79,6 +83,7 @@ type reportConflicts struct {
 }
 type safeReport struct {
 	Version         string             `json:"version,omitempty"`
+	Build           string             `json:"build,omitempty"`
 	Elevated        bool               `json:"elevated"`
 	PreviousUnclean bool               `json:"previousUnclean"`
 	Engine          *reportEngine      `json:"engine,omitempty"`
@@ -150,17 +155,18 @@ func buildSafeReport(phase string, telegram TelegramState, services []ServiceDia
 		kind, _ := strings.CutSuffix(v.Kind, " · медиа")
 		r.Routes = append(r.Routes, reportRoute{DC: max(0, v.DC), Media: v.Media, DownBPS: max(0, v.DownBPS), Code: reportCode(v.Code), Transport: allowed(kind, "WSS", "Резерв WSS", "Резерв WS", "TCP", "WSS · фиксированный адрес", "WSS · fronting", "VLESS", "Туннель VLESS"), Status: allowed(v.Status, "untested", "checking", "verified", "opened", "cooldown", "failed"), CheckedAt: reportTime(v.CheckedAt), LatencyMS: max(0, v.LatencyMS), Failures: max(0, v.Failures), Stability: min(100, max(0, v.Stability)), Drops: max(0, v.Drops)})
 	}
-	for _, d := range telegram.Disconnects[:min(len(telegram.Disconnects), 50)] {
+	for _, d := range telegram.Disconnects[max(0, len(telegram.Disconnects)-50):] {
 		r.Telegram.Disconnects = append(r.Telegram.Disconnects, reportDisconnect{
-			At:         reportTime(d.At),
-			Transport:  allowed(d.Transport, "wss", "wss_ip", "fronting", "wss_fixed", "wss_front", "relay_wss", "relay_ws", "tcp", "vless"),
-			DC:         max(0, d.DC),
-			Media:      d.Media,
-			Stage:      allowed(d.Stage, "dial", "connect", "first_reply", "relay_read", "relay_write", "switch"),
-			Cause:      allowed(d.Cause, "reset", "timeout", "eof", "ws_close", "tls", "dns", "mtproto", "cancelled", "error"),
-			DurationMS: max(0, d.DurationMS),
-			BytesDown:  d.BytesDown,
-			Recovered:  d.Recovered,
+			At:              reportTime(d.At),
+			Transport:       allowed(d.Transport, "wss", "wss_ip", "fronting", "wss_fixed", "wss_front", "relay_wss", "relay_ws", "tcp", "vless"),
+			DC:              max(0, d.DC),
+			Media:           d.Media,
+			Stage:           allowed(d.Stage, "dial", "connect", "first_reply", "relay_read", "relay_write", "switch"),
+			Cause:           allowed(d.Cause, "reset", "timeout", "eof", "ws_close", "tls", "dns", "mtproto", "cancelled", "error"),
+			DurationMS:      max(0, d.DurationMS),
+			BytesDown:       d.BytesDown,
+			Recovered:       d.Recovered,
+			RecoveryFailure: reportRecoveryFailure(d.RecoveryFailure),
 		})
 	}
 	for _, v := range telegram.Speeds[max(0, len(telegram.Speeds)-120):] {
@@ -182,6 +188,24 @@ func safeVersion(v string) string {
 		return "dev"
 	}
 	return fmt.Sprintf("%d.%d.%d", n[0], n[1], n[2])
+}
+
+func safeBuild(v string) string {
+	if len(v) == 12 || len(v) == 40 {
+		if _, err := hex.DecodeString(v); err == nil {
+			return strings.ToLower(v)
+		}
+	}
+	return ""
+}
+
+func reportRecoveryFailure(v string) string {
+	switch v {
+	case "partial_frame", "replay_limit", "switch_limit", "cancelled", "switch_timeout", "replacement_failed":
+		return v
+	default:
+		return ""
+	}
 }
 
 func safeEngineReport(st EngineState) *reportEngine {
@@ -265,6 +289,7 @@ func (a *App) ExportDiagnosticReport() (string, error) {
 	}
 	report := buildSafeReport(string(engine.Phase), a.GetTelegramState(), a.GetServiceDiagnostics(), a.GetTelegramRoutes(), a.driverDiagnostic())
 	report.Version = safeVersion(appVersion)
+	report.Build = safeBuild(appBuild)
 	report.Elevated, _ = isElevated()
 	report.Engine = safeEngineReport(engine)
 	a.settingsMu.Lock()

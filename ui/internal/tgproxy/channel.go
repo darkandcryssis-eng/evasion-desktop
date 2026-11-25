@@ -12,13 +12,13 @@ import (
 )
 
 type relayChannel struct {
-	upstream   peer
-	route      route
-	latency    time.Duration
-	encrypt    cipher.Stream
-	decrypt    cipher.Stream
-	firstReply []byte
-	label      string
+	upstream    peer
+	route       route
+	latency     time.Duration
+	encrypt     cipher.Stream
+	decrypt     cipher.Stream
+	firstHeader []byte
+	label       string
 }
 
 func telegramRouteLabel(candidate route, dc int) string {
@@ -42,28 +42,23 @@ func telegramRouteLabel(candidate route, dc int) string {
 	return fmt.Sprintf("%s · DC%d", transport, dc)
 }
 
-func readFirstUpstream(ctx context.Context, upstream peer, timeout time.Duration) ([]byte, error) {
+func readFirstUpstreamHeader(ctx context.Context, upstream peer, dec cipher.Stream, protocol byte, timeout time.Duration) ([]byte, error) {
 	type result struct {
 		data []byte
 		err  error
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		buf := buffers.Get().([]byte)
-		n, err := upstream.Read(buf)
-		data := append([]byte(nil), buf[:n]...)
-		buffers.Put(buf)
-		resultCh <- result{data: data, err: err}
+		reader := &cipher.StreamReader{S: dec, R: upstream}
+		header, _, err := readUpstreamPacketHeader(reader, protocol)
+		resultCh <- result{data: header, err: err}
 	}()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case result := <-resultCh:
-		if len(result.data) > 0 {
-			return result.data, nil
-		}
 		if result.err == nil {
-			result.err = io.EOF
+			return result.data, nil
 		}
 		return nil, protocolProbeError{result.err}
 	case <-timer.C:
@@ -241,9 +236,9 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 		tgEnc.XORKeyStream(encoded, encoded)
 		err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded)))
 	}
-	var firstReply []byte
+	var firstHeader []byte
 	if err == nil {
-		firstReply, err = readFirstUpstream(ctx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
+		firstHeader, err = readFirstUpstreamHeader(ctx, upstream, tgDec, h.protocol, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
 	}
 	if err == nil && !stopClose() {
 		err = ctx.Err()
@@ -262,7 +257,7 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 		s.log("INFO", "Маршрут Telegram не ответил, выбираю другой", label+": "+err.Error())
 		return nil, false, err
 	}
-	return &relayChannel{upstream: upstream, route: candidate, latency: latency, encrypt: tgEnc, decrypt: tgDec, firstReply: firstReply, label: label}, false, nil
+	return &relayChannel{upstream: upstream, route: candidate, latency: latency, encrypt: tgEnc, decrypt: tgDec, firstHeader: firstHeader, label: label}, false, nil
 }
 
 // switchChannel opens a replacement upstream route after an active channel
@@ -292,7 +287,7 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 		if err == nil {
 			err = upstream.WritePacket(bytes.NewReader(init), int64(len(init)))
 		}
-		var firstReply []byte
+		var firstHeader []byte
 		if err == nil && len(replayFrames) > 0 {
 			for _, frame := range replayFrames {
 				if len(frame) == 0 {
@@ -305,7 +300,7 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 				}
 			}
 			if err == nil {
-				firstReply, err = readFirstUpstream(switchCtx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
+				firstHeader, err = readFirstUpstreamHeader(switchCtx, upstream, tgDec, h.protocol, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
 			}
 		} else if err == nil && !s.router.isVerified(candidate.id) {
 			// Idle switch onto an unverified route: confirm Telegram actually
@@ -330,13 +325,13 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 		s.router.success(candidate.id, latency)
 		s.router.warm(h.dc, h.media, candidate)
 		return &relayChannel{
-			upstream:   upstream,
-			route:      candidate,
-			latency:    latency,
-			encrypt:    tgEnc,
-			decrypt:    tgDec,
-			firstReply: firstReply,
-			label:      label,
+			upstream:    upstream,
+			route:       candidate,
+			latency:     latency,
+			encrypt:     tgEnc,
+			decrypt:     tgDec,
+			firstHeader: firstHeader,
+			label:       label,
 		}, nil
 	}
 	if lastErr == nil {

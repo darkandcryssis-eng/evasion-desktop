@@ -40,6 +40,7 @@ type TelegramDisconnect struct {
 	BytesUp          uint64 `json:"bytesUp"`
 	BytesDown        uint64 `json:"bytesDown"`
 	Recovered        bool   `json:"recovered"`
+	RecoveryFailure  string `json:"recoveryFailure,omitempty"`
 	ReplacementRoute string `json:"replacementRoute,omitempty"`
 }
 
@@ -150,6 +151,7 @@ func (a *App) GetTelegramState() TelegramState {
 			BytesUp:          ev.BytesUp,
 			BytesDown:        ev.BytesDown,
 			Recovered:        ev.Recovered,
+			RecoveryFailure:  ev.RecoveryFailure,
 			ReplacementRoute: ev.SwitchedTo,
 		})
 	}

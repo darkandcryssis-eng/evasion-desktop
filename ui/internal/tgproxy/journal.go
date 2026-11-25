@@ -26,20 +26,21 @@ const (
 // DisconnectEvent records a single Telegram upstream break or failure for
 // diagnostics, stability scoring, and user visibility.
 type DisconnectEvent struct {
-	At         string `json:"at"`
-	RouteID    string `json:"routeId"`
-	RouteLabel string `json:"routeLabel"`
-	Transport  string `json:"transport"`
-	DC         int    `json:"dc"`
-	Media      bool   `json:"media,omitempty"`
-	Stage      string `json:"stage"`
-	Cause      string `json:"cause"`
-	Detail     string `json:"detail,omitempty"`
-	DurationMS int64  `json:"durationMs"`
-	BytesUp    uint64 `json:"bytesUp"`
-	BytesDown  uint64 `json:"bytesDown"`
-	Recovered  bool   `json:"recovered,omitempty"`
-	SwitchedTo string `json:"switchedTo,omitempty"`
+	At              string `json:"at"`
+	RouteID         string `json:"routeId"`
+	RouteLabel      string `json:"routeLabel"`
+	Transport       string `json:"transport"`
+	DC              int    `json:"dc"`
+	Media           bool   `json:"media,omitempty"`
+	Stage           string `json:"stage"`
+	Cause           string `json:"cause"`
+	Detail          string `json:"detail,omitempty"`
+	DurationMS      int64  `json:"durationMs"`
+	BytesUp         uint64 `json:"bytesUp"`
+	BytesDown       uint64 `json:"bytesDown"`
+	Recovered       bool   `json:"recovered,omitempty"`
+	RecoveryFailure string `json:"recoveryFailure,omitempty"`
+	SwitchedTo      string `json:"switchedTo,omitempty"`
 }
 
 func routeTransport(c route) string {
