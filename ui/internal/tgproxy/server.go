@@ -533,7 +533,7 @@ func (s *Server) serve(client net.Conn) {
 		cause := classifyDisconnect(causeErr)
 		wsNormalClose := websocket.IsCloseError(causeErr, websocket.CloseNormalClosure, websocket.CloseGoingAway)
 		cleanClose := errors.Is(causeErr, io.EOF) || wsNormalClose
-		normalIdleWSClose := wsNormalClose && connDown > 0 && len(pendingFrames) == 0 && len(extraFrame) == 0
+		normalIdleWSClose := wsNormalClose && connDown > 0 && !midFrame && !pendingOverflow && len(pendingFrames) == 0 && len(extraFrame) == 0
 		if (!cleanClose || duration < 30*time.Second) && !normalIdleWSClose {
 			s.router.recordDrop(candidate, duration, causeErr)
 		} else {
