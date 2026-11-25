@@ -285,11 +285,18 @@ func (r *router) connect(ctx context.Context, dc int, media bool) (peer, route, 
 // ответа, поэтому прогретый пул пропускается (там чаще всего тот же маршрут),
 // а сам avoid исключается из гонки, если есть другие маршруты.
 func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid string) (peer, route, time.Duration, error) {
+	if avoid == "" {
+		return r.connectAvoidSet(ctx, dc, media, nil)
+	}
+	return r.connectAvoidSet(ctx, dc, media, map[string]bool{avoid: true})
+}
+
+func (r *router) connectAvoidSet(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, time.Duration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, route{}, 0, err
 	}
 	started := time.Now()
-	if avoid == "" {
+	if len(avoid) == 0 {
 		if p, c, ok := r.takeWarm(ctx, dc, media); ok {
 			return p, c, time.Since(started), nil
 		}
@@ -320,11 +327,21 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 		}
 		sortRelays(secureRelays)
 		sortRelays(plainRelays)
-		// Reserve 2 of the 8 relay slots for plain ws:// when TLS fallback is
-		// not forced so cold connections can still succeed if TLS is blocked.
+		// Reserve 2 of the 8 relay slots for plain ws:// (either on cold start
+		// or whenever a verified plain backup exists) so TLS-only failures can
+		// still fall back to a working plain WebSocket relay.
 		secureCap := 6
 		if preferTLS {
-			secureCap = 8
+			hasVerifiedPlain := false
+			for _, candidate := range plainRelays {
+				if !now.Before(r.health[candidate.id].retryAt) && routeRank(r.health[candidate.id]) > 0 {
+					hasVerifiedPlain = true
+					break
+				}
+			}
+			if !hasVerifiedPlain {
+				secureCap = 8
+			}
 		}
 		var picked []route
 		for _, candidate := range secureRelays {
@@ -392,15 +409,18 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 		}
 		return routeRank(a) > 0 && a.latency < b.latency
 	})
-	if avoid != "" {
+	if len(avoid) > 0 {
 		others := available[:0:0]
 		for _, candidate := range available {
-			if candidate.id != avoid {
+			if !avoid[candidate.id] {
 				others = append(others, candidate)
 			}
 		}
 		if len(others) > 0 {
 			available = others
+		} else if len(avoid) > 1 {
+			r.mu.Unlock()
+			return nil, route{}, 0, errors.New("no alternative Telegram routes available")
 		}
 	}
 	r.mu.Unlock()

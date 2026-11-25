@@ -381,3 +381,55 @@ func TestIdleSwitchRejectsSilentUnverifiedRoute(t *testing.T) {
 		t.Fatal("expected idle switch to reject silent unverified route")
 	}
 }
+
+func TestIdleSwitchRetriesAfterSilentUnverifiedRoute(t *testing.T) {
+	v := vectors(t)[0]
+	routes := routesFor(2, false)
+	if len(routes) < 2 {
+		t.Fatal("need at least two routes")
+	}
+	silentID := routes[0].id
+	goodID := routes[1].id
+	s, err := New(Options{
+		Secret: unhex(t, v.Secret),
+		Dial: func(ctx context.Context, r route) (peer, error) {
+			if r.id == silentID {
+				local, remote := net.Pipe()
+				go func() {
+					<-ctx.Done()
+					_ = remote.Close()
+				}()
+				return &tcpPeer{local}, nil
+			}
+			if r.id == goodID {
+				// Slightly slower than silentID so silentID wins the first race.
+				select {
+				case <-time.After(150 * time.Millisecond):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				local, remote := net.Pipe()
+				go func() {
+					_, _ = io.Copy(io.Discard, remote)
+				}()
+				return &tcpPeer{local}, nil
+			}
+			return nil, errors.New("blocked")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.router.success(goodID, 50*time.Millisecond)
+	h := handshake{dc: 2, media: false, protocol: 0xee}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	ch, err := s.switchChannel(ctx, h, "", nil)
+	if err != nil {
+		t.Fatalf("expected idle switch to retry and succeed on verified backup, got %v", err)
+	}
+	defer ch.upstream.Close()
+	if ch.route.id != goodID {
+		t.Fatalf("expected backup route %s, got %s", goodID, ch.route.id)
+	}
+}

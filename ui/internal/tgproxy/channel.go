@@ -264,61 +264,76 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 // the first reply. On an idle switch (no pending frames), it verifies that an
 // unverified candidate actually answers Telegram before accepting it.
 func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, replayFrames [][]byte) (*relayChannel, error) {
+	const maxSwitchAttempts = 3
 	switchCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	upstream, candidate, latency, err := s.router.connectAvoid(switchCtx, h.dc, h.media, avoid)
-	if err != nil {
-		return nil, err
+	tried := map[string]bool{}
+	if avoid != "" {
+		tried[avoid] = true
 	}
-	stopClose := context.AfterFunc(switchCtx, func() { _ = upstream.Close() })
-	label := telegramRouteLabel(candidate, h.dc)
-	init, tgEnc, tgDec, err := relayHandshake(h)
-	if err == nil {
-		err = upstream.WritePacket(bytes.NewReader(init), int64(len(init)))
-	}
-	var firstReply []byte
-	if err == nil && len(replayFrames) > 0 {
-		for _, frame := range replayFrames {
-			if len(frame) == 0 {
-				continue
-			}
-			encoded := append([]byte(nil), frame...)
-			tgEnc.XORKeyStream(encoded, encoded)
-			if err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded))); err != nil {
-				break
-			}
+	var lastErr error
+	for attempt := 0; attempt < maxSwitchAttempts && switchCtx.Err() == nil; attempt++ {
+		upstream, candidate, latency, err := s.router.connectAvoidSet(switchCtx, h.dc, h.media, tried)
+		if err != nil {
+			lastErr = err
+			break
 		}
+		tried[candidate.id] = true
+		stopClose := context.AfterFunc(switchCtx, func() { _ = upstream.Close() })
+		label := telegramRouteLabel(candidate, h.dc)
+		init, tgEnc, tgDec, err := relayHandshake(h)
 		if err == nil {
-			firstReply, err = readFirstUpstream(switchCtx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
+			err = upstream.WritePacket(bytes.NewReader(init), int64(len(init)))
 		}
-	} else if err == nil && !s.router.isVerified(candidate.id) {
-		// Idle switch onto an unverified route: confirm Telegram actually
-		// responds on this route so failover never lands on a silent blackhole.
-		s.router.probeRoute(switchCtx, candidate, 3*time.Second)
-		if !s.router.isVerified(candidate.id) {
-			err = errors.New("replacement route did not answer Telegram probe")
+		var firstReply []byte
+		if err == nil && len(replayFrames) > 0 {
+			for _, frame := range replayFrames {
+				if len(frame) == 0 {
+					continue
+				}
+				encoded := append([]byte(nil), frame...)
+				tgEnc.XORKeyStream(encoded, encoded)
+				if err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded))); err != nil {
+					break
+				}
+			}
+			if err == nil {
+				firstReply, err = readFirstUpstream(switchCtx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
+			}
+		} else if err == nil && !s.router.isVerified(candidate.id) {
+			// Idle switch onto an unverified route: confirm Telegram actually
+			// responds on this route so failover never lands on a silent blackhole.
+			s.router.probeRoute(switchCtx, candidate, 3*time.Second)
+			if !s.router.isVerified(candidate.id) {
+				err = errors.New("replacement route did not answer Telegram probe")
+			}
 		}
-	}
-	if err == nil && !stopClose() {
-		err = switchCtx.Err()
-	}
-	if err != nil {
-		stopClose()
-		_ = upstream.Close()
-		if ctx.Err() == nil {
-			s.router.failure(candidate.id, err)
+		if err == nil && !stopClose() {
+			err = switchCtx.Err()
 		}
-		return nil, err
+		if err != nil {
+			stopClose()
+			_ = upstream.Close()
+			if ctx.Err() == nil {
+				s.router.failure(candidate.id, err)
+			}
+			lastErr = err
+			continue
+		}
+		s.router.success(candidate.id, latency)
+		s.router.warm(h.dc, h.media, candidate)
+		return &relayChannel{
+			upstream:   upstream,
+			route:      candidate,
+			latency:    latency,
+			encrypt:    tgEnc,
+			decrypt:    tgDec,
+			firstReply: firstReply,
+			label:      label,
+		}, nil
 	}
-	s.router.success(candidate.id, latency)
-	s.router.warm(h.dc, h.media, candidate)
-	return &relayChannel{
-		upstream:   upstream,
-		route:      candidate,
-		latency:    latency,
-		encrypt:    tgEnc,
-		decrypt:    tgDec,
-		firstReply: firstReply,
-		label:      label,
-	}, nil
+	if lastErr == nil {
+		lastErr = switchCtx.Err()
+	}
+	return nil, lastErr
 }
