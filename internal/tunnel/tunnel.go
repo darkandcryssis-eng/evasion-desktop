@@ -446,8 +446,17 @@ func OpenWithFallbackEndpoints(ctx context.Context, opts Options, endpoints []st
 				if bctx.Err() != nil {
 					return
 				}
+				resolved, rerr := resolveEndpointContext(bctx, endpoint)
+				if rerr != nil {
+					mu.Lock()
+					if batchErr == nil {
+						batchErr = rerr
+					}
+					mu.Unlock()
+					return
+				}
 				candidateAcc := *opts.Account
-				candidateAcc.PeerEndpoint = endpoint
+				candidateAcc.PeerEndpoint = resolved
 				candidateOpts := opts
 				candidateOpts.Account = &candidateAcc
 
@@ -544,6 +553,12 @@ var WARPFallbackPorts = []int{
 // есть одна правка в одном месте. Альтернатива (DoH до 1.1.1.1 как fallback)
 // красивее, но тащит зависимость DNS-клиента ради одного DNS-запроса.
 func resolveEndpoint(endpoint string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return resolveEndpointContext(ctx, endpoint)
+}
+
+func resolveEndpointContext(ctx context.Context, endpoint string) (string, error) {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
 		return "", fmt.Errorf("tunnel: endpoint %q не разбирается: %w", endpoint, err)
@@ -551,14 +566,15 @@ func resolveEndpoint(endpoint string) (string, error) {
 	if _, err := netip.ParseAddr(host); err == nil {
 		return endpoint, nil // уже IP
 	}
-	// Пытаемся системным резолвером с коротким таймаутом: висеть на DNS
-	// минутами мы не можем, обвалилось — обвалилось, идём в fallback.
+	// Пытаемся системным резолвером с отменой по ctx: если соседний IP-кандидат
+	// уже прошёл рукопожатие, DNS-запрос прерывается немедленно.
 	resolver := &net.Resolver{}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err == nil && len(ips) > 0 {
 		return net.JoinHostPort(ips[0].IP.String(), port), nil
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
 	}
 	// Fallback: известный IP WARP endpoint. Актуален, пока Cloudflare не
 	// переназначит сервис — за годы существования WARP не менялся.
