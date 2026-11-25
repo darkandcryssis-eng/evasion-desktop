@@ -635,7 +635,7 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 				logger.Info("десинк голоса применён (звонок Telegram)",
 					"применено_telegram", actedTelegram, "stun", tg.STUN, "dtls", tg.DTLS,
 					"ответов", tg.Replies, "стратегия", tg.Strategy, "целей", tg.Targets,
-					"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received,
+					"telegram_warp", ws.Active, "telegram_warp_peer", ws.Peer, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received,
 					"применено", acted, "датаграмм_udp", dgrams)
 				lastTelegramReport = time.Now()
 			}
@@ -680,7 +680,7 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 				"датаграмм_udp", dgrams, "применено", acted, "применено_telegram", actedTelegram,
 				"telegram_stun", tg.STUN, "telegram_dtls", tg.DTLS, "telegram_ответов", tg.Replies,
 				"telegram_стратегия", tg.Strategy,
-				"telegram_warp", ws.Active, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received)
+				"telegram_warp", ws.Active, "telegram_warp_peer", ws.Peer, "telegram_warp_tx", ws.Sent, "telegram_warp_rx", ws.Received)
 			lastReport = time.Now()
 		}
 		if ctx.Err() != nil {

@@ -19,8 +19,10 @@ const (
 	telegramCallTunnelFilter   = "outbound and udp and udp.DstPort != 443 and udp.DstPort != 53 and not loopback and not impostor"
 	telegramCallTunnelPriority = 150
 	telegramCallWARPTrigger     = 4
-	telegramCallWARPRetry       = 3 * time.Minute
-	telegramCallWARPPortWait    = 1400 * time.Millisecond
+	telegramCallWARPRetry       = 30 * time.Second
+	telegramCallWARPDeadRetry   = 5 * time.Second
+	telegramCallWARPBadPeerTTL  = 10 * time.Minute
+	telegramCallWARPPortWait    = 1800 * time.Millisecond
 	telegramCallWARPBatch       = 10
 	telegramCallWARPJunk        = 4
 	telegramCallWARPStateFile   = "warp-telegram.json"
@@ -73,21 +75,22 @@ type telegramCallTunnel struct {
 	owner      telegramUDPOwner
 	logger     *slog.Logger
 	now        func() time.Time
-	openTunnel func(context.Context) (tgUDPTunnel, error)
+	openTunnel func(context.Context, map[string]struct{}) (tgUDPTunnel, error)
 	openHandle func() (tgTunnelConn, error)
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	closed  bool
-	opening bool
-	active  bool
-	retryAt time.Time
-	peer    string
-	tn      tgUDPTunnel
-	handle  tgTunnelConn
-	sockets map[tgLocalSocketKey]*tgSocketRelay
+	mu       sync.Mutex
+	closed   bool
+	opening  bool
+	active   bool
+	retryAt  time.Time
+	peer     string
+	badPeers map[string]time.Time
+	tn       tgUDPTunnel
+	handle   tgTunnelConn
+	sockets  map[tgLocalSocketKey]*tgSocketRelay
 
 	sendMu sync.Mutex
 	wg     sync.WaitGroup
@@ -107,12 +110,13 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 		owner:     owner,
 		logger:    logger,
 		now:       time.Now,
-		openTunnel: func(c context.Context) (tgUDPTunnel, error) {
-			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, telegramCallWARPJunk, true, logger)
+		openTunnel: func(c context.Context, exclude map[string]struct{}) (tgUDPTunnel, error) {
+			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, telegramCallWARPJunk, true, exclude, logger)
 		},
 		openHandle: openTelegramCallTunnelHandle,
 		ctx:        ctx,
 		cancel:     cancel,
+		badPeers:   make(map[string]time.Time),
 		sockets:    make(map[tgLocalSocketKey]*tgSocketRelay),
 	}
 }
@@ -135,11 +139,33 @@ func (t *telegramCallTunnel) NotifyUnanswered() {
 	go t.activate()
 }
 
+func (t *telegramCallTunnel) activeBadPeersLocked(now time.Time) map[string]struct{} {
+	if len(t.badPeers) == 0 {
+		return nil
+	}
+	var out map[string]struct{}
+	for ep, until := range t.badPeers {
+		if now.After(until) {
+			delete(t.badPeers, ep)
+			continue
+		}
+		if out == nil {
+			out = make(map[string]struct{}, len(t.badPeers))
+		}
+		out[ep] = struct{}{}
+	}
+	return out
+}
+
 func (t *telegramCallTunnel) activate() {
 	defer t.wg.Done()
 
+	t.mu.Lock()
+	exclude := t.activeBadPeersLocked(t.now())
+	t.mu.Unlock()
+
 	t.logger.Info("звонок Telegram: запуск резервного UDP-туннеля WARP")
-	tn, err := t.openTunnel(t.ctx)
+	tn, err := t.openTunnel(t.ctx, exclude)
 	if err != nil {
 		t.mu.Lock()
 		t.opening = false
@@ -249,13 +275,23 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 		if n == 1 {
 			stalledSince = t.now()
 		} else if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
+			peer := tn.Endpoint()
 			t.mu.Lock()
 			if !t.closed {
-				t.retryAt = t.now().Add(telegramCallWARPRetry)
+				now := t.now()
+				if peer != "" {
+					if t.badPeers == nil {
+						t.badPeers = make(map[string]time.Time)
+					}
+					t.badPeers[peer] = now.Add(telegramCallWARPBadPeerTTL)
+				}
+				t.retryAt = now.Add(telegramCallWARPDeadRetry)
 			}
 			t.mu.Unlock()
-			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, возврат на прямой путь",
-				"отправлено_без_ответа", n)
+			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, смена адреса",
+				"пир", peer,
+				"отправлено_без_ответа", n,
+				"повтор_через", telegramCallWARPDeadRetry.String())
 			return
 		}
 	}

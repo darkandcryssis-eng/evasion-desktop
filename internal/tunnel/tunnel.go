@@ -76,6 +76,11 @@ type Options struct {
 	// HandshakeJunk — сколько случайных UDP-пакетов (AmneziaWG Jc) отправить
 	// перед каждым WireGuard Handshake Initiation. 0 отключает маскировку.
 	HandshakeJunk int
+	// VerifyUDP — после WireGuard-рукопожатия дополнительно проверить реальный
+	// двусторонний UDP-обмен внутри туннеля (DNS-запрос на 1.1.1.1:53), чтобы
+	// отсеивать endpoint-ы, на которых провайдер пропускает рукопожатие, но
+	// режет транспортные пакеты WireGuard.
+	VerifyUDP bool
 }
 
 // Open поднимает туннель.
@@ -197,6 +202,66 @@ func (t *Tunnel) ListenUDP(ipv6 bool) (net.PacketConn, error) {
 		return nil, fmt.Errorf("tunnel: адрес для UDP (ipv6=%v) не задан", ipv6)
 	}
 	return t.stack.ListenUDPAddrPort(netip.AddrPortFrom(ip, 0))
+}
+
+// dnsProbeQuery — минимальный DNS A-запрос для "." (root NS, 17 байт),
+// транзакция 0x53 0x47. Любой валидный DNS-ответ от 1.1.1.1:53 подтверждает,
+// что внутри WireGuard-туннеля проходит двусторонний UDP-трафик.
+var dnsProbeQuery = []byte{
+	0x53, 0x47, // Transaction ID
+	0x01, 0x00, // Standard query, RD=1
+	0x00, 0x01, // QDCOUNT=1
+	0x00, 0x00, // ANCOUNT=0
+	0x00, 0x00, // NSCOUNT=0
+	0x00, 0x00, // ARCOUNT=0
+	0x00,       // QNAME="."
+	0x00, 0x02, // QTYPE=NS
+	0x00, 0x01, // QCLASS=IN
+}
+
+// ProbeUDP проверяет, что через поднятый туннель реально проходит двусторонний
+// UDP-обмен (а не только WireGuard-рукопожатие), отправляя минимальный DNS-запрос
+// на 1.1.1.1:53 и дожидаясь ответа в пределах ctx.
+func (t *Tunnel) ProbeUDP(ctx context.Context) error {
+	pc, err := t.ListenUDP(false)
+	if err != nil {
+		return err
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = pc.Close()
+		case <-done:
+		}
+	}()
+	defer func() {
+		close(done)
+		_ = pc.Close()
+	}()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = pc.SetDeadline(dl)
+	}
+	target := &net.UDPAddr{IP: net.IPv4(1, 1, 1, 1), Port: 53}
+	if _, err := pc.WriteTo(dnsProbeQuery, target); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("tunnel: UDP probe write: %w", err)
+	}
+	var buf [512]byte
+	for {
+		n, _, err := pc.ReadFrom(buf[:])
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("tunnel: UDP probe read: %w", err)
+		}
+		if n >= 12 && buf[0] == dnsProbeQuery[0] && buf[1] == dnsProbeQuery[1] {
+			return nil
+		}
+	}
 }
 
 // DialContext открывает TCP-соединение через туннель.
@@ -461,6 +526,9 @@ func OpenWithFallbackEndpoints(ctx context.Context, opts Options, endpoints []st
 					return
 				}
 				werr := tn.WaitHandshake(bctx)
+				if werr == nil && opts.VerifyUDP {
+					werr = tn.ProbeUDP(bctx)
+				}
 				if werr == nil {
 					mu.Lock()
 					if winner == nil {

@@ -246,7 +246,7 @@ func TestTelegramCallTunnelRelaysAndPassesThrough(t *testing.T) {
 
 	tt := newTelegramCallTunnel(ctx, fakeTunnelOwner{}, nil)
 	tt.supported = true
-	tt.openTunnel = func(context.Context) (tgUDPTunnel, error) { return fakeTn, nil }
+	tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) { return fakeTn, nil }
 	tt.openHandle = func() (tgTunnelConn, error) { return fakeHandle, nil }
 	defer tt.Close()
 
@@ -353,7 +353,7 @@ func TestTelegramCallTunnelRetryBackoff(t *testing.T) {
 	tt := newTelegramCallTunnel(ctx, nil, nil)
 	tt.supported = true
 	tt.now = func() time.Time { return now }
-	tt.openTunnel = func(context.Context) (tgUDPTunnel, error) {
+	tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) {
 		calls.Add(1)
 		return nil, errors.New("warp blocked")
 	}
@@ -393,7 +393,18 @@ func TestTelegramCallTunnelReleasesDeadTunnel(t *testing.T) {
 		defer nowMu.Unlock()
 		return curNow
 	}
-	tt.openTunnel = func(context.Context) (tgUDPTunnel, error) { return fakeTn, nil }
+	var (
+		openCalls atomic.Int32
+		lastExcl  map[string]struct{}
+		exclMu    sync.Mutex
+	)
+	tt.openTunnel = func(_ context.Context, exclude map[string]struct{}) (tgUDPTunnel, error) {
+		openCalls.Add(1)
+		exclMu.Lock()
+		lastExcl = exclude
+		exclMu.Unlock()
+		return fakeTn, nil
+	}
 	tt.openHandle = func() (tgTunnelConn, error) { return fakeHandle, nil }
 	defer tt.Close()
 
@@ -430,5 +441,52 @@ func TestTelegramCallTunnelReleasesDeadTunnel(t *testing.T) {
 	}
 	if tt.Stats().Active {
 		t.Fatal("expected dead WARP tunnel to release capture and become inactive")
+	}
+
+	// After the short dead-tunnel retry delay, NotifyUnanswered should reopen
+	// WARP and exclude the dead peer from the candidate list.
+	nowMu.Lock()
+	curNow = curNow.Add(telegramCallWARPDeadRetry + time.Second)
+	nowMu.Unlock()
+	fakeHandle = newFakeTunnelHandle()
+	tt.NotifyUnanswered()
+	deadline = time.Now().Add(2 * time.Second)
+	for openCalls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if openCalls.Load() < 2 {
+		t.Fatalf("expected fast failover reopen after %v, got %d opens", telegramCallWARPDeadRetry, openCalls.Load())
+	}
+	exclMu.Lock()
+	_, excluded := lastExcl[fakeTn.Endpoint()]
+	exclMu.Unlock()
+	if !excluded {
+		t.Fatalf("expected dead peer %q to be excluded on failover, got %v", fakeTn.Endpoint(), lastExcl)
+	}
+}
+
+func TestWarpMultiHostEndpointsExclude(t *testing.T) {
+	all := warpMultiHostEndpoints("162.159.195.1:2408", nil)
+	if len(all) == 0 || all[0] != "162.159.195.1:2408" {
+		t.Fatalf("expected saved endpoint first, got %v", all[:min(3, len(all))])
+	}
+	filtered := warpMultiHostEndpoints("162.159.195.1:2408", map[string]struct{}{
+		"162.159.195.1:2408": {},
+	})
+	if len(filtered) != len(all)-1 {
+		t.Fatalf("expected 1 excluded endpoint, got %d vs %d", len(filtered), len(all))
+	}
+	for _, ep := range filtered {
+		if ep == "162.159.195.1:2408" {
+			t.Fatal("excluded endpoint still present in filtered list")
+		}
+	}
+	excludeAll := make(map[string]struct{}, len(all))
+	for _, ep := range all {
+		excludeAll[ep] = struct{}{}
+	}
+	fallback := warpMultiHostEndpoints("162.159.195.1:2408", excludeAll)
+	if len(fallback) != len(all) {
+		t.Fatalf("expected fallback to full list when all excluded, got %d vs %d", len(fallback), len(all))
 	}
 }
