@@ -280,7 +280,7 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 	}
 	var lastErr error
 	for attempt := 0; attempt < maxSwitchAttempts && switchCtx.Err() == nil; attempt++ {
-		upstream, candidate, latency, err := s.router.connectAvoidSet(switchCtx, h.dc, h.media, tried)
+		upstream, candidate, latency, err := s.router.connectFailover(switchCtx, h.dc, h.media, tried)
 		if err != nil {
 			lastErr = err
 			break
@@ -310,7 +310,7 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 		} else if err == nil && !s.router.isVerified(candidate.id) {
 			// Idle switch onto an unverified route: confirm Telegram actually
 			// responds on this route so failover never lands on a silent blackhole.
-			s.router.probeRoute(switchCtx, candidate, 3*time.Second)
+			s.router.probeFailoverRoute(switchCtx, candidate, 3*time.Second)
 			if !s.router.isVerified(candidate.id) {
 				err = errors.New("replacement route did not answer Telegram probe")
 			}

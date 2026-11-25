@@ -60,10 +60,21 @@ send:
 }
 
 func (r *router) probeRoute(ctx context.Context, candidate route, timeout time.Duration) {
+	r.probeRouteWithDial(ctx, candidate, timeout, r.dialBackground)
+}
+
+func (r *router) probeFailoverRoute(ctx context.Context, candidate route, timeout time.Duration) {
+	r.probeRouteWithDial(ctx, candidate, timeout, func(ctx context.Context, c route) (peer, error) {
+		p, _, err := r.dialRouteWithSlots(ctx, r.failover, c, 0)
+		return p, err
+	})
+}
+
+func (r *router) probeRouteWithDial(ctx context.Context, candidate route, timeout time.Duration, dial func(context.Context, route) (peer, error)) {
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	started := time.Now()
-	p, err := r.dialBackground(probeCtx, candidate)
+	p, err := dial(probeCtx, candidate)
 	if err == nil {
 		err = probePeer(probeCtx, p, candidate)
 		if err != nil {

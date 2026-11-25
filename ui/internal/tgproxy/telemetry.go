@@ -64,12 +64,16 @@ func (r *router) dialRoute(ctx context.Context, candidate route) (peer, error) {
 }
 
 func (r *router) dialRouteTimed(ctx context.Context, candidate route, timeout time.Duration) (peer, time.Duration, error) {
+	return r.dialRouteWithSlots(ctx, r.slots, candidate, timeout)
+}
+
+func (r *router) dialRouteWithSlots(ctx context.Context, slots chan struct{}, candidate route, timeout time.Duration) (peer, time.Duration, error) {
 	select {
-	case r.slots <- struct{}{}:
+	case slots <- struct{}{}:
 	case <-ctx.Done():
 		return nil, 0, fmt.Errorf("%w: %w", errDialQueue, ctx.Err())
 	}
-	defer func() { <-r.slots }()
+	defer func() { <-slots }()
 	if err := ctx.Err(); err != nil {
 		return nil, 0, fmt.Errorf("%w: %w", errDialQueue, err)
 	}

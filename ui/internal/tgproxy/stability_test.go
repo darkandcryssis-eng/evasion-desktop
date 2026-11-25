@@ -466,3 +466,43 @@ func TestIdleSwitchRetriesAfterSilentUnverifiedRoute(t *testing.T) {
 		t.Fatalf("expected backup route %s, got %s", goodID, ch.route.id)
 	}
 }
+
+func TestFailoverNotStarvedByFullDialQueue(t *testing.T) {
+	v := vectors(t)[0]
+	routes := routesFor(2, false)
+	goodID := routes[1].id
+	s, err := New(Options{
+		Secret: unhex(t, v.Secret),
+		Dial: func(ctx context.Context, r route) (peer, error) {
+			if r.id != goodID {
+				return nil, errors.New("blocked")
+			}
+			local, remote := net.Pipe()
+			go func() {
+				_, _ = io.Copy(io.Discard, remote)
+			}()
+			return &tcpPeer{local}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.router.success(goodID, 50*time.Millisecond)
+	// Saturate all shared foreground dial slots as if concurrent media reconnects stalled.
+	for range cap(s.router.slots) {
+		s.router.slots <- struct{}{}
+	}
+	defer func() {
+		for range cap(s.router.slots) {
+			<-s.router.slots
+		}
+	}()
+	h := handshake{dc: 2, media: false, protocol: 0xee}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ch, err := s.switchChannel(ctx, h, routes[0].id, nil)
+	if err != nil {
+		t.Fatalf("failover should not starve when shared dial slots are full: %v", err)
+	}
+	_ = ch.upstream.Close()
+}
