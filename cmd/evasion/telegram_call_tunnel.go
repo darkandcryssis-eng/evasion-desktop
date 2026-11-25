@@ -20,6 +20,8 @@ const (
 	telegramCallTunnelPriority = 150
 	telegramCallWARPTrigger    = 4
 	telegramCallWARPRetry      = 3 * time.Minute
+	telegramCallWARPPortWait   = 1200 * time.Millisecond
+	telegramCallWARPStateFile  = "warp-telegram.json"
 	telegramCallSocketIdle     = 90 * time.Second
 	telegramCallMaxSockets     = 64
 )
@@ -101,7 +103,7 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 		logger:    logger,
 		now:       time.Now,
 		openTunnel: func(c context.Context) (tgUDPTunnel, error) {
-			return openWARPTunnel(c, defaultStateDir, logger)
+			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, logger)
 		},
 		openHandle: openTelegramCallTunnelHandle,
 		ctx:        ctx,
