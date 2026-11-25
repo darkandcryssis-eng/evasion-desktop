@@ -114,6 +114,44 @@ func newTelegramReflectorTracker() *telegramReflectorTracker {
 	}
 }
 
+func (t *telegramReflectorTracker) evictLocked(now time.Time) {
+	if len(t.flows) < telegramReflectorCap {
+		return
+	}
+	for k, v := range t.flows {
+		if now.Sub(v.last) > telegramReflectorTTL {
+			delete(t.flows, k)
+		}
+	}
+	if len(t.flows) >= telegramReflectorCap {
+		var oldestKey telegramFlowKey
+		var oldestTime time.Time
+		for k, v := range t.flows {
+			if oldestTime.IsZero() || v.last.Before(oldestTime) {
+				oldestKey, oldestTime = k, v.last
+			}
+		}
+		delete(t.flows, oldestKey)
+	}
+}
+
+// MarkHandled records that a 5-tuple already received STUN/TURN desync so
+// subsequent non-STUN TURN ChannelData/media frames on reflector ports 596-599
+// do not trigger legacy reflector decoys.
+func (t *telegramReflectorTracker) MarkHandled(srcPort uint16, dstIP netip.Addr, dstPort uint16) {
+	if t == nil || !dstIP.IsValid() {
+		return
+	}
+	key := telegramFlowKey{srcPort: srcPort, dstIP: dstIP.Unmap(), dstPort: dstPort}
+	now := t.now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.flows[key]; !ok {
+		t.evictLocked(now)
+	}
+	t.flows[key] = telegramFlowState{count: telegramReflectorBurst, last: now}
+}
+
 func (t *telegramReflectorTracker) Allow(srcPort uint16, dstIP netip.Addr, dstPort uint16) bool {
 	if t == nil || !dstIP.IsValid() {
 		return false
@@ -127,22 +165,8 @@ func (t *telegramReflectorTracker) Allow(srcPort uint16, dstIP netip.Addr, dstPo
 		st = telegramFlowState{}
 		ok = false
 	}
-	if !ok && len(t.flows) >= telegramReflectorCap {
-		for k, v := range t.flows {
-			if now.Sub(v.last) > telegramReflectorTTL {
-				delete(t.flows, k)
-			}
-		}
-		if len(t.flows) >= telegramReflectorCap {
-			var oldestKey telegramFlowKey
-			var oldestTime time.Time
-			for k, v := range t.flows {
-				if oldestTime.IsZero() || v.last.Before(oldestTime) {
-					oldestKey, oldestTime = k, v.last
-				}
-			}
-			delete(t.flows, oldestKey)
-		}
+	if !ok {
+		t.evictLocked(now)
 	}
 	st.last = now
 	if st.count >= telegramReflectorBurst {

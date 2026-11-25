@@ -352,6 +352,9 @@ func classifyVoiceTarget(buf []byte, d packet.Dissection, payloadBytes []byte, t
 	dstIP := packetDstIP(buf, d)
 	if discordvoice.IsSTUNOrTURNRequest(payloadBytes) {
 		if isTelegramCallIP(dstIP) || (tgOwner != nil && tgOwner.OwnsUDP(u.SrcPort())) {
+			if isTelegramReflectorPort(dstPort) {
+				tgFlows.MarkHandled(u.SrcPort(), dstIP, dstPort)
+			}
 			return voiceTargetTelegram
 		}
 		if isVoiceMediaPort(dstPort) && discordvoice.IsSTUNBindingRequest(payloadBytes) {

@@ -160,6 +160,29 @@ func TestTelegramLegacyReflectorBurstLimit(t *testing.T) {
 	}
 }
 
+func TestTelegramTURNOnReflectorPortSuppressesLegacyDecoys(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	tracker := newTelegramReflectorTracker()
+	tracker.now = func() time.Time { return now }
+
+	turnAlloc := buildUDPPacketIPv4(t, "91.108.56.100", 52100, 599, stunPayload(0x0003, 64))
+	if _, target := buildVoiceDecoysFor(turnAlloc, discordvoice.FoolTTL, 6, 2, voicePayloadNeutral, nil, tracker); target != voiceTargetTelegram {
+		t.Fatalf("TURN Allocate on 599: target=%v, want voiceTargetTelegram", target)
+	}
+
+	// Subsequent TURN ChannelData / media packets on the same 5-tuple must not
+	// trigger legacy reflector decoys.
+	mediaPayload := make([]byte, 120)
+	mediaPayload[0] = 0x40 // TURN ChannelData channel 0x4000
+	mediaPkt := buildUDPPacketIPv4(t, "91.108.56.100", 52100, 599, mediaPayload)
+	for i := range 5 {
+		now = now.Add(20 * time.Millisecond)
+		if _, target := buildVoiceDecoysFor(mediaPkt, discordvoice.FoolTTL, 6, 2, voicePayloadNeutral, nil, tracker); target != voiceTargetNone {
+			t.Fatalf("TURN media packet %d must not trigger legacy decoys, got %v", i, target)
+		}
+	}
+}
+
 func TestIsTelegramProcessName(t *testing.T) {
 	for _, name := range []string{"Telegram.exe", "telegram.exe", "AyuGram.exe", "Unigram.exe", "Kotatogram.exe", "64Gram.exe"} {
 		if !isTelegramProcessName(name) {
