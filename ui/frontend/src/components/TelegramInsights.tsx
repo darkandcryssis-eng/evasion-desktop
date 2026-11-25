@@ -1,7 +1,8 @@
-import { Activity, ArrowDownLeft, ArrowUpRight, History, Network, RefreshCw } from "lucide-react";
+import { Activity, ArrowDownLeft, ArrowUpRight, Network, RefreshCw } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { api, type SpeedSample, type TelegramDisconnect, type TelegramRoute } from "../api";
 import { speedChart } from "../speedChart";
+import { Badge, Disclosure } from "../ui";
 import { StatusBadge } from "./StatusBadge";
 import { traffic } from "./TelegramStatus";
 
@@ -46,9 +47,14 @@ export function RoutePanel() {
 
 export function DisconnectJournalPanel({ disconnects = [], switches = 0 }: { disconnects?: TelegramDisconnect[]; switches?: number }) {
   const recent = disconnects.slice(0, 12);
-  return <section className="insight-panel route-panel" aria-label="Журнал обрывов Telegram">
-    <div className="insight-heading"><div><History size={16} /><strong>Журнал обрывов</strong></div><span>Бесшовных переключений: {switches}</span></div>
-    {recent.length === 0 ? <p className="route-empty">Обрывов пока не зафиксировано. При сбое здесь появится причина (сброс, таймаут), маршрут и результат переключения.</p> :
-      <div className="route-list">{recent.map((d, i) => <div className="route-row" key={`${d.at}-${i}`}><div><strong>{causeLabels[d.cause] || d.cause} · {d.routeLabel || d.route}</strong><span>{d.transport.toUpperCase()} · DC{d.dc}{d.media ? " media" : ""} · {d.durationMs > 0 ? `${Math.round(d.durationMs / 1000)} с` : "старт"}{d.at ? ` · ${new Date(d.at).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}</span>{d.replacementRoute && <span className="route-reason">Переключён на {d.replacementRoute}</span>}</div><StatusBadge tone={d.recovered ? "success" : "warning"}>{d.recovered ? "Переключён" : "Обрыв"}</StatusBadge></div>)}</div>}
-  </section>;
+  return <Disclosure icon="pulse" title="Журнал обрывов" note={`Бесшовных переключений: ${switches}`} defaultOpen>
+    {recent.length === 0 ? <p className="empty">Обрывов пока не зафиксировано. При сбое здесь появится причина (сброс, таймаут), маршрут и результат переключения.</p> :
+      <div className="routes">{recent.map((d, i) => <div className="route" key={`${d.at}-${i}`}>
+        <div><strong>{causeLabels[d.cause] || d.cause} · {d.routeLabel || d.route}</strong>
+          <small>{d.transport.toUpperCase()} · DC{d.dc}{d.media ? " media" : ""} · {d.durationMs > 0 ? `${Math.round(d.durationMs / 1000)} с` : "старт"}{d.at ? ` · ${new Date(d.at).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}</small>
+          {d.replacementRoute && <small>Переключён на {d.replacementRoute}</small>}
+        </div>
+        <Badge tone={d.recovered ? "success" : "warning"}>{d.recovered ? "Переключён" : "Обрыв"}</Badge>
+      </div>)}</div>}
+  </Disclosure>;
 }
