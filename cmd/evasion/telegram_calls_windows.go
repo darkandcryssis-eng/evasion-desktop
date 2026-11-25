@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"sync"
 	"time"
 	"unsafe"
@@ -14,31 +15,31 @@ import (
 var tgIPHelper = windows.NewLazySystemDLL("iphlpapi.dll")
 
 const (
-	tgOwnerCacheTTL      = 250 * time.Millisecond
-	tgOwnerUnknownFloor  = 50 * time.Millisecond
+	tgOwnerCacheTTL     = 250 * time.Millisecond
+	tgOwnerUnknownFloor = 50 * time.Millisecond
 )
 
 type windowsTelegramUDPOwner struct {
-	mu    sync.Mutex
-	last  time.Time
-	ports map[uint16]bool
+	mu   sync.Mutex
+	last time.Time
+	snap udpOwnerSnapshot
 }
 
 func newTelegramUDPOwner() telegramUDPOwner {
-	return &windowsTelegramUDPOwner{ports: map[uint16]bool{}}
+	return &windowsTelegramUDPOwner{}
 }
 
-func (o *windowsTelegramUDPOwner) OwnsUDP(localPort uint16) bool {
-	if localPort == 0 {
+func (o *windowsTelegramUDPOwner) OwnsUDP(localIP netip.Addr, localPort uint16) bool {
+	if !localIP.IsValid() || localPort == 0 {
 		return false
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	age := time.Since(o.last)
-	owned, known := o.ports[localPort]
-	if age > tgOwnerCacheTTL || (!known && age > tgOwnerUnknownFloor) {
+	owned := o.snap.Owns(localIP, localPort)
+	if age > tgOwnerCacheTTL || (!owned && age > tgOwnerUnknownFloor) {
 		o.refresh()
-		owned = o.ports[localPort]
+		owned = o.snap.Owns(localIP, localPort)
 	}
 	return owned
 }
@@ -47,18 +48,25 @@ func (o *windowsTelegramUDPOwner) refresh() {
 	o.last = time.Now()
 	pids := telegramProcessPIDs()
 	if len(pids) == 0 {
-		o.ports = map[uint16]bool{}
+		o.snap = udpOwnerSnapshot{}
 		return
 	}
-	ports := make(map[uint16]bool)
+	tg := make(map[udpEndpoint]bool)
+	other := make(map[udpEndpoint]bool)
 	for _, ipv6 := range []bool{false, true} {
 		for _, row := range readUDPOwnerTable(ipv6) {
-			if row.port != 0 && pids[row.pid] {
-				ports[row.port] = true
+			if row.port == 0 || !row.addr.IsValid() {
+				continue
+			}
+			ep := udpEndpoint{addr: row.addr.Unmap(), port: row.port}
+			if pids[row.pid] {
+				tg[ep] = true
+			} else {
+				other[ep] = true
 			}
 		}
 	}
-	o.ports = ports
+	o.snap = udpOwnerSnapshot{tg: tg, other: other}
 }
 
 func telegramProcessPIDs() map[uint32]bool {
@@ -79,6 +87,7 @@ func telegramProcessPIDs() map[uint32]bool {
 }
 
 type udpOwnerRow struct {
+	addr netip.Addr
 	port uint16
 	pid  uint32
 }
@@ -126,7 +135,14 @@ func decodeUDPOwnerRows(data []byte, ipv6 bool) []udpOwnerRow {
 	out := make([]udpOwnerRow, 0, count)
 	for i := 0; i < count; i++ {
 		row := data[4+i*size : 4+(i+1)*size]
+		var addr netip.Addr
+		if ipv6 {
+			addr = netip.AddrFrom16([16]byte(row[0:16]))
+		} else {
+			addr = netip.AddrFrom4([4]byte(row[0:4]))
+		}
 		out = append(out, udpOwnerRow{
+			addr: addr,
 			port: binary.BigEndian.Uint16(row[portOff : portOff+2]),
 			pid:  binary.LittleEndian.Uint32(row[pidOff : pidOff+4]),
 		})

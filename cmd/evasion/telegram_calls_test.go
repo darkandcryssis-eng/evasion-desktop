@@ -17,7 +17,7 @@ type stubTelegramOwner struct {
 	ports map[uint16]bool
 }
 
-func (s stubTelegramOwner) OwnsUDP(port uint16) bool { return s.ports[port] }
+func (s stubTelegramOwner) OwnsUDP(_ netip.Addr, port uint16) bool { return s.ports[port] }
 
 func buildUDPPacketIPv4(t *testing.T, dstIP string, srcPort, dstPort uint16, payload []byte) capture.Packet {
 	t.Helper()
@@ -206,5 +206,57 @@ func TestIsTelegramCallIP(t *testing.T) {
 		if isTelegramCallIP(netip.MustParseAddr(s)) {
 			t.Fatalf("%s must not match Telegram call IP", s)
 		}
+	}
+}
+
+func TestUDPOwnerSnapshotMatchesLocalAddress(t *testing.T) {
+	ip1 := netip.MustParseAddr("10.0.0.1")
+	ip2 := netip.MustParseAddr("192.168.1.5")
+	ip6 := netip.MustParseAddr("2001:db8::1")
+
+	// Specific local IP bind must not match another app on the same port with a different IP or family.
+	specific := udpOwnerSnapshot{
+		tg:    map[udpEndpoint]bool{{addr: ip1, port: 50000}: true},
+		other: map[udpEndpoint]bool{{addr: ip2, port: 50000}: true},
+	}
+	if !specific.Owns(ip1, 50000) {
+		t.Fatal("exact Telegram endpoint should match")
+	}
+	if specific.Owns(ip2, 50000) {
+		t.Fatal("different local IPv4 on shared port must not match")
+	}
+	if specific.Owns(ip6, 50000) {
+		t.Fatal("IPv6 on shared port must not match specific IPv4 Telegram bind")
+	}
+
+	// Wildcard IPv4 bind matches IPv4 unless another process owns the exact IP, and never matches IPv6.
+	wildcard4 := udpOwnerSnapshot{
+		tg:    map[udpEndpoint]bool{{addr: netip.IPv4Unspecified(), port: 50001}: true},
+		other: map[udpEndpoint]bool{{addr: ip2, port: 50001}: true},
+	}
+	if !wildcard4.Owns(ip1, 50001) {
+		t.Fatal("IPv4 wildcard should match unbound local IPv4")
+	}
+	if wildcard4.Owns(ip2, 50001) {
+		t.Fatal("other process exact IPv4 bind must take precedence over Telegram wildcard")
+	}
+	if wildcard4.Owns(ip6, 50001) {
+		t.Fatal("IPv4 wildcard must not match IPv6")
+	}
+
+	// Dual-stack [::] bind matches IPv4 only when no other process owns IPv4 on that port.
+	dualStack := udpOwnerSnapshot{
+		tg:    map[udpEndpoint]bool{{addr: netip.IPv6Unspecified(), port: 50002}: true},
+		other: map[udpEndpoint]bool{{addr: netip.IPv4Unspecified(), port: 50003}: true},
+	}
+	dualStack.tg[udpEndpoint{addr: netip.IPv6Unspecified(), port: 50003}] = true
+	if !dualStack.Owns(ip1, 50002) || !dualStack.Owns(ip6, 50002) {
+		t.Fatal("dual-stack [::] should match both IPv4 and IPv6 when IPv4 is uncontested")
+	}
+	if dualStack.Owns(ip1, 50003) {
+		t.Fatal("other process 0.0.0.0 bind must prevent [::] from claiming IPv4")
+	}
+	if !dualStack.Owns(ip6, 50003) {
+		t.Fatal("[::] should still match IPv6 when other process only holds 0.0.0.0")
 	}
 }

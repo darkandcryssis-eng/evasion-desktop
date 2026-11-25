@@ -2,8 +2,10 @@
 
 package main
 
+import "net/netip"
+
 type noopTelegramUDPOwner struct{}
 
-func (noopTelegramUDPOwner) OwnsUDP(uint16) bool { return false }
+func (noopTelegramUDPOwner) OwnsUDP(netip.Addr, uint16) bool { return false }
 
 func newTelegramUDPOwner() telegramUDPOwner { return noopTelegramUDPOwner{} }

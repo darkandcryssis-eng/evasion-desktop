@@ -351,7 +351,7 @@ func classifyVoiceTarget(buf []byte, d packet.Dissection, payloadBytes []byte, t
 	}
 	dstIP := packetDstIP(buf, d)
 	if discordvoice.IsSTUNOrTURNRequest(payloadBytes) {
-		if isTelegramCallIP(dstIP) || (tgOwner != nil && tgOwner.OwnsUDP(u.SrcPort())) {
+		if isTelegramCallIP(dstIP) || (tgOwner != nil && tgOwner.OwnsUDP(packetSrcIP(buf, d), u.SrcPort())) {
 			if isTelegramReflectorPort(dstPort) {
 				tgFlows.MarkHandled(u.SrcPort(), dstIP, dstPort)
 			}
@@ -368,6 +368,18 @@ func classifyVoiceTarget(buf []byte, d packet.Dissection, payloadBytes []byte, t
 		}
 	}
 	return voiceTargetNone
+}
+
+func packetSrcIP(buf []byte, d packet.Dissection) netip.Addr {
+	if h, ok := d.IPv4(buf); ok {
+		addr, _ := netip.AddrFromSlice(h.Src())
+		return addr.Unmap()
+	}
+	if h, ok := d.IPv6(buf); ok {
+		addr, _ := netip.AddrFromSlice(h.Src())
+		return addr.Unmap()
+	}
+	return netip.Addr{}
 }
 
 func packetDstIP(buf []byte, d packet.Dissection) netip.Addr {

@@ -73,10 +73,43 @@ func isTelegramProcessName(name string) bool {
 	}
 }
 
-// telegramUDPOwner checks whether a local UDP port belongs to a running
-// Telegram desktop client.
+// telegramUDPOwner checks whether a local UDP (IP, port) endpoint belongs to a
+// running Telegram desktop client.
 type telegramUDPOwner interface {
-	OwnsUDP(localPort uint16) bool
+	OwnsUDP(localIP netip.Addr, localPort uint16) bool
+}
+
+type udpEndpoint struct {
+	addr netip.Addr
+	port uint16
+}
+
+type udpOwnerSnapshot struct {
+	tg    map[udpEndpoint]bool
+	other map[udpEndpoint]bool
+}
+
+func (s udpOwnerSnapshot) Owns(localIP netip.Addr, localPort uint16) bool {
+	if !localIP.IsValid() || localPort == 0 {
+		return false
+	}
+	localIP = localIP.Unmap()
+	if s.tg[udpEndpoint{addr: localIP, port: localPort}] {
+		return true
+	}
+	if s.other[udpEndpoint{addr: localIP, port: localPort}] {
+		return false
+	}
+	if localIP.Is4() {
+		if s.tg[udpEndpoint{addr: netip.IPv4Unspecified(), port: localPort}] {
+			return true
+		}
+		if s.other[udpEndpoint{addr: netip.IPv4Unspecified(), port: localPort}] {
+			return false
+		}
+		return s.tg[udpEndpoint{addr: netip.IPv6Unspecified(), port: localPort}]
+	}
+	return s.tg[udpEndpoint{addr: netip.IPv6Unspecified(), port: localPort}]
 }
 
 // telegramFlowKey identifies an outbound UDP 5-tuple for bounded legacy
