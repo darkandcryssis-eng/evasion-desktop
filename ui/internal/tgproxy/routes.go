@@ -68,7 +68,7 @@ type router struct {
 }
 
 func newRouter(dial dialFunc, community ...bool) *router {
-	r := &router{pool: newWarmPool(), domains: newDomainPool(), health: map[string]routeHealth{}, known: map[string]route{}, preferTLSUntil: map[poolKey]time.Time{}, slots: make(chan struct{}, 8), failover: make(chan struct{}, 4), background: make(chan struct{}, 3)}
+	r := &router{pool: newWarmPool(), domains: newDomainPool(), health: map[string]routeHealth{}, known: map[string]route{}, preferTLSUntil: map[poolKey]time.Time{}, slots: make(chan struct{}, 8), failover: make(chan struct{}, 8), background: make(chan struct{}, 3)}
 	r.community = len(community) > 0 && community[0]
 	if dial == nil {
 		dial = newNetworkDialer(&tls.Config{MinVersion: tls.VersionTLS12, ClientSessionCache: tls.NewLRUClientSessionCache(64)})
@@ -293,14 +293,14 @@ func (r *router) connectAvoid(ctx context.Context, dc int, media bool, avoid str
 }
 
 func (r *router) connectAvoidSet(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, time.Duration, error) {
-	return r.connectWithSlots(ctx, dc, media, avoid, r.slots)
+	return r.connectWithSlots(ctx, dc, media, avoid, r.slots, 4*time.Second)
 }
 
 func (r *router) connectFailover(ctx context.Context, dc int, media bool, avoid map[string]bool) (peer, route, time.Duration, error) {
-	return r.connectWithSlots(ctx, dc, media, avoid, r.failover)
+	return r.connectWithSlots(ctx, dc, media, avoid, r.failover, 2500*time.Millisecond)
 }
 
-func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid map[string]bool, slots chan struct{}) (peer, route, time.Duration, error) {
+func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid map[string]bool, slots chan struct{}, dialTimeout time.Duration) (peer, route, time.Duration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, route{}, 0, err
 	}
@@ -476,7 +476,7 @@ func (r *router) connectWithSlots(ctx context.Context, dc int, media bool, avoid
 				return
 			case <-timer.C:
 			}
-			p, elapsed, err := r.dialRouteWithSlots(raceCtx, slots, candidate, 4*time.Second)
+			p, elapsed, err := r.dialRouteWithSlots(raceCtx, slots, candidate, dialTimeout)
 			if err != nil && raceCtx.Err() == nil {
 				r.failure(candidate.id, err)
 			}
