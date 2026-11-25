@@ -31,11 +31,16 @@ const (
 	telegramCallWARPDeadPackets = 8
 	telegramCallWARPDeadWindow  = 5 * time.Second
 	telegramCallSocketIdle      = 90 * time.Second
-	telegramCallMaxSockets      = 64
-	telegramCallReportEvery     = 5 * time.Second
-	telegramCallProbeWait       = 900 * time.Millisecond
-	telegramCallExitInfoWait    = 6 * time.Second
-	telegramCallMaxTargets      = 12
+	// telegramCallWARPIdle releases the capture of all outbound UDP once no call
+	// packet has been relayed for this long, so games and Discord voice stop
+	// passing through userspace after the call ends.
+	telegramCallWARPIdle      = 2 * time.Minute
+	telegramCallWARPIdleCheck = 5 * time.Second
+	telegramCallMaxSockets    = 64
+	telegramCallReportEvery   = 5 * time.Second
+	telegramCallProbeWait     = 900 * time.Millisecond
+	telegramCallExitInfoWait  = 6 * time.Second
+	telegramCallMaxTargets    = 12
 )
 
 // Необязательные возможности туннеля для диагностики звонка.
@@ -137,6 +142,8 @@ type telegramCallTunnel struct {
 	now        func() time.Time
 	openTunnel func(context.Context, map[string]struct{}) (tgUDPTunnel, error)
 	openHandle func() (tgTunnelConn, error)
+	idleAfter  time.Duration
+	idleCheck  time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -158,6 +165,9 @@ type telegramCallTunnel struct {
 	sent         atomic.Int64
 	received     atomic.Int64
 	unansweredTx atomic.Int64
+
+	relayMu   sync.Mutex
+	lastRelay time.Time
 }
 
 func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logger *slog.Logger) *telegramCallTunnel {
@@ -174,6 +184,8 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, telegramCallWARPJunk, true, exclude, logger)
 		},
 		openHandle: openTelegramCallTunnelHandle,
+		idleAfter:  telegramCallWARPIdle,
+		idleCheck:  telegramCallWARPIdleCheck,
 		ctx:        ctx,
 		cancel:     cancel,
 		badPeers:   make(map[string]time.Time),
@@ -316,6 +328,11 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 	}()
 
 	t.unansweredTx.Store(0)
+	t.markRelay()
+	idleDone := make(chan struct{})
+	defer close(idleDone)
+	t.wg.Add(1)
+	go t.releaseWhenIdle(handle, idleDone)
 	var stalledSince time.Time
 	targets := &tgTargetStats{}
 	sentBase, recvBase := t.sent.Load(), t.received.Load()
@@ -363,6 +380,7 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 			continue
 		}
 		t.sent.Add(1)
+		t.markRelay()
 		targets.add(dstAP, 1, 0)
 		n := t.unansweredTx.Add(1)
 		if n == 1 {
@@ -396,6 +414,50 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 				t.logger.Warn("звонок Telegram: диагноз зависшего WARP",
 					"пир", peer, "диагноз", t.diagnoseStall(tn))
 			}
+			return
+		}
+	}
+}
+
+// markRelay keeps the full time.Time so idle checks use the monotonic clock
+// and ignore wall-clock corrections.
+func (t *telegramCallTunnel) markRelay() {
+	now := t.now()
+	t.relayMu.Lock()
+	t.lastRelay = now
+	t.relayMu.Unlock()
+}
+
+func (t *telegramCallTunnel) sinceRelay() time.Duration {
+	t.relayMu.Lock()
+	last := t.lastRelay
+	t.relayMu.Unlock()
+	return t.now().Sub(last)
+}
+
+// releaseWhenIdle stops the capture after the call goes quiet; serve then
+// closes the tunnel, and the next unanswered call reopens it without delay.
+func (t *telegramCallTunnel) releaseWhenIdle(handle tgTunnelConn, done <-chan struct{}) {
+	defer t.wg.Done()
+	if t.idleAfter <= 0 || t.idleCheck <= 0 {
+		return
+	}
+	tick := time.NewTicker(t.idleCheck)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.ctx.Done():
+			return
+		case <-tick.C:
+			idle := t.sinceRelay()
+			if idle < t.idleAfter {
+				continue
+			}
+			t.logger.Info("звонок Telegram: звонок завершён, резервный UDP-туннель WARP снят",
+				"тишина", idle.Round(time.Second).String())
+			_ = handle.ShutdownReceive()
 			return
 		}
 	}
@@ -545,6 +607,7 @@ func (t *telegramCallTunnel) readSocket(handle tgTunnelConn, relay *tgSocketRela
 		})
 		t.unansweredTx.Store(0)
 		t.received.Add(1)
+		t.markRelay()
 		targets.add(src, 0, 1)
 	}
 }
