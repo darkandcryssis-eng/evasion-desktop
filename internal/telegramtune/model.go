@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/strategy"
 )
 
@@ -152,6 +153,10 @@ func Profile(name string) (NamedStrategy, error) {
 	if err != nil {
 		return NamedStrategy{}, err
 	}
+	// Namespace Telegram strategy IDs so failures from base-provider flows
+	// (e.g. Discord) cannot collide with Telegram profiles while fronted or
+	// SNI-less Telegram flows still route back to telegramtune.
+	s.ID = core.StrategyID("telegram:" + string(s.ID))
 	return NamedStrategy{
 		Name:        name,
 		Strategy:    s,

@@ -1,6 +1,7 @@
 package telegramtune
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -139,12 +140,40 @@ func TestNonTelegramSNIFailureWithSharedIDForwardsToBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, tgID := p.ActiveProfile()
-	p.ReportFailure("discord.com", tgID)
-	p.ReportFailure("discord.com", tgID)
+	// Base provider returns an unprefixed content-addressed ID even if its
+	// strategy rules match a Telegram profile.
+	baseID := core.StrategyID(strings.TrimPrefix(string(tgID), "telegram:"))
+	p.ReportFailure("discord.com", baseID)
+	p.ReportFailure("discord.com", baseID)
 	if len(base.failures) != 2 {
 		t.Fatalf("expected 2 failures forwarded to base, got %v", base.failures)
 	}
 	if name, _ := p.ActiveProfile(); name != "overlap-vk" {
 		t.Fatalf("Discord failure must not advance Telegram profile, got %s", name)
+	}
+}
+
+func TestFrontedTelegramFailureAdvancesProfile(t *testing.T) {
+	base := &recordingBaseProvider{}
+	p, err := NewProvider(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := p.Select(proxy.ConnMeta{
+		IsClientHello: true,
+		SNI:           "sprinthost.ru",
+		Host:          "149.154.167.51",
+		PayloadLength: 517,
+	})
+	if sel.Target != GroupName || sel.ID == "" {
+		t.Fatalf("expected Telegram selection for fronted DC IP, got %+v", sel)
+	}
+	p.ReportFailure("sprinthost.ru", sel.ID)
+	p.ReportFailure("sprinthost.ru", sel.ID)
+	if len(base.failures) != 0 {
+		t.Fatalf("fronted Telegram failure must not go to base, got %v", base.failures)
+	}
+	if name, _ := p.ActiveProfile(); name != "overlap-yandex" {
+		t.Fatalf("expected fronted Telegram failures to advance to overlap-yandex, got %s", name)
 	}
 }

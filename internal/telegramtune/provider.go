@@ -102,17 +102,9 @@ func (p *Provider) Select(meta proxy.ConnMeta) proxy.Selection {
 // strategy ID. When the active Telegram strategy fails repeatedly, auto-fitting
 // advances to the next profile in the portfolio.
 func (p *Provider) ReportFailure(sni string, failed core.StrategyID) {
-	isTelegram := IsTelegramHost(sni)
-	if !isTelegram && sni != "" {
-		// Non-Telegram SNI (e.g. Discord) must always go to base even if its
-		// strategy shares the same content-addressed ID as a Telegram profile.
-		if reporter, ok := p.base.(intercept.FailureReporter); ok {
-			reporter.ReportFailure(sni, failed)
-		}
-		return
-	}
 	_, isOwned := p.ownedIDs[failed]
-	if !isTelegram && !isOwned {
+	isTelegram := IsTelegramHost(sni)
+	if !isOwned && !(failed == "" && isTelegram) {
 		if reporter, ok := p.base.(intercept.FailureReporter); ok {
 			reporter.ReportFailure(sni, failed)
 		}
