@@ -363,11 +363,12 @@ func classifyVoiceTarget(buf []byte, d packet.Dissection, payloadBytes []byte, t
 	if dstPort == 443 {
 		return voiceTargetNone
 	}
+	srcIP := packetSrcIP(buf, d)
 	dstIP := packetDstIP(buf, d)
 	if discordvoice.IsSTUNOrTURNRequest(payloadBytes) {
-		if isTelegramCallIP(dstIP) || (tgOwner != nil && tgOwner.OwnsUDP(packetSrcIP(buf, d), u.SrcPort())) {
+		if isTelegramCallIP(dstIP) || (tgOwner != nil && tgOwner.OwnsUDP(srcIP, u.SrcPort())) {
 			if isTelegramReflectorPort(dstPort) {
-				tgFlows.MarkHandled(u.SrcPort(), dstIP, dstPort)
+				tgFlows.MarkHandled(srcIP, u.SrcPort(), dstIP, dstPort)
 			}
 			return voiceTargetTelegram
 		}
@@ -377,7 +378,7 @@ func classifyVoiceTarget(buf []byte, d packet.Dissection, payloadBytes []byte, t
 		return voiceTargetNone
 	}
 	if isTelegramReflectorPort(dstPort) && len(payloadBytes) >= 16 && isTelegramCallIP(dstIP) {
-		if tgFlows == nil || tgFlows.Allow(u.SrcPort(), dstIP, dstPort) {
+		if tgFlows == nil || tgFlows.Allow(srcIP, u.SrcPort(), dstIP, dstPort) {
 			return voiceTargetTelegram
 		}
 	}

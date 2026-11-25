@@ -150,10 +150,11 @@ func (e *telegramCallEngine) ObserveInbound(pkt capture.Packet) bool {
 		return false
 	}
 	srcIP := packetSrcIP(pkt.Data, d)
-	if !srcIP.IsValid() {
+	dstIP := packetDstIP(pkt.Data, d)
+	if !srcIP.IsValid() || !dstIP.IsValid() {
 		return false
 	}
-	key := telegramFlowKey{srcPort: u.DstPort(), dstIP: srcIP.Unmap(), dstPort: u.SrcPort()}
+	key := telegramFlowKey{srcIP: dstIP.Unmap(), srcPort: u.DstPort(), dstIP: srcIP.Unmap(), dstPort: u.SrcPort()}
 	now := e.now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -177,15 +178,16 @@ func (e *telegramCallEngine) Classify(buf []byte, d packet.Dissection, payload [
 	if !ok || u.DstPort() == 443 {
 		return tgCallNone
 	}
+	srcIP := packetSrcIP(buf, d)
 	dstIP := packetDstIP(buf, d)
 	dstPort := u.DstPort()
 	ownedByTG := func() bool {
-		return isTelegramCallIP(dstIP) || (e.owner != nil && e.owner.OwnsUDP(packetSrcIP(buf, d), u.SrcPort()))
+		return isTelegramCallIP(dstIP) || (e.owner != nil && e.owner.OwnsUDP(srcIP, u.SrcPort()))
 	}
 	if discordvoice.IsSTUNOrTURNRequest(payload) {
 		if ownedByTG() {
 			if isTelegramReflectorPort(dstPort) {
-				e.legacy.MarkHandled(u.SrcPort(), dstIP, dstPort)
+				e.legacy.MarkHandled(srcIP, u.SrcPort(), dstIP, dstPort)
 			}
 			return tgCallSTUN
 		}
@@ -194,14 +196,14 @@ func (e *telegramCallEngine) Classify(buf []byte, d packet.Dissection, payload [
 	if isDTLSClientHello(payload) {
 		if ownedByTG() {
 			if isTelegramReflectorPort(dstPort) {
-				e.legacy.MarkHandled(u.SrcPort(), dstIP, dstPort)
+				e.legacy.MarkHandled(srcIP, u.SrcPort(), dstIP, dstPort)
 			}
 			return tgCallDTLS
 		}
 		return tgCallNone
 	}
 	if isTelegramReflectorPort(dstPort) && len(payload) >= 16 && isTelegramCallIP(dstIP) {
-		if e.legacy == nil || e.legacy.Allow(u.SrcPort(), dstIP, dstPort) {
+		if e.legacy == nil || e.legacy.Allow(srcIP, u.SrcPort(), dstIP, dstPort) {
 			return tgCallLegacy
 		}
 	}
@@ -228,14 +230,15 @@ func (e *telegramCallEngine) BuildDecoys(pkt capture.Packet) ([]capture.Packet, 
 		return nil, false
 	}
 	u, _ := d.UDP(pkt.Data)
+	srcIP := packetSrcIP(pkt.Data, d)
 	dstIP := packetDstIP(pkt.Data, d)
-	stage, sendCover := e.advanceFlow(u.SrcPort(), dstIP, u.DstPort(), kind)
+	stage, sendCover := e.advanceFlow(srcIP, u.SrcPort(), dstIP, u.DstPort(), kind)
 	out := buildTelegramStagePackets(pkt, len(payload), stage, sendCover)
 	return out, true
 }
 
-func (e *telegramCallEngine) advanceFlow(srcPort uint16, dstIP netip.Addr, dstPort uint16, kind tgCallKind) (tgCallStrategy, bool) {
-	key := telegramFlowKey{srcPort: srcPort, dstIP: dstIP.Unmap(), dstPort: dstPort}
+func (e *telegramCallEngine) advanceFlow(srcIP netip.Addr, srcPort uint16, dstIP netip.Addr, dstPort uint16, kind tgCallKind) (tgCallStrategy, bool) {
+	key := telegramFlowKey{srcIP: srcIP.Unmap(), srcPort: srcPort, dstIP: dstIP.Unmap(), dstPort: dstPort}
 	now := e.now()
 	e.mu.Lock()
 	defer e.mu.Unlock()

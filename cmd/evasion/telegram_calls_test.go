@@ -370,4 +370,17 @@ func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
 			t.Fatalf("legacy burst packet %d strategy = %q, want %q", i, got, want)
 		}
 	}
+
+	// Same srcPort + peer on a different local IP must start fresh strategy state.
+	otherLocal := buildUDPPacketIPv4(t, "149.154.167.50", 53000, 1400, stunPayload(0x0003, 48))
+	copy(otherLocal.Data[12:16], net.ParseIP("192.168.1.99").To4())
+	if d, err := packet.Dissect(otherLocal.Data); err != nil || !d.RecomputeChecksums(otherLocal.Data) {
+		t.Fatalf("recompute checksum failed: %v", err)
+	}
+	if _, ok := eng.BuildDecoys(otherLocal); !ok {
+		t.Fatal("other local IP STUN should match")
+	}
+	if got := eng.Stats().Strategy; got != "ttl-sweep-quic" {
+		t.Fatalf("new local IP must start at stage 0 (ttl-sweep-quic), got %q", got)
+	}
 }

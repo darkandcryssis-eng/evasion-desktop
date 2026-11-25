@@ -113,8 +113,9 @@ func (s udpOwnerSnapshot) Owns(localIP netip.Addr, localPort uint16) bool {
 }
 
 // telegramFlowKey identifies an outbound UDP 5-tuple for bounded legacy
-// reflector desync so audio frames after the initial handshake are untouched.
+// reflector desync and Telegram call strategy tracking.
 type telegramFlowKey struct {
+	srcIP   netip.Addr
 	srcPort uint16
 	dstIP   netip.Addr
 	dstPort uint16
@@ -171,11 +172,11 @@ func (t *telegramReflectorTracker) evictLocked(now time.Time) {
 // MarkHandled records that a 5-tuple already received STUN/TURN desync so
 // subsequent non-STUN TURN ChannelData/media frames on reflector ports 596-599
 // do not trigger legacy reflector decoys.
-func (t *telegramReflectorTracker) MarkHandled(srcPort uint16, dstIP netip.Addr, dstPort uint16) {
+func (t *telegramReflectorTracker) MarkHandled(srcIP netip.Addr, srcPort uint16, dstIP netip.Addr, dstPort uint16) {
 	if t == nil || !dstIP.IsValid() {
 		return
 	}
-	key := telegramFlowKey{srcPort: srcPort, dstIP: dstIP.Unmap(), dstPort: dstPort}
+	key := telegramFlowKey{srcIP: srcIP.Unmap(), srcPort: srcPort, dstIP: dstIP.Unmap(), dstPort: dstPort}
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -185,11 +186,11 @@ func (t *telegramReflectorTracker) MarkHandled(srcPort uint16, dstIP netip.Addr,
 	t.flows[key] = telegramFlowState{count: telegramReflectorBurst, last: now}
 }
 
-func (t *telegramReflectorTracker) Allow(srcPort uint16, dstIP netip.Addr, dstPort uint16) bool {
+func (t *telegramReflectorTracker) Allow(srcIP netip.Addr, srcPort uint16, dstIP netip.Addr, dstPort uint16) bool {
 	if t == nil || !dstIP.IsValid() {
 		return false
 	}
-	key := telegramFlowKey{srcPort: srcPort, dstIP: dstIP.Unmap(), dstPort: dstPort}
+	key := telegramFlowKey{srcIP: srcIP.Unmap(), srcPort: srcPort, dstIP: dstIP.Unmap(), dstPort: dstPort}
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
