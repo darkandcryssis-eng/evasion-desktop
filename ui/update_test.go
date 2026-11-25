@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -113,6 +114,66 @@ func TestUpdateInstallRejectsBadChecksum(t *testing.T) {
 	}
 	if st := u.snapshot(); st.Downloading || st.Error == "" {
 		t.Fatalf("state = %+v", st)
+	}
+}
+
+func TestUpdateInstallRejectsOverlappingInstall(t *testing.T) {
+	fresh := []byte("new build")
+	sum := sha256.Sum256(fresh)
+	srv := releaseServer(t, "v0.1.2", fresh, hex.EncodeToString(sum[:]))
+	exe := filepath.Join(t.TempDir(), "Evasion.exe")
+	if err := os.WriteFile(exe, []byte("old build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	u := testUpdater(t, srv, exe, nil)
+	if _, err := u.check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	launching, release := make(chan struct{}), make(chan struct{})
+	u.launch = func(string, ...string) error {
+		close(launching)
+		<-release
+		return nil
+	}
+	result := make(chan error, 1)
+	go func() { result <- u.install(context.Background(), nil) }()
+	select {
+	case <-launching:
+	case err := <-result:
+		t.Fatalf("first install did not launch: %v", err)
+	}
+	overlapErr := u.install(context.Background(), nil)
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if overlapErr == nil || u.install(context.Background(), nil) == nil {
+		t.Fatal("a second install reported success")
+	}
+}
+
+func TestUpdateInstallRollsBackFailedLaunch(t *testing.T) {
+	fresh := []byte("new build")
+	sum := sha256.Sum256(fresh)
+	srv := releaseServer(t, "v0.1.2", fresh, hex.EncodeToString(sum[:]))
+	exe := filepath.Join(t.TempDir(), "Evasion.exe")
+	if err := os.WriteFile(exe, []byte("old build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	u := testUpdater(t, srv, exe, nil)
+	failure := errors.New("launch failed")
+	u.launch = func(string, ...string) error { return failure }
+	if _, err := u.check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.install(context.Background(), nil); !errors.Is(err, failure) {
+		t.Fatalf("install error = %v, want %v", err, failure)
+	}
+	if b, err := os.ReadFile(exe); err != nil || string(b) != "old build" {
+		t.Fatalf("exe = %q, %v", b, err)
+	}
+	if u.snapshot().Downloading {
+		t.Fatal("failed install still marked as downloading")
 	}
 }
 
