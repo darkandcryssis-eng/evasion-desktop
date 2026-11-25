@@ -359,8 +359,23 @@ func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
 		t.Fatal("foreign DTLS ClientHello must not be touched")
 	}
 
-	// Legacy reflector 3-packet burst rotates strategy on each packet and triggers
-	// FlowUnanswered on the 3rd packet even though an earlier flow got a reply.
+	// Sibling unanswered probes while another candidate recently replied must NOT
+	// trigger WARP fallback (would hijack the working direct TURN allocation).
+	curTime := eng.now()
+	eng.now = func() time.Time { return curTime }
+	siblingPkt := buildUDPPacketIPv4(t, "149.154.167.50", 53200, 1400, stunPayload(0x0001, 20))
+	for i := 0; i < telegramCallWARPTrigger; i++ {
+		if _, ok := eng.BuildDecoys(siblingPkt); !ok {
+			t.Fatalf("sibling probe %d should match", i)
+		}
+	}
+	if eng.Stats().FlowUnanswered {
+		t.Fatal("unanswered sibling probe must not trigger FlowUnanswered while another candidate recently replied")
+	}
+
+	// Once the reply window expires (later call with no replies on any candidate),
+	// legacy 3-packet bursts and STUN 4-packet flows trigger FlowUnanswered.
+	curTime = curTime.Add(tgCallFlowTTL + time.Second)
 	legacyPkt := buildUDPPacketIPv4(t, "149.154.167.50", 53100, 597, make([]byte, 32))
 	wantStages := []string{"ttl-sweep-quic", "badsum-compact", "quic-ya-sweep"}
 	for i, want := range wantStages {
@@ -372,7 +387,7 @@ func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
 		}
 	}
 	if !eng.Stats().FlowUnanswered {
-		t.Fatal("legacy 3-packet unanswered burst should set FlowUnanswered even after earlier reply")
+		t.Fatal("legacy 3-packet unanswered burst should set FlowUnanswered after reply window expires")
 	}
 
 	// Same srcPort + peer on a different local IP must start fresh strategy state

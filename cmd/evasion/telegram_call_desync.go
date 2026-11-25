@@ -115,6 +115,7 @@ type telegramCallEngine struct {
 	dtls    int
 	legacyN int
 	replies        int
+	lastReply      time.Time
 	lastStr        tgCallStrategy
 	flowUnanswered bool
 }
@@ -167,6 +168,8 @@ func (e *telegramCallEngine) ObserveInbound(pkt capture.Packet) bool {
 	st.replies++
 	st.last = now
 	e.replies++
+	e.lastReply = now
+	e.flowUnanswered = false
 	return true
 }
 
@@ -286,7 +289,8 @@ func (e *telegramCallEngine) advanceFlow(srcIP netip.Addr, srcPort uint16, dstIP
 	if kind == tgCallLegacy {
 		trigger = telegramReflectorBurst
 	}
-	e.flowUnanswered = st.replies == 0 && st.sent >= trigger
+	recentlyAnswered := !e.lastReply.IsZero() && now.Sub(e.lastReply) < tgCallFlowTTL
+	e.flowUnanswered = !recentlyAnswered && st.replies == 0 && st.sent >= trigger
 	return st.stage, sendCover
 }
 
