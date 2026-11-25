@@ -165,7 +165,9 @@ type telegramCallTunnel struct {
 	sent         atomic.Int64
 	received     atomic.Int64
 	unansweredTx atomic.Int64
-	lastRelay    atomic.Int64
+
+	relayMu   sync.Mutex
+	lastRelay time.Time
 }
 
 func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logger *slog.Logger) *telegramCallTunnel {
@@ -417,7 +419,21 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 	}
 }
 
-func (t *telegramCallTunnel) markRelay() { t.lastRelay.Store(t.now().UnixNano()) }
+// markRelay keeps the full time.Time so idle checks use the monotonic clock
+// and ignore wall-clock corrections.
+func (t *telegramCallTunnel) markRelay() {
+	now := t.now()
+	t.relayMu.Lock()
+	t.lastRelay = now
+	t.relayMu.Unlock()
+}
+
+func (t *telegramCallTunnel) sinceRelay() time.Duration {
+	t.relayMu.Lock()
+	last := t.lastRelay
+	t.relayMu.Unlock()
+	return t.now().Sub(last)
+}
 
 // releaseWhenIdle stops the capture after the call goes quiet; serve then
 // closes the tunnel, and the next unanswered call reopens it without delay.
@@ -435,7 +451,7 @@ func (t *telegramCallTunnel) releaseWhenIdle(handle tgTunnelConn, done <-chan st
 		case <-t.ctx.Done():
 			return
 		case <-tick.C:
-			idle := t.now().Sub(time.Unix(0, t.lastRelay.Load()))
+			idle := t.sinceRelay()
 			if idle < t.idleAfter {
 				continue
 			}
