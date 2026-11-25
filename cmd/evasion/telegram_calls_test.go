@@ -260,3 +260,96 @@ func TestUDPOwnerSnapshotMatchesLocalAddress(t *testing.T) {
 		t.Fatal("[::] should still match IPv6 when other process only holds 0.0.0.0")
 	}
 }
+
+func dtlsClientHelloPayload() []byte {
+	b := make([]byte, 80)
+	b[0] = 0x16 // handshake
+	b[1] = 0xfe // DTLS 1.2
+	b[2] = 0xfd
+	b[13] = 0x01 // ClientHello
+	return b
+}
+
+func buildInboundUDPPacketIPv4(t *testing.T, srcIP string, srcPort, dstPort uint16, payload []byte) capture.Packet {
+	t.Helper()
+	buf := make([]byte, 20+8+len(payload))
+	buf[0] = 0x45
+	binary.BigEndian.PutUint16(buf[2:4], uint16(len(buf)))
+	buf[8] = 64
+	buf[9] = 17
+	copy(buf[12:16], net.ParseIP(srcIP).To4())
+	copy(buf[16:20], net.ParseIP("10.0.0.1").To4())
+	binary.BigEndian.PutUint16(buf[20:22], srcPort)
+	binary.BigEndian.PutUint16(buf[22:24], dstPort)
+	binary.BigEndian.PutUint16(buf[24:26], uint16(8+len(payload)))
+	copy(buf[28:], payload)
+	d, err := packet.Dissect(buf)
+	if err != nil || !d.RecomputeChecksums(buf) {
+		t.Fatalf("buildInboundUDPPacketIPv4 dissect/checksum failed: %v", err)
+	}
+	return capture.Packet{Data: buf, Dir: core.DirectionInbound}
+}
+
+func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
+	now := time.Date(2026, 11, 25, 14, 0, 0, 0, time.UTC)
+	eng := newTelegramCallEngine(nil, nil)
+	eng.now = func() time.Time { return now }
+
+	stunPkt := buildUDPPacketIPv4(t, "149.154.167.50", 53000, 1400, stunPayload(0x0003, 48))
+
+	// First 3 unanswered STUN packets stay on stage 0 (ttl-sweep-quic);
+	// cover is only sent on the first packet of the stage.
+	first, ok := eng.BuildDecoys(stunPkt)
+	if !ok || len(first) != 6 {
+		t.Fatalf("stage 0 first packet: ok=%v len=%d, want true/6 (1 cover + 3 ttl + 1 badsum + orig)", ok, len(first))
+	}
+	second, ok := eng.BuildDecoys(stunPkt)
+	if !ok || len(second) != 5 {
+		t.Fatalf("stage 0 retry packet: ok=%v len=%d, want true/5 (no repeated cover)", ok, len(second))
+	}
+	if _, ok := eng.BuildDecoys(stunPkt); !ok {
+		t.Fatal("third packet should match")
+	}
+	if got := eng.Stats().Strategy; got != "ttl-sweep-quic" {
+		t.Fatalf("strategy after 3 packets = %q, want ttl-sweep-quic", got)
+	}
+
+	// 4th unanswered packet rotates to stage 1 (badsum-compact).
+	fourth, ok := eng.BuildDecoys(stunPkt)
+	if !ok || len(fourth) != 5 {
+		t.Fatalf("stage 1 first packet: ok=%v len=%d, want true/5", ok, len(fourth))
+	}
+	if got := eng.Stats().Strategy; got != "badsum-compact" {
+		t.Fatalf("strategy after rotation = %q, want badsum-compact", got)
+	}
+
+	// Inbound STUN reply on reverse 5-tuple locks the winning strategy.
+	reply := buildInboundUDPPacketIPv4(t, "149.154.167.50", 1400, 53000, stunPayload(0x0103, 32))
+	if !eng.ObserveInbound(reply) {
+		t.Fatal("expected inbound reply on reverse 5-tuple to be recorded")
+	}
+	for range 5 {
+		if _, ok := eng.BuildDecoys(stunPkt); !ok {
+			t.Fatal("subsequent packet should match")
+		}
+	}
+	if got := eng.Stats().Strategy; got != "badsum-compact" {
+		t.Fatalf("strategy must stay locked after inbound reply, got %q", got)
+	}
+
+	// DTLS ClientHello to Telegram CIDR is desynced and counted separately.
+	dtlsPkt := buildUDPPacketIPv4(t, "149.154.167.50", 53000, 1400, dtlsClientHelloPayload())
+	if pkts, ok := eng.BuildDecoys(dtlsPkt); !ok || len(pkts) < 2 {
+		t.Fatalf("DTLS ClientHello should be desynced, ok=%v len=%d", ok, len(pkts))
+	}
+	st := eng.Stats()
+	if st.DTLS != 1 || st.Replies != 1 || st.Targets != 1 {
+		t.Fatalf("unexpected stats: %+v", st)
+	}
+
+	// Foreign DTLS ClientHello (non-Telegram IP, non-Telegram socket) is ignored.
+	foreignDTLS := buildUDPPacketIPv4(t, "203.0.113.77", 53001, 1400, dtlsClientHelloPayload())
+	if _, ok := eng.BuildDecoys(foreignDTLS); ok {
+		t.Fatal("foreign DTLS ClientHello must not be touched")
+	}
+}

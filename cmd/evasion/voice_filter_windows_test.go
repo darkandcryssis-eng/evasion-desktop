@@ -58,7 +58,9 @@ func TestNativeVoiceFilterSelectsOnlyDiscovery(t *testing.T) {
 			{"telegram-legacy-too-short", 597, 12, 0xabcd, 0x1234, true, false, false, false},
 			{"stun-quic-excluded", 443, 100, 1, 80, true, false, false, true},
 			{"discovery-19302", 19302, 74, 1, 70, true, false, true, false},
-			{"stun-incoming", 50010, 100, 1, 80, false, false, false, true},
+			{"stun-incoming", 50010, 100, 1, 80, false, false, true, true},
+			{"dtls-clienthello", 1400, 120, 0x16fe, 0xfd00, true, false, true, false},
+			{"dtls-incoming", 1400, 120, 0x16fe, 0xfd00, false, false, true, false},
 			{"stun-response", 50010, 100, 0x0101, 80, true, false, false, true},
 			{"turn-response", 1400, 100, 0x0103, 80, true, false, false, true},
 		} {
