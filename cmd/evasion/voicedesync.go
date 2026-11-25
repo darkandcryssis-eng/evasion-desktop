@@ -627,7 +627,7 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 			acted++
 			actedTelegram++
 			tg := tgEngine.Stats()
-			if tg.Replies == 0 && (tg.STUN+tg.DTLS+tg.Legacy) >= telegramCallWARPTrigger {
+			if tg.FlowUnanswered {
 				tgTunnel.NotifyUnanswered()
 			}
 			if actedTelegram == 1 || time.Since(lastTelegramReport) >= voiceReportEvery {

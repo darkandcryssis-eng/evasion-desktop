@@ -89,12 +89,13 @@ type tgCallFlowState struct {
 }
 
 type telegramCallStats struct {
-	STUN     int
-	DTLS     int
-	Legacy   int
-	Replies  int
-	Targets  int
-	Strategy string
+	STUN           int
+	DTLS           int
+	Legacy         int
+	Replies        int
+	Targets        int
+	Strategy       string
+	FlowUnanswered bool
 }
 
 // telegramCallEngine is a dedicated UDP DPI desync engine for Telegram calls,
@@ -113,8 +114,9 @@ type telegramCallEngine struct {
 	stun    int
 	dtls    int
 	legacyN int
-	replies int
-	lastStr tgCallStrategy
+	replies        int
+	lastStr        tgCallStrategy
+	flowUnanswered bool
 }
 
 func newTelegramCallEngine(owner telegramUDPOwner, legacy *telegramReflectorTracker) *telegramCallEngine {
@@ -280,6 +282,11 @@ func (e *telegramCallEngine) advanceFlow(srcIP netip.Addr, srcPort uint16, dstIP
 		e.legacyN++
 	}
 	e.lastStr = st.stage
+	trigger := telegramCallWARPTrigger
+	if kind == tgCallLegacy {
+		trigger = telegramReflectorMaxPackets
+	}
+	e.flowUnanswered = st.replies == 0 && st.sent >= trigger
 	return st.stage, sendCover
 }
 
@@ -311,12 +318,13 @@ func (e *telegramCallEngine) Stats() telegramCallStats {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return telegramCallStats{
-		STUN:     e.stun,
-		DTLS:     e.dtls,
-		Legacy:   e.legacyN,
-		Replies:  e.replies,
-		Targets:  len(e.targets),
-		Strategy: e.lastStr.String(),
+		STUN:           e.stun,
+		DTLS:           e.dtls,
+		Legacy:         e.legacyN,
+		Replies:        e.replies,
+		Targets:        len(e.targets),
+		Strategy:       e.lastStr.String(),
+		FlowUnanswered: e.flowUnanswered,
 	}
 }
 

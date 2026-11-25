@@ -359,7 +359,8 @@ func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
 		t.Fatal("foreign DTLS ClientHello must not be touched")
 	}
 
-	// Legacy reflector 3-packet burst rotates strategy on each packet.
+	// Legacy reflector 3-packet burst rotates strategy on each packet and triggers
+	// FlowUnanswered on the 3rd packet even though an earlier flow got a reply.
 	legacyPkt := buildUDPPacketIPv4(t, "149.154.167.50", 53100, 597, make([]byte, 32))
 	wantStages := []string{"ttl-sweep-quic", "badsum-compact", "quic-ya-sweep"}
 	for i, want := range wantStages {
@@ -370,17 +371,29 @@ func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
 			t.Fatalf("legacy burst packet %d strategy = %q, want %q", i, got, want)
 		}
 	}
+	if !eng.Stats().FlowUnanswered {
+		t.Fatal("legacy 3-packet unanswered burst should set FlowUnanswered even after earlier reply")
+	}
 
-	// Same srcPort + peer on a different local IP must start fresh strategy state.
+	// Same srcPort + peer on a different local IP must start fresh strategy state
+	// and trigger FlowUnanswered after telegramCallWARPTrigger unanswered packets.
 	otherLocal := buildUDPPacketIPv4(t, "149.154.167.50", 53000, 1400, stunPayload(0x0003, 48))
 	copy(otherLocal.Data[12:16], net.ParseIP("192.168.1.99").To4())
 	if d, err := packet.Dissect(otherLocal.Data); err != nil || !d.RecomputeChecksums(otherLocal.Data) {
 		t.Fatalf("recompute checksum failed: %v", err)
 	}
-	if _, ok := eng.BuildDecoys(otherLocal); !ok {
-		t.Fatal("other local IP STUN should match")
+	for i := 1; i <= telegramCallWARPTrigger; i++ {
+		if _, ok := eng.BuildDecoys(otherLocal); !ok {
+			t.Fatalf("other local IP STUN %d should match", i)
+		}
+		if i == 1 && eng.Stats().Strategy != "ttl-sweep-quic" {
+			t.Fatalf("new local IP must start at stage 0 (ttl-sweep-quic), got %q", eng.Stats().Strategy)
+		}
+		if i < telegramCallWARPTrigger && eng.Stats().FlowUnanswered {
+			t.Fatalf("FlowUnanswered triggered early on packet %d", i)
+		}
 	}
-	if got := eng.Stats().Strategy; got != "ttl-sweep-quic" {
-		t.Fatalf("new local IP must start at stage 0 (ttl-sweep-quic), got %q", got)
+	if !eng.Stats().FlowUnanswered {
+		t.Fatal("new unanswered STUN flow should trigger FlowUnanswered despite earlier reply")
 	}
 }
