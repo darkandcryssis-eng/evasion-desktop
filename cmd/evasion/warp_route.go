@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -370,10 +369,8 @@ func warpMultiHostEndpoints(savedEndpoint string) []string {
 		seen[ep] = struct{}{}
 		out = append(out, ep)
 	}
-	if host, _, err := net.SplitHostPort(savedEndpoint); err == nil {
-		if _, err := netip.ParseAddr(host); err == nil {
-			add(savedEndpoint)
-		}
+	if _, _, err := net.SplitHostPort(savedEndpoint); err == nil {
+		add(savedEndpoint)
 	}
 	for _, port := range tunnel.WARPTelegramPorts {
 		for _, host := range tunnel.WARPFallbackHosts {
