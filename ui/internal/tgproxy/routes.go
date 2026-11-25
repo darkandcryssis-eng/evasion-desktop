@@ -722,3 +722,10 @@ func (r *router) latencyHint(id string) time.Duration {
 	defer r.mu.Unlock()
 	return r.health[id].latency
 }
+
+func (r *router) isVerified(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.health[id]
+	return h.success && h.failures == 0
+}

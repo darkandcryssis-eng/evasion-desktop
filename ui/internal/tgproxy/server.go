@@ -487,11 +487,41 @@ func (s *Server) serve(client net.Conn) {
 		<-clientDone
 	}()
 
-	var lastUnacked []byte
+	const (
+		maxPendingReplayFrames = 8
+		maxPendingReplayBytes  = 256 << 10
+	)
+	var pendingFrames [][]byte
+	pendingBytes := 0
+	pendingOverflow := false
+	pushPending := func(frame []byte) {
+		if pendingOverflow {
+			return
+		}
+		if len(pendingFrames) >= maxPendingReplayFrames || pendingBytes+len(frame) > maxPendingReplayBytes {
+			pendingFrames = nil
+			pendingBytes = 0
+			pendingOverflow = true
+			return
+		}
+		pendingFrames = append(pendingFrames, frame)
+		pendingBytes += len(frame)
+	}
+	popPending := func() {
+		if pendingOverflow {
+			pendingOverflow = false
+			return
+		}
+		if len(pendingFrames) > 0 {
+			pendingBytes -= len(pendingFrames[0])
+			pendingFrames = pendingFrames[1:]
+		}
+	}
+
 	midFrame := false
 	switchesUsed := 0
 
-	trySwitch := func(stage string, causeErr error, replay []byte) bool {
+	trySwitch := func(stage string, causeErr error, extraFrame []byte) bool {
 		duration := time.Since(connectedAt)
 		cause := classifyDisconnect(causeErr)
 		cleanClose := errors.Is(causeErr, io.EOF) || websocket.IsCloseError(causeErr, websocket.CloseNormalClosure, websocket.CloseGoingAway)
@@ -514,7 +544,12 @@ func (s *Server) serve(client net.Conn) {
 			BytesDown:  connDown,
 		}
 		closeCurrentUpstream()
-		if !midFrame && switchesUsed < maxSeamlessSwitches && ctx.Err() == nil {
+		replay := make([][]byte, 0, len(pendingFrames)+1)
+		replay = append(replay, pendingFrames...)
+		if len(extraFrame) > 0 {
+			replay = append(replay, extraFrame)
+		}
+		if !midFrame && !pendingOverflow && switchesUsed < maxSeamlessSwitches && ctx.Err() == nil {
 			replacement, switchErr := s.switchChannel(ctx, h, candidate.id, replay)
 			if switchErr == nil {
 				switchesUsed++
@@ -527,12 +562,18 @@ func (s *Server) serve(client net.Conn) {
 				tgEnc, tgDec = replacement.encrypt, replacement.decrypt
 				label = replacement.label
 				connectedAt = time.Now()
-				connUp = uint64(len(replay))
-				connDown = 0
-				if len(replay) > 0 {
-					s.up.Add(uint64(len(replay)))
+				var replayedBytes uint64
+				for _, f := range replay {
+					replayedBytes += uint64(len(f))
 				}
-				lastUnacked = nil
+				connUp = replayedBytes
+				connDown = 0
+				if replayedBytes > 0 {
+					s.up.Add(replayedBytes)
+				}
+				pendingFrames = nil
+				pendingBytes = 0
+				pendingOverflow = false
 				s.mu.Lock()
 				s.lastRoute = label
 				s.lastErr = ""
@@ -577,7 +618,7 @@ func (s *Server) serve(client net.Conn) {
 				}
 				continue
 			}
-			lastUnacked = msg.frame
+			pushPending(msg.frame)
 			connUp += uint64(len(msg.frame))
 			s.up.Add(uint64(len(msg.frame)))
 		case msg, ok := <-upCh:
@@ -585,7 +626,9 @@ func (s *Server) serve(client net.Conn) {
 				return
 			}
 			if len(msg.data) > 0 {
-				lastUnacked = nil
+				if !msg.midFrame {
+					popPending()
+				}
 				out := make([]byte, len(msg.data))
 				h.encrypt.XORKeyStream(out, msg.data)
 				_ = client.SetWriteDeadline(time.Now().Add(30 * time.Second))
@@ -608,7 +651,7 @@ func (s *Server) serve(client net.Conn) {
 				if ctx.Err() != nil {
 					return
 				}
-				if !trySwitch("relay_read", msg.err, lastUnacked) {
+				if !trySwitch("relay_read", msg.err, nil) {
 					return
 				}
 			}

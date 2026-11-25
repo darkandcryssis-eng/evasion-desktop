@@ -259,9 +259,11 @@ func (s *Server) openAttempt(ctx context.Context, h handshake, firstFrame []byte
 }
 
 // switchChannel opens a replacement upstream route after an active channel
-// breaks mid-stream, avoiding the failed route. If replayFrame is non-empty,
-// it replays that unacknowledged client frame and verifies the first reply.
-func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, replayFrame []byte) (*relayChannel, error) {
+// breaks mid-stream, avoiding the failed route. If replayFrames is non-empty,
+// it replays all pending unacknowledged client frames in order and verifies
+// the first reply. On an idle switch (no pending frames), it verifies that an
+// unverified candidate actually answers Telegram before accepting it.
+func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, replayFrames [][]byte) (*relayChannel, error) {
 	switchCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	upstream, candidate, latency, err := s.router.connectAvoid(switchCtx, h.dc, h.media, avoid)
@@ -275,12 +277,26 @@ func (s *Server) switchChannel(ctx context.Context, h handshake, avoid string, r
 		err = upstream.WritePacket(bytes.NewReader(init), int64(len(init)))
 	}
 	var firstReply []byte
-	if err == nil && len(replayFrame) > 0 {
-		encoded := append([]byte(nil), replayFrame...)
-		tgEnc.XORKeyStream(encoded, encoded)
-		err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded)))
+	if err == nil && len(replayFrames) > 0 {
+		for _, frame := range replayFrames {
+			if len(frame) == 0 {
+				continue
+			}
+			encoded := append([]byte(nil), frame...)
+			tgEnc.XORKeyStream(encoded, encoded)
+			if err = upstream.WritePacket(bytes.NewReader(encoded), int64(len(encoded))); err != nil {
+				break
+			}
+		}
 		if err == nil {
 			firstReply, err = readFirstUpstream(switchCtx, upstream, replyTimeoutFor(s.firstReplyTimeout, s.router.latencyHint(candidate.id)))
+		}
+	} else if err == nil && !s.router.isVerified(candidate.id) {
+		// Idle switch onto an unverified route: confirm Telegram actually
+		// responds on this route so failover never lands on a silent blackhole.
+		s.router.probeRoute(switchCtx, candidate, 3*time.Second)
+		if !s.router.isVerified(candidate.id) {
+			err = errors.New("replacement route did not answer Telegram probe")
 		}
 	}
 	if err == nil && !stopClose() {

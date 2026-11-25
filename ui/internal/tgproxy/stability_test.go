@@ -118,6 +118,11 @@ func TestSeamlessSwitchKeepsClientAliveAcrossUpstreamBreak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Mark backup routes as verified in this unit test since the mock echo peer
+	// does not implement MTProto resPQ for idle probeRoute checks.
+	for _, r := range routesFor(2, true) {
+		s.router.success(r.id, 10*time.Millisecond)
+	}
 	if err := s.Start(context.Background(), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -348,5 +353,31 @@ func TestPlainWSFallbackIncludedOnColdConnect(t *testing.T) {
 	_ = p.Close()
 	if !c.community || !c.plain {
 		t.Fatalf("expected plain community WS route, got %+v", c)
+	}
+}
+
+func TestIdleSwitchRejectsSilentUnverifiedRoute(t *testing.T) {
+	v := vectors(t)[0]
+	s, err := New(Options{
+		Secret: unhex(t, v.Secret),
+		Dial: func(ctx context.Context, _ route) (peer, error) {
+			// Accepts connection but never answers Telegram.
+			local, remote := net.Pipe()
+			go func() {
+				<-ctx.Done()
+				_ = remote.Close()
+			}()
+			return &tcpPeer{local}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handshake{dc: 2, media: false, protocol: 0xee}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if ch, err := s.switchChannel(ctx, h, "", nil); err == nil {
+		_ = ch.upstream.Close()
+		t.Fatal("expected idle switch to reject silent unverified route")
 	}
 }
