@@ -250,7 +250,11 @@ func (e *telegramCallEngine) advanceFlow(srcPort uint16, dstIP netip.Addr, dstPo
 		st = &tgCallFlowState{}
 		e.flows[key] = st
 	}
-	if st.replies == 0 && st.stageCount >= tgCallRotateEvery {
+	rotateEvery := tgCallRotateEvery
+	if kind == tgCallLegacy {
+		rotateEvery = 1
+	}
+	if st.replies == 0 && st.stageCount >= rotateEvery {
 		st.stage = (st.stage + 1) % tgStratCount
 		st.stageCount = 0
 	}

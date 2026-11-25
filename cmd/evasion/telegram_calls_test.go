@@ -358,4 +358,16 @@ func TestTelegramCallEngineDTLSAndAdaptiveRotation(t *testing.T) {
 	if _, ok := eng.BuildDecoys(foreignDTLS); ok {
 		t.Fatal("foreign DTLS ClientHello must not be touched")
 	}
+
+	// Legacy reflector 3-packet burst rotates strategy on each packet.
+	legacyPkt := buildUDPPacketIPv4(t, "149.154.167.50", 53100, 597, make([]byte, 32))
+	wantStages := []string{"ttl-sweep-quic", "badsum-compact", "quic-ya-sweep"}
+	for i, want := range wantStages {
+		if _, ok := eng.BuildDecoys(legacyPkt); !ok {
+			t.Fatalf("legacy burst packet %d should match", i)
+		}
+		if got := eng.Stats().Strategy; got != want {
+			t.Fatalf("legacy burst packet %d strategy = %q, want %q", i, got, want)
+		}
+	}
 }
