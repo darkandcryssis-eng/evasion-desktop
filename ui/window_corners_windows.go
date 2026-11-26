@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"unsafe"
 
 	wr "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -11,6 +12,7 @@ import (
 var windowDPI = trayUser.NewProc("GetDpiForWindow")
 
 func configureWindowCorners(ctx context.Context) {
+	wr.WindowExecJS(ctx, fmt.Sprintf("document.documentElement.style.setProperty('--window-corner-radius', '%dpx')", mainCornerRadius))
 	hwnd := mainWindow()
 	if hwnd == 0 {
 		return
@@ -38,8 +40,22 @@ func roundWindow(hwnd uintptr) {
 		}
 	}
 	diameter := (2*mainCornerRadius*dpi + 48) / 96
-	region := trayG("CreateRoundRectRgn", 0, 0, uintptr(width+1), uintptr(height+1), diameter, diameter)
-	if region != 0 && trayU("SetWindowRgn", hwnd, region, 1) == 0 {
+	// WebView2 paints the antialiased curve. Keep the binary hit region two
+	// physical pixels outside it so it cannot cut through a blended edge.
+	const pad = 2
+	region := trayG("CreateRoundRectRgn", trayInt(-pad), trayInt(-pad), uintptr(width+pad+1), uintptr(height+pad+1), diameter, diameter)
+	if region == 0 {
+		return
+	}
+	rect := trayG("CreateRectRgn", 0, 0, uintptr(width), uintptr(height))
+	if rect == 0 {
+		trayG("DeleteObject", region)
+		return
+	}
+	const rgnAnd = 1
+	clipped := trayG("CombineRgn", region, region, rect, rgnAnd)
+	trayG("DeleteObject", rect)
+	if clipped == 0 || trayU("SetWindowRgn", hwnd, region, 1) == 0 {
 		// On success Windows owns the region.
 		trayG("DeleteObject", region)
 	}

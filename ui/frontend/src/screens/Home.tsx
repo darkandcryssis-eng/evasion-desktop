@@ -44,7 +44,7 @@ const hint: Record<EnginePhase, string> = {
 type Props = { motion: boolean; engine: EngineController; onConnect: (o: StartOptions) => void };
 
 export function HomeScreen({ engine, motion, onConnect }: Props) {
-  const { state, busy, error, stop, reconnect } = engine;
+  const { state, busy, error, stop } = engine;
   const [options, update] = useConnectionOptions();
   const [tgMode, setTgMode] = useState<TelegramMode>(telegramMode);
   const phase: EnginePhase = state?.engine.phase ?? "stopped";
@@ -92,11 +92,10 @@ export function HomeScreen({ engine, motion, onConnect }: Props) {
             <PowerOrb mode={orb} motion={motion} />
             <span className="power__hint" aria-hidden="true" data-show={invite || undefined}><Icon name="power" size={22} /><span>{phase === "failed" ? <>Нажмите, чтобы<br />повторить</> : <>Нажмите, чтобы<br />включить</>}</span></span>
           </button>
-          <div className="hero__foot">
-            {!invite && !running && <span className="hero__action" key={action}>{action}</span>}
+          {!running && <div className="hero__foot">
+            {!invite && <span className="hero__action" key={action}>{action}</span>}
             {!active && <span className="hero__keys"><kbd>Ctrl</kbd><kbd>Enter</kbd> быстрое подключение</span>}
-            {running && <button type="button" className="ghost-chip" disabled={busy} aria-label="Переподключить" onClick={() => void reconnect()}><Icon name="refresh" size={14} />Переподключить</button>}
-          </div>
+          </div>}
         </section>
 
         <section className="tile session" aria-label="Сессия" data-live={running || undefined}>
