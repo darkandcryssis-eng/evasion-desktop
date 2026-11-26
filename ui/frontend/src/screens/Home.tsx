@@ -1,13 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type EnginePhase, type NetworkTuningView, type StartOptions } from "../api";
 import type { EngineController } from "../useEngine";
 import { useConnectionOptions, readPreference, savePreference } from "../preferences";
-import { telegramBadge } from "../telegramBadge";
+import { connectionLogs } from "../logFlow";
 import { useElapsed, usePoll } from "../hooks";
 import { PowerOrb, type OrbMode } from "../fx/PowerOrb";
 import { LogShowcase, LogStream } from "../components/LogShowcase";
-import { Badge, BrandIcon, BrandLogo, Disclosure, Feed, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName, type Tone } from "../ui";
-import type { Page } from "../types";
+import { BrandLogo, Disclosure, Icon, Note, Row, Segmented, Ticker, Toggle, type BrandName } from "../ui";
 
 const voiceOptions = [
   { id: "ttl", label: "TTL — по умолчанию" },
@@ -42,15 +41,9 @@ const hint: Record<EnginePhase, string> = {
   failed: "Посмотрите сообщение ниже или откройте диагностику",
 };
 
-const ytPhase: Record<string, [string, Tone]> = {
-  waiting: ["Проверка запускается", "neutral"], awaiting_media: ["Сайт доступен, ждём видео", "accent"], stopped: ["Ждёт включения обхода", "neutral"],
-  disabled: ["Исключён из обхода", "neutral"], checking: ["Проверяем", "accent"], healthy: ["Доступен", "success"], degraded: ["Перепроверяем сбой", "warning"],
-  recovering: ["Подбираем способ", "accent"], recovered: ["Способ заменён", "success"], network_down: ["Нет интернета", "warning"], unavailable: ["Пока недоступен", "warning"],
-};
+type Props = { motion: boolean; engine: EngineController; onConnect: (o: StartOptions) => void };
 
-type Props = { motion: boolean; engine: EngineController; onConnect: (o: StartOptions) => void; onNavigate: (p: Page) => void };
-
-export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
+export function HomeScreen({ engine, motion, onConnect }: Props) {
   const { state, busy, error, stop, reconnect } = engine;
   const [options, update] = useConnectionOptions();
   const [tgMode, setTgMode] = useState<TelegramMode>(telegramMode);
@@ -63,13 +56,9 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
   const ready = !!state && state.elevated && state.payload.engine && (state.payload.config || state.userConfig);
   const tuning = usePoll<NetworkTuningView>(() => api.getNetworkTuning(options), 3000).value;
 
-  const logs = [...(state?.engine.logs ?? []), ...(state?.telegram?.logs ?? [])].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).slice(-400);
+  const logs = useMemo(() => connectionLogs(state), [state]);
   const hello = state?.engine.hello;
-  const tg = state?.telegram;
-  const tgBadge: { label: string; tone: Tone } = tg ? telegramBadge(tg) : { label: "Выключен", tone: "neutral" };
   const yt = tuning?.health;
-  const ytState: [string, Tone] = !active ? ["Ждёт включения обхода", "neutral"] : ytPhase[yt?.fresh ? yt.phase : "waiting"] ?? ["Проверяется", "neutral"];
-  const [ytLabel, ytTone] = ytState;
 
   // The ring answers the press at once; the engine phase takes over when it arrives.
   const [intent, setIntent] = useState<"on" | "off" | null>(null);
@@ -121,14 +110,6 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
             </div>
           </LogShowcase>
         </section>
-
-        <ServiceTile brand="discord" name="Discord" note="Голос · чат · медиа" tone={running ? "success" : "neutral"} label={running ? "Обход включён" : "Ждёт подключения"} live={running} onClick={() => onNavigate("services")} />
-        <ServiceTile brand="youtube" name="YouTube" note="Видео · прямые эфиры" tone={ytTone} label={ytLabel} live={active && (ytTone === "success" || ytTone === "accent")} onClick={() => onNavigate("settings")} />
-        <ServiceTile brand="telegram" name="Telegram" note="Сообщения · MTProto" tone={tgBadge.tone} label={tgBadge.label} live={!!tg?.running} onClick={() => onNavigate("telegram")} />
-        <button type="button" className="tile service cta" onClick={() => onNavigate("diagnostics")}>
-          <span className="service__top"><span className="service__icon" aria-hidden="true"><Icon name="pulse" size={20} /></span><Icon name="right" size={16} className="service__arrow" /></span>
-          <span className="service__text"><small>Что-то не работает?</small><strong>Проверить связь</strong></span>
-        </button>
       </div>
 
       <div className="connection-notices">
@@ -137,7 +118,7 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
         {state && !state.payload.config && !state.userConfig && <Note tone="warn" icon="alert">Не найден конфиг подключения. Откройте диагностику.</Note>}
         {error && <Note tone="warn" icon="alert">{error}</Note>}
       </div>
-      <section className="dashboard-details" aria-label="Параметры и журнал">
+      <section className="dashboard-details" aria-label="Параметры подключения">
         {!active && (
           <Disclosure icon="settings" title="Дополнительные параметры" note="Для большинства сетей менять ничего не нужно">
             <Row title="Голос Discord" note="Как прятать голосовой трафик. TTL подходит большинству сетей.">
@@ -157,19 +138,6 @@ export function HomeScreen({ engine, motion, onConnect, onNavigate }: Props) {
           </Disclosure>
         )}
 
-        <Disclosure icon="pulse" title="Журнал подключения" note={logs.length ? `Событий: ${logs.length}` : "События и техническая информация"}>
-          {running && hello && (
-            <div className="hello">
-              <div><strong><Ticker value={hello.complete} /></strong><span>целых</span></div>
-              <div><strong><Ticker value={hello.assembled} /></strong><span>собрано</span></div>
-              <div className={hello.skipped > 0 ? "hello--warn" : ""}><strong><Ticker value={hello.skipped} /></strong><span>пропущено</span></div>
-              <div><strong><Ticker value={hello.retransmits} /></strong><span>повторов</span></div>
-            </div>
-          )}
-          {running && hello?.reasons && <Note>Причины пропусков: {hello.reasons}</Note>}
-          <Feed logs={logs} />
-        </Disclosure>
-
         {state?.engine.discord && <footer className="home__foot">{state.engine.discord}</footer>}
       </section>
     </div>
@@ -184,14 +152,4 @@ function SessionTimer({ startedAt, running }: { startedAt?: string; running: boo
   return <div className="timer" aria-label={running ? `В сети ${elapsed}` : "Сессия не начата"}>
     <b>{hours}</b><i>:</i><b>{minutes}</b><i>:</i><b>{seconds}</b>
   </div>;
-}
-
-function ServiceTile({ brand, name, note, tone, label, live, onClick }: { brand: BrandName; name: string; note: string; tone: Tone; label: string; live: boolean; onClick: () => void }) {
-  return (
-    <button type="button" className={`tile service service--${tone}${live ? " service--live" : ""}`} onClick={onClick}>
-      <span className="service__top"><span className="service__icon" aria-hidden="true"><BrandIcon name={brand} size={brand === "telegram" ? 17 : 19} /></span><Icon name="right" size={16} className="service__arrow" /></span>
-      <span className="service__text"><strong>{name}</strong><small>{note}</small></span>
-      <Badge tone={tone} pulse={live}>{label}</Badge>
-    </button>
-  );
 }

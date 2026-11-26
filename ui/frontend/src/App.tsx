@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import appLogo from "../../assets/logo.svg";
-import { EventsOn, WindowCenter, WindowMinimise, WindowSetMinSize, WindowSetSize, WindowToggleMaximise } from "../wailsjs/runtime/runtime";
+import { EventsEmit, EventsOn, WindowMinimise } from "../wailsjs/runtime/runtime";
 import { api, type StartOptions } from "./api";
 import { useEngine } from "./useEngine";
 import { UpdateBanner, useUpdateAvailable } from "./Update";
@@ -28,6 +28,13 @@ export default function App() {
   const [pending, setPending] = useState<StartOptions | null>(null);
   const engine = useEngine();
   const viewport = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (!navigator.userAgent.includes("Windows") || typeof ResizeObserverEntry === "undefined" || !("devicePixelContentBoxSize" in ResizeObserverEntry.prototype)) return;
+    // Moving a fixed-size window between monitors can change its physical bounds.
+    const observer = new ResizeObserver(() => EventsEmit("evasion:window-bounds"));
+    observer.observe(document.documentElement, { box: "device-pixel-content-box" });
+    return () => observer.disconnect();
+  }, []);
   useLayoutEffect(() => {
     const off = EventsOn("evasion:window", (state: unknown) => {
       if (state === "hidden" || state === "shown") setTrayHidden(state === "hidden");
@@ -57,7 +64,6 @@ export default function App() {
     savePreference("evasion-ui-startup", String(startup));
   }, [motion, startup, theme]);
   useEffect(() => {
-    WindowSetSize(900, 700); WindowSetMinSize(700, 540); WindowCenter();
     const timer = window.setTimeout(() => setBooting(false), 1500);
     return () => window.clearTimeout(timer);
   }, []);
@@ -86,9 +92,9 @@ export default function App() {
       case "services": return <ServicesScreen state={engine.state} />;
       case "games": return <GamesScreen onNavigate={setPage} />;
       case "telegram": return <TelegramScreen state={engine.state?.telegram} onRefresh={engine.refresh} />;
-      case "diagnostics": return <DiagnosticsScreen />;
+      case "diagnostics": return <DiagnosticsScreen state={engine.state} />;
       case "settings": return <SettingsScreen motion={motion} startup={startup} onMotion={setMotion} onStartup={setStartup} baseDir={engine.state?.baseDir} />;
-      default: return <HomeScreen engine={engine} motion={motion} onConnect={requestConnect} onNavigate={setPage} />;
+      default: return <HomeScreen engine={engine} motion={motion} onConnect={requestConnect} />;
     }
   };
   return (
@@ -100,7 +106,6 @@ export default function App() {
           <button type="button" className="tool" data-tip={theme === "black" ? "Светлая тема" : "Тёмная тема"} aria-label={theme === "black" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={() => setTheme(theme === "black" ? "light" : "black")}><Icon name={theme === "black" ? "sun" : "moon"} size={16} /></button>
           <div className="window-actions">
             <button type="button" className="tool" data-tip="Свернуть" aria-label="Свернуть" onClick={WindowMinimise}><Icon name="minus" size={16} /></button>
-            <button type="button" className="tool" data-tip="Развернуть" aria-label="Развернуть или восстановить" onClick={WindowToggleMaximise}><Icon name="square" size={14} /></button>
             <button type="button" className="tool tool--close" data-tip="Закрыть" aria-label="Закрыть" onClick={() => setClosing(true)}><Icon name="x" size={16} /></button>
           </div>
         </div>

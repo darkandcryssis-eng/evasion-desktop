@@ -2,12 +2,12 @@
 
 package main
 
-import "github.com/fitting-1c/evasion/internal/windivert"
+import "errors"
 
 const telegramCallTunnelSupported = false
 
 func openTelegramCallTunnelHandle() (tgTunnelConn, error) {
-	return nil, windivert.ErrUnsupported
+	return nil, errors.ErrUnsupported
 }
 
 func makeInboundReinject(reinject any) any {
