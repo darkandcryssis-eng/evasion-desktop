@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	mainWindowWidth  = 900
-	mainWindowHeight = 700
+	mainWindowWidth  = 780
+	mainWindowHeight = 500
 	mainCornerRadius = 24 // logical pixels
 )
 
@@ -40,12 +40,17 @@ func main() {
 		StartHidden:      false,
 		BackgroundColour: &options.RGBA{R: 5, G: 5, B: 6, A: 255},
 		AssetServer:      &assetserver.Options{Assets: assets},
-		Windows:          &windows.Options{DisableFramelessWindowDecorations: true},
-		OnStartup:        app.startup,
-		OnDomReady:       configureWindowCorners,
-		OnShutdown:       app.shutdown,
-		OnBeforeClose:    app.beforeClose,
-		Bind:             []interface{}{app},
+		Windows: &windows.Options{
+			WebviewIsTransparent:              true,
+			WindowIsTranslucent:               true,
+			BackdropType:                      windows.None,
+			DisableFramelessWindowDecorations: true,
+		},
+		OnStartup:     app.startup,
+		OnDomReady:    configureWindowCorners,
+		OnShutdown:    app.shutdown,
+		OnBeforeClose: app.beforeClose,
+		Bind:          []interface{}{app},
 		// Один экземпляр: вторая копия завершается, а запущенная поднимает окно.
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId:               "com.evasion.ui.single-instance",

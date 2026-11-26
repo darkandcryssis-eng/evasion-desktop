@@ -67,14 +67,9 @@ export function useEngine() {
       savePreference("evasion-telegram-link-offered", "true");
     }
   }), [run]);
-  const reconnect = useCallback(() => run(async () => {
-    if (!state || state.engine.phase !== "running") return;
-    await api.stopEngine();
-    await api.startEngine({ ...state.engine.options, restartDiscord: false });
-  }), [run, state]);
   const restartDiscord = useCallback(() => run(() => api.restartDiscord()), [run]);
 
-  return { state, error: actionError || pollError || state?.engine.error || "", busy, start, connect, stop, reconnect, restartDiscord, refresh };
+  return { state, error: actionError || pollError || state?.engine.error || "", busy, start, connect, stop, restartDiscord, refresh };
 }
 
 export type EngineController = ReturnType<typeof useEngine>;

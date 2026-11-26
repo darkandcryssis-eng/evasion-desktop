@@ -1,94 +1,78 @@
 <p align="center">
-  <img src="docs/readme/hero.svg" alt="Evasion — Discord, YouTube и Telegram снова работают. Обход блокировок для Windows без VPN." width="100%">
+  <img src="docs/readme/hero.svg" alt="Evasion" width="100%">
+</p>
+
+<p align="center"><strong>Discord, YouTube и Telegram при сетевых ограничениях.</strong><br>
+Нажмите на кольцо, чтобы включить подключение. Evasion подберёт рабочий способ для вашей сети.</p>
+
+<p align="center">
+  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion.exe"><img src="docs/readme/download.svg" alt="Скачать Evasion для Windows 10 или 11, x64" width="278"></a>
+  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion-macOS.zip"><img src="docs/readme/download-mac.svg" alt="Скачать Evasion для macOS 11 и новее, Intel и Apple Silicon" width="278"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion.exe">
-    <img src="docs/readme/download.svg" alt="Скачать Evasion.exe для Windows" width="420">
-  </a>
-  <br>
-  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion-macOS.zip">
-    <img src="docs/readme/download-mac.svg" alt="Скачать Evasion для macOS" width="420">
-  </a>
+  <a href="#как-начать">Первый запуск</a> ·
+  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases">Версии и контрольные суммы</a> ·
+  <a href="#частые-вопросы">Частые вопросы</a>
 </p>
 
 <p align="center">
-  <sub>Один файл, установка не нужна · Windows 10 / 11, 64-бит ·
-  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest">все версии и контрольные суммы</a></sub>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/app-on.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/readme/app-light.png">
+    <img src="docs/readme/app-on.png" alt="Главное окно Evasion. Слева кольцо и статус подключения, справа таймер и счётчики текущей сессии." width="780">
+  </picture>
 </p>
 
 <p align="center">
-  <sub>macOS 11 и новее, Apple Silicon и Intel · <a href="#macos">как открыть на Mac</a></sub>
+  <a href="docs/readme/app-on.png">Тёмная тема</a> ·
+  <a href="docs/readme/app-light.png">Светлая тема</a> ·
+  <a href="docs/readme/app-off.png">До подключения</a>
 </p>
-
-<p align="center">
-  <sub>Evasion сам проверяет новые версии и показывает «Доступно обновление» — ставится по вашему нажатию.</sub>
-</p>
-
-<p align="center">
-  <img src="docs/readme/app-on.png" alt="Главное окно Evasion: обход включён, вокруг кольца кружат значки Discord, YouTube и Telegram, идёт таймер сессии, за ним плывёт журнал простыми словами, у каждого сервиса свой статус" width="820">
-</p>
-
-<p align="center">
-  <img src="docs/readme/app-off.png" alt="Обход выключен: кольцо с подсказкой «Нажмите, чтобы включить», сервисы ждут подключения" width="405">
-  <img src="docs/readme/app-light.png" alt="Светлая тема: то же окно с включённым обходом" width="405">
-</p>
-
-<p align="center">
-  <sub>Одна кнопка, понятные статусы у каждого сервиса, тёмная и светлая тема.</sub>
-</p>
-
-## macOS
-
-1. Скачайте `Evasion-macOS.zip`, распакуйте и перенесите `Evasion.app` в «Программы».
-2. Приложение не подписано сертификатом Apple, поэтому первый запуск macOS заблокирует. Откройте «Системные настройки → Конфиденциальность и безопасность» и нажмите «Всё равно открыть» — или выполните в Терминале `xattr -dr com.apple.quarantine /Applications/Evasion.app`.
-3. При первом включении обхода после каждого запуска Evasion спросит пароль администратора: перехвату трафика нужны права root.
-
-На Mac работает обход для Discord, YouTube и Telegram. Игровой режим, автозапуск, значок в трее и кнопка «Перезапустить Discord» пока есть только в Windows. Обход действует на IPv4 в сети Wi-Fi или Ethernet; при включённом VPN поверх сети он не запустится. Обновление на Mac открывает загрузку нового архива — замените приложение вручную.
-
-## Что умеет
-
-<table>
-  <tr>
-    <td width="76" align="center"><img src="docs/readme/icon-zap.svg" width="56" alt=""></td>
-    <td width="50%"><b>Discord</b><br>Вход, чат, картинки, голос и демонстрация экрана.</td>
-    <td width="76" align="center"><img src="docs/readme/icon-play.svg" width="56" alt=""></td>
-    <td width="50%"><b>YouTube</b><br>Видео и прямые эфиры. Приложение само следит, что ролики открываются.</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/readme/icon-send.svg" width="56" alt=""></td>
-    <td><b>Telegram</b><br>Встроенный прокси включается одной кнопкой. Сообщения остаются зашифрованными.</td>
-    <td align="center"><img src="docs/readme/icon-game.svg" width="56" alt=""></td>
-    <td><b>Игры</b><br>Обход только для выбранных игр и только пока они запущены: добавьте <code>.exe</code> игры или её лаунчера.</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/readme/icon-shield.svg" width="56" alt=""></td>
-    <td><b>Без VPN</b><br>Discord и YouTube идут напрямую, ваш IP не меняется. Остальной интернет работает как обычно.</td>
-    <td align="center"><img src="docs/readme/icon-refresh.svg" width="56" alt=""></td>
-    <td><b>Чинит себя сам</b><br>Если способ обхода перестал работать, Evasion проверяет другие и переключается на рабочий.</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/readme/icon-tray.svg" width="56" alt=""></td>
-    <td><b>Живёт в трее</b><br>Окно можно свернуть: обход продолжит работать. Есть автозапуск вместе с Windows.</td>
-    <td align="center"><img src="docs/readme/icon-pulse.svg" width="56" alt=""></td>
-    <td><b>Проверка связи</b><br>Если что-то не открывается, диагностика покажет причину и подскажет, что исправить.</td>
-  </tr>
-</table>
 
 ## Как начать
 
-1. **Скачайте** [`Evasion.exe`](https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion.exe) и положите в любую папку.
-2. **Запустите.** Windows попросит права администратора: они нужны драйверу, который работает с сетевыми пакетами.
-3. **Нажмите на кольцо.** Через несколько секунд загорится «Вы подключены».
+### Windows
 
-<p align="center">
-  <img src="docs/readme/power-on.webp" alt="Анимация включения: кольцо загорается, вокруг него начинают кружить значки Discord, YouTube и Telegram, запускается таймер сессии, за ним плывёт журнал" width="440">
-</p>
+1. Скачайте [Evasion.exe](https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion.exe) в любую папку и запустите его. Установка не требуется.
+2. Подтвердите запрос прав администратора. Они нужны сетевому драйверу.
+3. Нажмите на кольцо в главном окне. Статус «Вы подключены» и таймер справа покажут, что сессия началась. Окно можно свернуть в трей.
 
-> [!NOTE]
-> Файл пока не подписан сертификатом, поэтому при первом запуске SmartScreen может показать
-> «Система Windows защитила ваш компьютер». Нажмите **Подробнее → Выполнить в любом случае**.
-> На Windows 10 приложение может предложить установить компонент WebView2 — согласитесь.
+<details>
+<summary>Если Windows показывает предупреждение при первом запуске</summary>
+
+Файл пока не подписан сертификатом. Если SmartScreen покажет «Система Windows защитила ваш компьютер», нажмите **Подробнее → Выполнить в любом случае**. На Windows 10 Evasion может предложить установить компонент WebView2.
+
+</details>
+
+### macOS
+
+1. Скачайте [Evasion-macOS.zip](https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion-macOS.zip), распакуйте архив и перенесите `Evasion.app` в «Программы».
+2. При первом открытии macOS может заблокировать приложение без подписи Apple. Откройте **Системные настройки → Конфиденциальность и безопасность → Всё равно открыть**.
+3. Нажмите на кольцо и подтвердите запрос пароля администратора. При первом включении после каждого запуска он нужен для работы с сетевым трафиком.
+
+<details>
+<summary>Сети, обновления и особенности версии для Mac</summary>
+
+На Mac работают Discord, YouTube и Telegram через IPv4 по Wi-Fi или Ethernet. Перед включением отключите активный VPN. Игровой режим, автозапуск, трей и кнопка «Перезапустить Discord» доступны в Windows.
+
+Если удобнее воспользоваться Терминалом, командой `xattr -dr com.apple.quarantine /Applications/Evasion.app` можно разрешить первый запуск скачанного приложения. Когда Evasion предложит обновление на Mac, скачайте новый архив и замените приложение в «Программах».
+
+</details>
+
+## Что умеет
+
+| Возможность | Что доступно |
+| --- | --- |
+| **Discord** | Вход в аккаунт, чат, картинки, голос и демонстрация экрана. |
+| **YouTube** | Видео и прямые эфиры. Evasion проверяет доступность воспроизведения. |
+| **Telegram** | Встроенный прокси включается одной кнопкой. Сообщения остаются зашифрованными. |
+| **Игры на Windows** | Добавьте файл игры или лаунчера. Обход работает, пока запущена выбранная игра. |
+| **Подбор подключения** | Если текущий способ перестаёт работать, Evasion проверяет другие. Discord и YouTube подключаются напрямую с вашим обычным IP. |
+| **Работа в фоне** | На Windows можно свернуть Evasion в трей и включить автозапуск вместе с системой. |
+| **Диагностика** | В одном разделе доступны проверка связи и журнал подключений с событиями сессии. |
+
+Evasion сам проверяет наличие новых версий. В Windows нажмите «Доступно обновление», чтобы установить новую версию.
 
 ## Как это работает
 
