@@ -10,6 +10,7 @@ import { loadOptions } from "../preferences";
 import { gameConnectionNote, gameStatus } from "../gameStatus";
 import { speedChart } from "../speedChart";
 import { telegramBadge } from "../telegramBadge";
+import { connectionLogs } from "../logFlow";
 import { DisconnectJournalPanel } from "../components/TelegramInsights";
 import { usePoll } from "../hooks";
 import { Badge, Button, Collapse, Disclosure, Feed, Glass, Icon, Note, PageHead, Row, Segmented, Ticker, Toggle, fileName, traffic, type Tone } from "../ui";
@@ -304,7 +305,9 @@ const serviceNames = [["telegram", "Telegram · протокол"], ["telegram-w
 const stageNames: Record<string, string> = { dns: "DNS", tcp: "TCP", tls: "TLS", https: "HTTPS", gateway: "WebSocket", mtproto: "MTProto" };
 const doctorTone = (s: string): DiagnosticTone => (s === "ok" ? "success" : s === "warn" || s === "fail" ? "warning" : "neutral");
 
-export function DiagnosticsScreen() {
+export function DiagnosticsScreen({ state }: { state: AppState | null }) {
+  const logs = useMemo(() => connectionLogs(state), [state]);
+  const hello = state?.engine.phase === "running" ? state.engine.hello : undefined;
   const [items, setItems] = useState<DiagnosticItem[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   const [checks, setChecks] = useState<DoctorCheck[] | null>(null);
@@ -318,6 +321,18 @@ export function DiagnosticsScreen() {
     <div className="page-body">
       <PageHead kicker="Если что-то не работает" title="Проверка связи" note="Проверим подключение и подскажем, что можно исправить."
         action={<Button kind="solid" icon="pulse" disabled={busy !== ""} onClick={() => void run("services", async () => { setServices(await api.runServiceDiagnostics()); await load(); })}>{busy === "services" ? "Проверяем…" : "Проверить связь"}</Button>} />
+      <Disclosure icon="pulse" title="Журнал подключения" note={logs.length ? `Событий: ${logs.length}` : "События и техническая информация"}>
+        {hello && (
+          <div className="hello">
+            <div><strong><Ticker value={hello.complete} /></strong><span>целых</span></div>
+            <div><strong><Ticker value={hello.assembled} /></strong><span>собрано</span></div>
+            <div className={hello.skipped > 0 ? "hello--warn" : ""}><strong><Ticker value={hello.skipped} /></strong><span>пропущено</span></div>
+            <div><strong><Ticker value={hello.retransmits} /></strong><span>повторов</span></div>
+          </div>
+        )}
+        {hello?.reasons && <Note>Причины пропусков: {hello.reasons}</Note>}
+        <Feed logs={logs} />
+      </Disclosure>
       <div className="grid2" aria-busy={busy === "services"}>
         {serviceNames.map(([id, name]) => {
           const r = services.find((s) => s.id === id);

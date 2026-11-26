@@ -1,3 +1,10 @@
+import type { AppState, LogLine } from "./api";
+
+export function connectionLogs(state: AppState | null): LogLine[] {
+  const entries = [...(state?.engine.logs ?? []), ...(state?.telegram?.logs ?? [])];
+  return entries.sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).slice(-400);
+}
+
 // The journal behind the session window keeps its place while the Home screen is away: switching tabs must not start it over.
 export type FlowRow = { id: number; text: string };
 export type Flow = { session: string; rows: FlowRow[]; cursor: number; at: number };

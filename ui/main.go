@@ -12,6 +12,13 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
+)
+
+const (
+	mainWindowWidth  = 900
+	mainWindowHeight = 700
+	mainCornerRadius = 24 // logical pixels
 )
 
 //go:embed all:frontend/dist
@@ -22,16 +29,20 @@ func main() {
 	app := NewApp()
 	err := wails.Run(&options.App{
 		Title:            "Evasion",
-		Width:            900,
-		Height:           700,
-		MinWidth:         700,
-		MinHeight:        540,
-		DisableResize:    false,
+		Width:            mainWindowWidth,
+		Height:           mainWindowHeight,
+		MinWidth:         mainWindowWidth,
+		MinHeight:        mainWindowHeight,
+		MaxWidth:         mainWindowWidth,
+		MaxHeight:        mainWindowHeight,
+		DisableResize:    true,
 		Frameless:        true,
 		StartHidden:      false,
 		BackgroundColour: &options.RGBA{R: 5, G: 5, B: 6, A: 255},
 		AssetServer:      &assetserver.Options{Assets: assets},
+		Windows:          &windows.Options{DisableFramelessWindowDecorations: true},
 		OnStartup:        app.startup,
+		OnDomReady:       configureWindowCorners,
 		OnShutdown:       app.shutdown,
 		OnBeforeClose:    app.beforeClose,
 		Bind:             []interface{}{app},
