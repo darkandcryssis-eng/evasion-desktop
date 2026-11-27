@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +18,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/packet"
+	"github.com/fitting-1c/evasion/internal/tunnel"
 )
 
 const (
@@ -27,12 +31,14 @@ const (
 	telegramCallWARPBadPeerTTL       = 10 * time.Minute
 	telegramCallWARPPortWait         = 1800 * time.Millisecond
 	telegramCallWARPBatch            = 10
-	telegramCallWARPJunk             = 4
 	telegramCallWARPStateFile        = "warp-telegram.json"
-	telegramCallWARPDeadPackets      = 8
-	telegramCallWARPDeadWindow       = 5 * time.Second
-	telegramCallWARPEarlyProbeAfter  = 1 * time.Second
-	telegramCallSocketIdle           = 90 * time.Second
+	// telegramCallWARPObfsFile хранит профиль маскировки WireGuard, на котором
+	// звонок последний раз получил ответ: следующий звонок начнётся с него.
+	telegramCallWARPObfsFile        = "warp-telegram-obfs.json"
+	telegramCallWARPDeadPackets     = 8
+	telegramCallWARPDeadWindow      = 5 * time.Second
+	telegramCallWARPEarlyProbeAfter = 1 * time.Second
+	telegramCallSocketIdle          = 90 * time.Second
 	// telegramCallWARPIdle releases the capture of all outbound UDP once no call
 	// packet has been relayed for this long, so games and Discord voice stop
 	// passing through userspace after the call ends.
@@ -44,6 +50,38 @@ const (
 	telegramCallExitInfoWait   = 6 * time.Second
 	telegramCallMaxTargets     = 12
 )
+
+// telegramCallDirectPrefixes — адреса, которые бессмысленно вести через WARP:
+// оверлейные VPN (Hamachi 25/8, Radmin VPN 26/8), CGNAT и Tailscale
+// (100.64/10), fake-ip TUN прокси (198.18/15) и служебные диапазоны. Telegram
+// предлагает их как P2P-кандидатов собеседника; из сети Cloudflare они
+// недостижимы, а напрямую (через адаптер VPN) могут работать.
+var telegramCallDirectPrefixes = mustParseCallPrefixes([]string{
+	"0.0.0.0/8",
+	"25.0.0.0/8",
+	"26.0.0.0/8",
+	"100.64.0.0/10",
+	"192.0.0.0/24",
+	"198.18.0.0/15",
+	"240.0.0.0/4",
+	"64:ff9b:1::/48",
+})
+
+// isTelegramCallInternetTarget сообщает, идёт ли пакет звонка в обычный
+// интернет (а не в LAN, оверлейный VPN или служебный диапазон): только такие
+// цели имеет смысл десинкать и вести через резерв WARP.
+func isTelegramCallInternetTarget(ip netip.Addr) bool {
+	if !isGlobalRoutableUDP(ip) {
+		return false
+	}
+	ip = ip.Unmap()
+	for _, p := range telegramCallDirectPrefixes {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
 
 // Необязательные возможности туннеля для диагностики звонка.
 type tgTunnelProber interface {
@@ -75,10 +113,12 @@ func (h *tgRelayHealth) sent(now time.Time) {
 	h.progress.pending++
 }
 
-func (h *tgRelayHealth) received() {
+// received отмечает ответ через туннель и возвращает общее число ответов.
+func (h *tgRelayHealth) received() int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.progress = tgRelayProgress{replies: h.progress.replies + 1}
+	return h.progress.replies
 }
 
 func (h *tgRelayHealth) snapshot() tgRelayProgress {
@@ -208,9 +248,16 @@ type telegramCallTunnel struct {
 	retryAt  time.Time
 	peer     string
 	badPeers map[string]time.Time
-	tn       tgUDPTunnel
-	handle   tgTunnelConn
-	sockets  map[tgLocalSocketKey]*tgSocketRelay
+	// profile — индекс текущего профиля маскировки в
+	// tunnel.WARPObfuscationProfiles, profileFails — сколько туннелей подряд
+	// умерло на маскировке без единого ответа.
+	profile      int
+	profileFails int
+	profileSaved string
+	stateDir     string
+	tn           tgUDPTunnel
+	handle       tgTunnelConn
+	sockets      map[tgLocalSocketKey]*tgSocketRelay
 
 	sendMu sync.Mutex
 	wg     sync.WaitGroup
@@ -225,14 +272,11 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 		logger = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &telegramCallTunnel{
-		supported: telegramCallTunnelSupported,
-		owner:     owner,
-		logger:    logger,
-		now:       time.Now,
-		openTunnel: func(c context.Context, exclude map[string]struct{}) (tgUDPTunnel, error) {
-			return openWARPTunnelFile(c, defaultStateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, telegramCallWARPJunk, true, exclude, logger)
-		},
+	t := &telegramCallTunnel{
+		supported:  telegramCallTunnelSupported,
+		owner:      owner,
+		logger:     logger,
+		now:        time.Now,
 		openHandle: openTelegramCallTunnelHandle,
 		idleAfter:  telegramCallWARPIdle,
 		watchEvery: telegramCallWARPWatchEvery,
@@ -240,7 +284,95 @@ func newTelegramCallTunnel(parent context.Context, owner telegramUDPOwner, logge
 		cancel:     cancel,
 		badPeers:   make(map[string]time.Time),
 		sockets:    make(map[tgLocalSocketKey]*tgSocketRelay),
+		stateDir:   defaultStateDir,
 	}
+	if name := loadTelegramWARPProfile(t.stateDir); name != "" {
+		if _, idx, ok := tunnel.WARPObfuscationProfile(name); ok {
+			t.profile, t.profileSaved = idx, name
+		}
+	}
+	t.openTunnel = func(c context.Context, exclude map[string]struct{}) (tgUDPTunnel, error) {
+		return openWARPTunnelFile(c, t.stateDir, telegramCallWARPStateFile, telegramCallWARPPortWait, telegramCallWARPBatch, t.currentObfuscation(), true, exclude, logger)
+	}
+	return t
+}
+
+func (t *telegramCallTunnel) currentObfuscation() tunnel.Obfuscation {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	profiles := tunnel.WARPObfuscationProfiles
+	return profiles[t.profile%len(profiles)]
+}
+
+// rotateProfileLocked переключает маскировку после туннеля, который поднялся
+// (или не поднялся), но не пропустил ни одного ответа. Так выглядит DPI,
+// распознающий WireGuard по началу потока: рукопожатие проходит, а через
+// секунду-две поток режется целиком, на любом адресе Cloudflare. Менять в
+// этом случае один только адрес пира бесполезно. Возвращает true, пока в
+// текущем круге остались неиспробованные профили.
+func (t *telegramCallTunnel) rotateProfileLocked(reason string) bool {
+	profiles := tunnel.WARPObfuscationProfiles
+	from := profiles[t.profile%len(profiles)].Name
+	t.profile = (t.profile + 1) % len(profiles)
+	t.profileFails++
+	to := profiles[t.profile].Name
+	untried := t.profileFails < len(profiles)
+	t.logger.Warn("звонок Telegram: провайдер режет WireGuard, смена маскировки WARP",
+		"было", from, "стало", to, "причина", reason, "неудач_подряд", t.profileFails)
+	if !untried && t.profileFails == len(profiles) {
+		t.logger.Warn("звонок Telegram: ни одна маскировка WARP не прошла DPI провайдера, перебор продолжится по кругу",
+			"профилей", len(profiles))
+	}
+	return untried
+}
+
+// markProfileGood запоминает маскировку, на которой через туннель пришёл
+// ответ, чтобы следующий звонок сразу начинался с неё.
+func (t *telegramCallTunnel) markProfileGood() {
+	t.mu.Lock()
+	profiles := tunnel.WARPObfuscationProfiles
+	name := profiles[t.profile%len(profiles)].Name
+	t.profileFails = 0
+	changed := name != t.profileSaved
+	if changed {
+		t.profileSaved = name
+	}
+	dir := t.stateDir
+	t.mu.Unlock()
+	if !changed {
+		return
+	}
+	t.logger.Info("звонок Telegram: маскировка WARP прошла, запомнена", "маскировка", name)
+	saveTelegramWARPProfile(dir, name)
+}
+
+type telegramWARPProfileState struct {
+	Profile string `json:"profile"`
+}
+
+func loadTelegramWARPProfile(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, telegramCallWARPObfsFile))
+	if err != nil {
+		return ""
+	}
+	var st telegramWARPProfileState
+	if json.Unmarshal(data, &st) != nil {
+		return ""
+	}
+	return st.Profile
+}
+
+// saveTelegramWARPProfile пишет профиль только в уже существующий каталог
+// состояния: движок создаёт его при старте, а тесты не должны мусорить.
+func saveTelegramWARPProfile(dir, name string) {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return
+	}
+	data, err := json.Marshal(telegramWARPProfileState{Profile: name})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, telegramCallWARPObfsFile), data, 0644)
 }
 
 // NotifyUnanswered starts the fallback WARP UDP relay once Telegram call
@@ -333,14 +465,21 @@ func (t *telegramCallTunnel) activate() {
 	if err != nil {
 		t.mu.Lock()
 		t.opening = false
-		if !t.closed {
-			t.failures++
-			t.retryAt = t.now().Add(telegramCallWARPRetry)
-		}
+		retry := telegramCallWARPRetry
 		closed := t.closed
+		if !closed && t.ctx.Err() == nil {
+			t.failures++
+			// Ни один адрес не прошёл рукопожатие или проверку UDP с этой
+			// маскировкой: следующая попытка идёт с другой, и быстро, пока
+			// в круге остались неиспробованные.
+			if t.rotateProfileLocked("туннель не поднялся") {
+				retry = telegramCallWARPStartupRetryWait
+			}
+			t.retryAt = t.now().Add(retry)
+		}
 		t.mu.Unlock()
 		if !closed && t.ctx.Err() == nil {
-			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не поднялся", "err", err, "повтор_через", telegramCallWARPRetry.String())
+			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не поднялся", "err", err, "повтор_через", retry.String())
 		}
 		return
 	}
@@ -551,6 +690,11 @@ func (t *telegramCallTunnel) watchRelay(ctx context.Context, handle tgTunnelConn
 				t.badPeers[peer] = now.Add(telegramCallWARPBadPeerTTL)
 			}
 			t.retryAt = now.Add(telegramCallWARPDeadRetry)
+			// Туннель прошёл проверку при подъёме, но ни разу не ответил и не
+			// пропустил контрольный UDP: поток режет DPI, а не конкретный пир.
+			if p.replies == 0 && canProbe && checkedGap && diagnosis == "контрольный UDP без ответа" {
+				t.rotateProfileLocked("туннель умер после рукопожатия")
+			}
 		}
 		t.mu.Unlock()
 		t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, смена адреса",
@@ -701,7 +845,9 @@ func (t *telegramCallTunnel) readSocket(handle tgTunnelConn, relay *tgSocketRela
 			Dir:      core.DirectionInbound,
 			Reinject: makeInboundReinject(reinject),
 		})
-		health.received()
+		if health.received() == 1 {
+			t.markProfileGood()
+		}
 		t.received.Add(1)
 		t.markRelay()
 		targets.add(src, 0, 1)
@@ -792,7 +938,7 @@ func isTelegramTunnelPacket(d packet.Dissection, buf []byte, owner telegramUDPOw
 	if !dstIP.IsValid() {
 		return netip.Addr{}, 0, netip.Addr{}, 0, nil, false
 	}
-	if !isGlobalRoutableUDP(dstIP) {
+	if !isTelegramCallInternetTarget(dstIP) {
 		return netip.Addr{}, 0, netip.Addr{}, 0, nil, false
 	}
 	if !isTelegramCallIP(dstIP) && (owner == nil || !owner.OwnsUDP(srcIP, srcPort)) {

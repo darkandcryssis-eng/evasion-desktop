@@ -15,6 +15,7 @@ import (
 	"github.com/fitting-1c/evasion/internal/capture"
 	"github.com/fitting-1c/evasion/internal/core"
 	"github.com/fitting-1c/evasion/internal/packet"
+	"github.com/fitting-1c/evasion/internal/tunnel"
 )
 
 func TestBuildInboundUDPPacketIPv4AndIPv6(t *testing.T) {
@@ -886,4 +887,141 @@ func testTelegramCallTunnelReleasesCaptureWhenCallEnds(t *testing.T, shutdownErr
 	handleMu.Unlock()
 	tt.NotifyUnanswered()
 	waitFor(func() bool { return openCalls.Load() == 2 && tt.Stats().Active }, "expected the next call to reopen WARP without a retry delay")
+}
+
+func TestTelegramCallInternetTargetSkipsOverlayNetworks(t *testing.T) {
+	for _, tc := range []struct {
+		ip   string
+		want bool
+	}{
+		{"91.108.9.89", true},
+		{"104.28.232.200", true},
+		{"149.154.167.50", true},
+		{"26.235.135.76", false}, // Radmin VPN
+		{"25.12.34.56", false},   // Hamachi
+		{"100.64.1.2", false},    // CGNAT / Tailscale
+		{"198.18.0.10", false},   // fake-ip TUN
+		{"192.168.1.5", false},
+		{"10.0.0.1", false},
+		{"127.0.0.1", false},
+		{"2001:67c:4e8::1", true},
+		{"fd00::1", false},
+	} {
+		if got := isTelegramCallInternetTarget(netip.MustParseAddr(tc.ip)); got != tc.want {
+			t.Errorf("isTelegramCallInternetTarget(%s) = %v, want %v", tc.ip, got, tc.want)
+		}
+	}
+}
+
+func TestTelegramTunnelPacketLeavesOverlayPeersDirect(t *testing.T) {
+	src := netip.MustParseAddrPort("192.168.1.50:54321")
+	owner := fakeTunnelOwner{ports: map[string]bool{src.String(): true}}
+	for _, tc := range []struct {
+		dst  string
+		want bool
+	}{
+		{"26.235.135.76:57888", false},
+		{"100.80.1.1:41641", false},
+		{"104.28.232.200:14358", true},
+	} {
+		raw, ok := buildInboundUDPPacket(src, netip.MustParseAddrPort(tc.dst), []byte("stun-req"))
+		if !ok {
+			t.Fatal("build packet")
+		}
+		d, err := packet.Dissect(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, _, _, got := isTelegramTunnelPacket(d, raw, owner); got != tc.want {
+			t.Errorf("relay %s via WARP = %v, want %v", tc.dst, got, tc.want)
+		}
+	}
+}
+
+func TestTelegramCallTunnelRotatesObfuscationWhenTunnelDiesAfterHandshake(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	var probes atomic.Int32
+	fakeTn := &relayHealthFakeTunnel{probe: func(context.Context) error {
+		// The probe right after the handshake passes; the runtime one does not,
+		// as when DPI cuts the WireGuard flow a second after it starts.
+		if probes.Add(1) == 1 {
+			return nil
+		}
+		return errors.New("no control reply")
+	}}
+	handle := newFakeTunnelHandle()
+	rotated := make(chan struct{}, 4)
+	logger := slog.New(slog.NewTextHandler(telegramRelayLogWriter(func(p []byte) (int, error) {
+		if bytes.Contains(p, []byte("смена маскировки WARP")) {
+			rotated <- struct{}{}
+		}
+		return len(p), nil
+	}), nil))
+	tt := newTelegramCallTunnel(t.Context(), fakeTunnelOwner{}, logger)
+	tt.stateDir = t.TempDir()
+	tt.profile, tt.profileSaved = 0, ""
+	tt.supported = true
+	tt.watchEvery = time.Millisecond
+	tt.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) { return fakeTn, nil }
+	tt.openHandle = func(string) (tgTunnelConn, error) { return handle, nil }
+	defer tt.Close()
+
+	first := tt.currentObfuscation().Name
+	tt.NotifyUnanswered()
+	deadline := time.Now().Add(time.Second)
+	for !tt.Stats().Active && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !tt.Stats().Active {
+		t.Fatal("expected tunnel to become active")
+	}
+	raw, _ := buildInboundUDPPacket(netip.MustParseAddrPort("192.168.1.50:54321"), netip.MustParseAddrPort("91.108.16.100:599"), []byte("call request"))
+	for range telegramCallWARPDeadPackets {
+		handle.recvCh <- capture.Packet{Data: raw, Dir: core.DirectionOutbound}
+	}
+	for tt.Stats().Sent < telegramCallWARPDeadPackets && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	clock.Add(int64(telegramCallWARPEarlyProbeAfter + 100*time.Millisecond))
+	select {
+	case <-rotated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dead tunnel did not switch the WireGuard obfuscation")
+	}
+	if got := tt.currentObfuscation().Name; got == first {
+		t.Fatalf("obfuscation stayed %q after a tunnel died", got)
+	}
+
+	// A reply through the tunnel makes the current profile the remembered one.
+	tt.markProfileGood()
+	if got := loadTelegramWARPProfile(tt.stateDir); got != tt.currentObfuscation().Name {
+		t.Fatalf("saved profile %q, want %q", got, tt.currentObfuscation().Name)
+	}
+	tt.mu.Lock()
+	fails := tt.profileFails
+	tt.mu.Unlock()
+	if fails != 0 {
+		t.Fatalf("profileFails = %d after success, want 0", fails)
+	}
+}
+
+func TestTelegramCallTunnelProfileRotationCycles(t *testing.T) {
+	tt := newTelegramCallTunnel(t.Context(), nil, nil)
+	tt.profile, tt.profileFails = 0, 0
+	n := len(tunnel.WARPObfuscationProfiles)
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	for i := 1; i < n; i++ {
+		if !tt.rotateProfileLocked("test") {
+			t.Fatalf("rotation %d reported no untried profiles", i)
+		}
+	}
+	if tt.rotateProfileLocked("test") {
+		t.Fatal("full cycle must report that every profile was tried")
+	}
+	if tt.profile != 0 {
+		t.Fatalf("rotation must wrap around, got profile %d", tt.profile)
+	}
 }

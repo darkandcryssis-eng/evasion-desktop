@@ -77,6 +77,9 @@ type Options struct {
 	// HandshakeJunk — сколько случайных UDP-пакетов (AmneziaWG Jc) отправить
 	// перед каждым WireGuard Handshake Initiation. 0 отключает маскировку.
 	HandshakeJunk int
+	// Obfuscation — полная маскировка начала потока (имитация протокола +
+	// мусор). Если задана, HandshakeJunk не используется.
+	Obfuscation Obfuscation
 	// VerifyUDP — после WireGuard-рукопожатия дополнительно проверить реальный
 	// двусторонний UDP-обмен внутри туннеля (DNS-запрос на 1.1.1.1:53), чтобы
 	// отсеивать endpoint-ы, на которых провайдер пропускает рукопожатие, но
@@ -149,7 +152,9 @@ func Open(opts Options) (*Tunnel, error) {
 	}
 
 	bind := conn.NewDefaultBind()
-	if opts.HandshakeJunk > 0 {
+	if opts.Obfuscation.enabled() {
+		bind = newObfuscatedBind(bind, opts.Obfuscation)
+	} else if opts.HandshakeJunk > 0 {
 		bind = newJunkBind(bind, opts.HandshakeJunk)
 	}
 	dev := device.NewDevice(tun, bind, wgLogger)

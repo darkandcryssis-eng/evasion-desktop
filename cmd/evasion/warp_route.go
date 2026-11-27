@@ -271,10 +271,10 @@ func warpWorthy(err error) bool {
 // openWARP регистрирует устройство при первом обращении, подбирает порт, на
 // котором провайдер пропускает WARP, и проверяет туннель настоящим соединением.
 func openWARP(ctx context.Context, dir string, logger *slog.Logger) (warpDialer, error) {
-	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, 1, 0, false, nil, logger)
+	return openWARPTunnelFile(ctx, dir, warpStateFile, warpPortWait, 1, tunnel.Obfuscation{}, false, nil, logger)
 }
 
-func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, parallelBatch, handshakeJunk int, multiHost bool, exclude map[string]struct{}, logger *slog.Logger) (*tunnel.Tunnel, error) {
+func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait time.Duration, parallelBatch int, obfs tunnel.Obfuscation, multiHost bool, exclude map[string]struct{}, logger *slog.Logger) (*tunnel.Tunnel, error) {
 	path := filepath.Join(dir, stateFile)
 	acc, err := loadWARPAccount(path)
 	if err != nil {
@@ -302,11 +302,11 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 	}
 	started := time.Now()
 	quiet := slog.New(slog.DiscardHandler)
-	opts := tunnel.Options{Account: acc, Logger: quiet, HandshakeJunk: handshakeJunk, VerifyUDP: multiHost}
+	opts := tunnel.Options{Account: acc, Logger: quiet, Obfuscation: obfs, VerifyUDP: multiHost}
 	var tn *tunnel.Tunnel
 	if multiHost {
 		endpoints := warpMultiHostEndpoints(acc.PeerEndpoint, exclude)
-		logger.Info("резерв WARP: перебор адресов", "адресов", len(endpoints), "параллельно", max(1, parallelBatch), "мусор", handshakeJunk, "исключено", len(exclude))
+		logger.Info("резерв WARP: перебор адресов", "адресов", len(endpoints), "параллельно", max(1, parallelBatch), "маскировка", obfuscationLabel(obfs), "мусор", obfs.Junk, "исключено", len(exclude))
 		tn, err = selectTelegramWARP(ctx, endpoints, parallelBatch, func(ctx context.Context, candidates []string, batch int) (*tunnel.Tunnel, error) {
 			if len(candidates) == 1 {
 				logger.Info("резерв WARP: отдельное подключение для звонка", "пир", candidates[0])
@@ -338,8 +338,18 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 			logger.Warn("резерв WARP: рабочий порт не сохранён", "err", err)
 		}
 	}
-	logger.Info("резерв WARP: туннель готов", "пир", tn.Endpoint(), "подъём_мс", time.Since(started).Milliseconds())
+	logger.Info("резерв WARP: туннель готов", "пир", tn.Endpoint(), "маскировка", obfuscationLabel(obfs), "подъём_мс", time.Since(started).Milliseconds())
 	return tn, nil
+}
+
+func obfuscationLabel(o tunnel.Obfuscation) string {
+	if o.Name != "" {
+		return o.Name
+	}
+	if o.Junk > 0 {
+		return "junk"
+	}
+	return "нет"
 }
 
 type warpCandidateSession interface {

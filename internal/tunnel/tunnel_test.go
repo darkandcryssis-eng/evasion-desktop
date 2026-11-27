@@ -11,6 +11,7 @@ import (
 
 	"golang.zx2c4.com/wireguard/conn"
 
+	"github.com/fitting-1c/evasion/internal/quic"
 	"github.com/fitting-1c/evasion/internal/warp"
 )
 
@@ -319,5 +320,49 @@ func TestJunkBindPrependsJunkOnlyOnHandshakeInitiation(t *testing.T) {
 	}
 	if len(rec.sent[4]) != 148 || rec.sent[4][0] != 1 {
 		t.Fatalf("last packet must be the original 148B handshake initiation")
+	}
+}
+
+func TestObfuscationProfilesEmitMimicJunkThenInitiation(t *testing.T) {
+	if p := WARPObfuscationProfiles[0]; p.Mimic != MimicNone || p.Junk != 4 {
+		t.Fatalf("first profile must keep the previous behaviour (4 junk, no mimic), got %+v", p)
+	}
+	for _, p := range WARPObfuscationProfiles {
+		rec := &recordingBind{}
+		b := newObfuscatedBind(rec, p)
+		initPkt := make([]byte, 148)
+		initPkt[0] = 1
+		if err := b.Send([][]byte{initPkt}, nil); err != nil {
+			t.Fatalf("%s: Send: %v", p.Name, err)
+		}
+		want := p.Junk + 1
+		if p.Mimic != MimicNone {
+			want++
+		}
+		if len(rec.sent) != want {
+			t.Fatalf("%s: sent %d packets, want %d", p.Name, len(rec.sent), want)
+		}
+		if last := rec.sent[len(rec.sent)-1]; len(last) != 148 || last[0] != 1 {
+			t.Fatalf("%s: handshake initiation must go last", p.Name)
+		}
+		for i, pkt := range rec.sent[:len(rec.sent)-1] {
+			if pkt[0] >= 1 && pkt[0] <= 4 {
+				t.Fatalf("%s: prelude packet %d starts with WireGuard type %d", p.Name, i, pkt[0])
+			}
+		}
+		switch p.Mimic {
+		case MimicQUIC:
+			sni, ok := quic.ExtractSNI(rec.sent[0])
+			if !ok || sni != p.MimicSNI || len(rec.sent[0]) != 1200 {
+				t.Fatalf("%s: QUIC mimic SNI=%q ok=%v len=%d", p.Name, sni, ok, len(rec.sent[0]))
+			}
+		case MimicDNS:
+			if q := rec.sent[0]; len(q) < 17 || q[5] != 1 {
+				t.Fatalf("%s: bad DNS mimic %x", p.Name, q)
+			}
+		}
+		if _, idx, ok := WARPObfuscationProfile(p.Name); !ok || WARPObfuscationProfiles[idx].Name != p.Name {
+			t.Fatalf("profile %q not found by name", p.Name)
+		}
 	}
 }

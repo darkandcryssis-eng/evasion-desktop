@@ -187,6 +187,12 @@ func (e *telegramCallEngine) Classify(buf []byte, d packet.Dissection, payload [
 	srcIP := packetSrcIP(buf, d)
 	dstIP := packetDstIP(buf, d)
 	dstPort := u.DstPort()
+	// LAN, оверлейные VPN (Radmin, Hamachi), CGNAT: провайдерского DPI на пути
+	// нет, decoy туда бесполезны, а молчание таких P2P-кандидатов не повод
+	// поднимать резерв WARP.
+	if !isTelegramCallInternetTarget(dstIP) {
+		return tgCallNone
+	}
 	ownedByTG := func() bool {
 		return isTelegramCallIP(dstIP) || (e.owner != nil && e.owner.OwnsUDP(srcIP, u.SrcPort()))
 	}
