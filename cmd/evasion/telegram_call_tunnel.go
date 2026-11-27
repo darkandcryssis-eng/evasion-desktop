@@ -53,6 +53,11 @@ type tgTunnelExitInfo interface {
 	ExitInfo(context.Context) (string, error)
 }
 
+type tgRelayHealthCheck struct {
+	replies int64
+	healthy bool
+}
+
 type tgTargetCount struct {
 	tx, rx int64
 }
@@ -383,6 +388,11 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 	var stalledSince time.Time
 	targets := &tgTargetStats{}
 	sentBase, recvBase := t.sent.Load(), t.received.Load()
+	lastReplies := recvBase
+	var graceUsed bool
+	var check chan tgRelayHealthCheck
+	checkCtx, cancelCheck := context.WithCancel(t.ctx)
+	defer cancelCheck()
 	lastReport := t.now()
 	var reportedTx int64
 	report := func(msg string) {
@@ -439,7 +449,39 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 		if t.now().Sub(lastReport) >= telegramCallReportEvery {
 			report("звонок Telegram через WARP: сводка")
 		}
+		replies := t.received.Load()
+		if replies != lastReplies {
+			lastReplies, graceUsed = replies, false
+		}
 		if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
+			if t.unansweredTx.Load() < telegramCallWARPDeadPackets {
+				continue
+			}
+			if prober, ok := tn.(tgTunnelProber); ok && replies > recvBase && !graceUsed {
+				// Keep draining WinDivert while the probe runs: it carries the tunnel's own UDP.
+				if check == nil {
+					result := make(chan tgRelayHealthCheck, 1)
+					check = result
+					t.wg.Go(func() {
+						result <- tgRelayHealthCheck{replies: replies, healthy: probeTelegramRelay(checkCtx, prober, telegramCallProbeWait) == nil}
+					})
+				}
+				select {
+				case result := <-check:
+					check = nil
+					if t.received.Load() != result.replies || t.unansweredTx.Load() < telegramCallWARPDeadPackets {
+						continue
+					}
+					if result.healthy {
+						graceUsed = true
+						t.unansweredTx.Store(0)
+						t.logger.Info("звонок Telegram: резерв WARP отвечает, ждём ответа звонка")
+						continue
+					}
+				default:
+					continue
+				}
+			}
 			peer := tn.Endpoint()
 			t.mu.Lock()
 			if !t.closed {

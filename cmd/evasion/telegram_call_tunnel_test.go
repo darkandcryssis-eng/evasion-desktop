@@ -214,6 +214,7 @@ func (f *fakeUDPTunnel) Close() error {
 type fakeTunnelHandle struct {
 	recvCh      chan capture.Packet
 	sendCh      chan capture.Packet
+	closed      chan struct{}
 	once        sync.Once
 	shutdownErr error
 }
@@ -222,15 +223,17 @@ func newFakeTunnelHandle() *fakeTunnelHandle {
 	return &fakeTunnelHandle{
 		recvCh: make(chan capture.Packet, 16),
 		sendCh: make(chan capture.Packet, 16),
+		closed: make(chan struct{}),
 	}
 }
 
 func (h *fakeTunnelHandle) Recv() (capture.Packet, error) {
-	pkt, ok := <-h.recvCh
-	if !ok {
+	select {
+	case <-h.closed:
 		return capture.Packet{}, errors.New("closed")
+	case pkt := <-h.recvCh:
+		return pkt, nil
 	}
-	return pkt, nil
 }
 
 func (h *fakeTunnelHandle) Send(pkt capture.Packet) error {
@@ -242,12 +245,11 @@ func (h *fakeTunnelHandle) ShutdownReceive() error {
 	if h.shutdownErr != nil {
 		return h.shutdownErr
 	}
-	h.once.Do(func() { close(h.recvCh) })
-	return nil
+	return h.Close()
 }
 
 func (h *fakeTunnelHandle) Close() error {
-	h.once.Do(func() { close(h.recvCh) })
+	h.once.Do(func() { close(h.closed) })
 	return nil
 }
 
@@ -605,6 +607,137 @@ func TestTelegramCallTunnelReleasesDeadTunnel(t *testing.T) {
 	exclMu.Unlock()
 	if !excluded {
 		t.Fatalf("expected dead peer %q to be excluded on failover, got %v", fakeTn.Endpoint(), lastExcl)
+	}
+}
+
+type relayHealthFakeTunnel struct {
+	fakeUDPTunnel
+	probe func(context.Context) error
+}
+
+func (f *relayHealthFakeTunnel) ProbeUDP(ctx context.Context) error { return f.probe(ctx) }
+
+func TestTelegramCallTunnelChecksHealthBeforeReplacingPreviouslyResponsivePeer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		probeErr error
+	}{
+		{name: "healthy path gets a bounded grace period"},
+		{name: "failed health check rotates", probeErr: errors.New("no control reply")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var clock atomic.Int64
+			clock.Store(time.Now().UnixNano())
+			probeStarted, completeProbe := make(chan struct{}), make(chan struct{})
+			var probes atomic.Int32
+			fakeTn := &relayHealthFakeTunnel{probe: func(ctx context.Context) error {
+				switch probes.Add(1) {
+				case 1:
+					return nil
+				case 2:
+					close(probeStarted)
+					select {
+					case <-completeProbe:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				return tc.probeErr
+			}}
+			handle := newFakeTunnelHandle()
+			tt := newTelegramCallTunnel(t.Context(), fakeTunnelOwner{}, nil)
+			tt.supported = true
+			tt.now = func() time.Time { return time.Unix(0, clock.Load()) }
+			tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) { return fakeTn, nil }
+			tt.openHandle = func() (tgTunnelConn, error) { return handle, nil }
+			defer tt.Close()
+			waitFor := func(ready func() bool) {
+				t.Helper()
+				deadline := time.Now().Add(time.Second)
+				for !ready() {
+					if time.Now().After(deadline) {
+						t.Fatal("timed out waiting for relay")
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
+			tt.NotifyUnanswered()
+			src := netip.MustParseAddrPort("192.168.1.50:54321")
+			dst := netip.MustParseAddrPort("91.108.16.100:599")
+			raw, _ := buildInboundUDPPacket(src, dst, []byte("call request"))
+			pkt := capture.Packet{Data: raw, Dir: core.DirectionOutbound}
+			handle.recvCh <- pkt
+			waitFor(func() bool { return tt.unansweredTx.Load() == 1 })
+			fakeTn.mu.Lock()
+			pc := fakeTn.conns[0]
+			fakeTn.mu.Unlock()
+			pc.inCh <- struct {
+				data []byte
+				addr net.Addr
+			}{[]byte("call response"), net.UDPAddrFromAddrPort(dst)}
+			waitFor(func() bool { return tt.Stats().Received == 1 })
+			<-handle.sendCh
+			handle.recvCh <- pkt
+			waitFor(func() bool { return tt.unansweredTx.Load() == 1 })
+			clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
+			for range telegramCallWARPDeadPackets - 1 {
+				handle.recvCh <- pkt
+			}
+			select {
+			case <-probeStarted:
+			case <-time.After(time.Second):
+				t.Fatal("no runtime UDP probe was started")
+			}
+			foreign, _ := buildInboundUDPPacket(src, netip.MustParseAddrPort("8.8.4.4:40000"), []byte("other UDP"))
+			handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}
+			select {
+			case out := <-handle.sendCh:
+				if !bytes.Equal(out.Data, foreign) {
+					t.Fatal("foreign UDP was changed")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("UDP stopped flowing during the health check")
+			}
+			close(completeProbe)
+			waitFor(func() bool {
+				if !tt.Stats().Active || tt.unansweredTx.Load() == 0 {
+					return true
+				}
+				select {
+				case handle.recvCh <- pkt:
+				case <-handle.closed:
+					return false
+				}
+				select {
+				case handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}:
+				case <-handle.closed:
+					return false
+				}
+				select {
+				case <-handle.sendCh:
+				case <-handle.closed:
+				case <-time.After(time.Second):
+					t.Fatal("relay did not finish processing packets")
+				}
+				return false
+			})
+			if tc.probeErr != nil {
+				if tt.Stats().Active {
+					t.Fatal("failed relay remained active")
+				}
+			} else {
+				if st := tt.Stats(); !st.Active || st.Sockets != 1 || probes.Load() != 2 {
+					t.Fatalf("healthy relay discarded its active socket: %+v", st)
+				}
+				handle.recvCh <- pkt
+				waitFor(func() bool { return tt.unansweredTx.Load() > 0 })
+				clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
+				for range telegramCallWARPDeadPackets {
+					handle.recvCh <- pkt
+				}
+				waitFor(func() bool { return !tt.Stats().Active })
+			}
+		})
 	}
 }
 

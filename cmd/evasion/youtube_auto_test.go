@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -66,6 +67,33 @@ func TestYouTubeProbeDistinguishesDNSFromOtherDialErrors(t *testing.T) {
 		check := a.p.probe(t.Context(), "active", "site", "https://www.youtube.com/generate_204", false)
 		if check.OK || check.Stage != tt.stage || check.DNS != tt.dns {
 			t.Errorf("dial error %v: got %+v, want %s / %s", tt.err, check, tt.stage, tt.dns)
+		}
+	}
+}
+
+func TestYouTubeProbeClassifiesDeadlineAtCurrentStage(t *testing.T) {
+	for _, resolve := range []bool{false, true} {
+		a, _ := recoveryFixture(t)
+		a.p.dial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			trace := httptrace.ContextClientTrace(ctx)
+			if trace.DNSStart != nil {
+				trace.DNSStart(httptrace.DNSStartInfo{Host: "www.youtube.com"})
+			}
+			if resolve {
+				if trace.DNSDone != nil {
+					trace.DNSDone(httptrace.DNSDoneInfo{})
+				}
+				trace.ConnectStart("tcp", "192.0.2.1:443")
+			}
+			return nil, context.DeadlineExceeded
+		}
+		check := a.p.probe(t.Context(), "active", "site", "https://www.youtube.com/generate_204", false)
+		stage, dns := "dns", "timeout"
+		if resolve {
+			stage, dns = "tcp", ""
+		}
+		if check.Stage != stage || check.DNS != dns {
+			t.Errorf("DNS completed=%t: got %+v; want stage=%s dns=%s", resolve, check, stage, dns)
 		}
 	}
 }

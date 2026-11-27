@@ -246,11 +246,21 @@ func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short 
 	defer tr.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	trace := &httptrace.ClientTrace{ConnectStart: func(string, string) { stage("tcp") }, TLSHandshakeStart: func() { stage("tls") }, TLSHandshakeDone: func(_ tls.ConnectionState, e error) {
-		if e == nil {
-			stage("http")
-		}
-	}}
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) { stage("dns") },
+		DNSDone: func(d httptrace.DNSDoneInfo) {
+			if d.Err == nil {
+				stage("tcp")
+			}
+		},
+		ConnectStart:      func(string, string) { stage("tcp") },
+		TLSHandshakeStart: func() { stage("tls") },
+		TLSHandshakeDone: func(_ tls.ConnectionState, e error) {
+			if e == nil {
+				stage("http")
+			}
+		},
+	}
 	req, e := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), "GET", url, nil)
 	if e != nil {
 		return r
@@ -276,6 +286,8 @@ func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short 
 			default:
 				r.DNS = "error"
 			}
+		} else if r.Stage == "dns" && errors.Is(e, context.DeadlineExceeded) {
+			r.DNS = "timeout"
 		}
 		r.MS = time.Since(start).Milliseconds()
 		return r
