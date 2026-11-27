@@ -588,6 +588,16 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 	tgEngine := newTelegramCallEngine(owner, newTelegramReflectorTracker())
 	tgTunnel := newTelegramCallTunnel(ctx, owner, logger)
 	defer tgTunnel.Close()
+	diagnosticsCtx, stopDiagnostics := context.WithCancel(ctx)
+	diagnosticsDone := make(chan struct{})
+	go func() {
+		defer close(diagnosticsDone)
+		logTelegramCallDiagnostics(diagnosticsCtx, tgEngine, tgTunnel, logger)
+	}()
+	defer func() {
+		stopDiagnostics()
+		<-diagnosticsDone
+	}()
 	logStop := func() {
 		tg := tgEngine.Stats()
 		ws := tgTunnel.Stats()
@@ -686,6 +696,31 @@ func runVoiceDesync(ctx context.Context, conn quicConn, fool discordvoice.Foolin
 		if ctx.Err() != nil {
 			logStop()
 			return
+		}
+	}
+}
+
+// Publish changes even if the call stalls and no more packets arrive.
+func logTelegramCallDiagnostics(ctx context.Context, direct *telegramCallEngine, tunnel *telegramCallTunnel, logger *slog.Logger) {
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+	var lastTG telegramCallStats
+	var lastWARP tgCallTunnelStats
+	first := true
+	for {
+		tg, warp := direct.Stats(), tunnel.Stats()
+		if first || tg != lastTG || warp != lastWARP {
+			logger.Info("telegram_call_diagnostics",
+				"stun", tg.STUN, "dtls", tg.DTLS, "legacy", tg.Legacy, "directReplies", tg.Replies,
+				"relayOpening", warp.Opening, "relayActive", warp.Active,
+				"relayAttempts", warp.Attempts, "relayFailures", warp.Failures,
+				"relayTx", warp.Sent, "relayRx", warp.Received)
+			lastTG, lastWARP, first = tg, warp, false
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
 		}
 	}
 }

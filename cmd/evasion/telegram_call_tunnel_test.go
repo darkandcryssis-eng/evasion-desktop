@@ -120,9 +120,10 @@ func TestIsTelegramTunnelPacketFiltering(t *testing.T) {
 }
 
 type fakePacketConn struct {
-	mu      sync.Mutex
-	closed  bool
-	written []struct {
+	mu       sync.Mutex
+	closed   bool
+	writeErr error
+	written  []struct {
 		data []byte
 		addr net.Addr
 	}
@@ -156,6 +157,9 @@ func (f *fakePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if f.closed {
 		return 0, net.ErrClosed
 	}
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
 	cp := append([]byte(nil), p...)
 	f.written = append(f.written, struct {
 		data []byte
@@ -182,14 +186,18 @@ func (f *fakePacketConn) SetReadDeadline(time.Time) error  { return nil }
 func (f *fakePacketConn) SetWriteDeadline(time.Time) error { return nil }
 
 type fakeUDPTunnel struct {
-	mu     sync.Mutex
-	conns  []*fakePacketConn
-	closed bool
+	mu            sync.Mutex
+	conns         []*fakePacketConn
+	closed        bool
+	firstWriteErr error
 }
 
 func (f *fakeUDPTunnel) ListenUDP(bool) (net.PacketConn, error) {
 	pc := newFakePacketConn()
 	f.mu.Lock()
+	if len(f.conns) == 0 {
+		pc.writeErr = f.firstWriteErr
+	}
 	f.conns = append(f.conns, pc)
 	f.mu.Unlock()
 	return pc, nil
@@ -204,9 +212,10 @@ func (f *fakeUDPTunnel) Close() error {
 }
 
 type fakeTunnelHandle struct {
-	recvCh chan capture.Packet
-	sendCh chan capture.Packet
-	once   sync.Once
+	recvCh      chan capture.Packet
+	sendCh      chan capture.Packet
+	once        sync.Once
+	shutdownErr error
 }
 
 func newFakeTunnelHandle() *fakeTunnelHandle {
@@ -230,6 +239,9 @@ func (h *fakeTunnelHandle) Send(pkt capture.Packet) error {
 }
 
 func (h *fakeTunnelHandle) ShutdownReceive() error {
+	if h.shutdownErr != nil {
+		return h.shutdownErr
+	}
 	h.once.Do(func() { close(h.recvCh) })
 	return nil
 }
@@ -343,6 +355,135 @@ func TestTelegramCallTunnelRelaysAndPassesThrough(t *testing.T) {
 	tt.Close()
 	if tt.Stats().Active {
 		t.Fatal("expected tunnel to be inactive after Close")
+	}
+}
+
+func TestTelegramCallTunnelPreservesPacketOnFailedWrite(t *testing.T) {
+	fakeTn := &fakeUDPTunnel{firstWriteErr: errors.New("relay write rejected")}
+	handle := newFakeTunnelHandle()
+	tt := newTelegramCallTunnel(t.Context(), fakeTunnelOwner{}, nil)
+	tt.supported = true
+	tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) { return fakeTn, nil }
+	tt.openHandle = func() (tgTunnelConn, error) { return handle, nil }
+	defer tt.Close()
+	tt.NotifyUnanswered()
+
+	src := netip.MustParseAddrPort("192.168.1.50:54321")
+	dst := netip.MustParseAddrPort("91.108.16.100:599")
+	raw, _ := buildInboundUDPPacket(src, dst, []byte("call request"))
+	pkt := capture.Packet{Data: raw, Dir: core.DirectionOutbound}
+	handle.recvCh <- pkt
+	select {
+	case out := <-handle.sendCh:
+		if out.Dir != pkt.Dir || !bytes.Equal(out.Data, pkt.Data) {
+			t.Fatal("the failed datagram was changed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the original datagram was lost after a failed write")
+	}
+	if st := tt.Stats(); st.Sent != 0 || st.Sockets != 0 {
+		t.Fatalf("failed relay write counted or its socket leaked: %+v", st)
+	}
+
+	handle.recvCh <- pkt
+	// The following unrelated packet arrives on sendCh after the retry was processed.
+	foreign, _ := buildInboundUDPPacket(src, netip.MustParseAddrPort("8.8.4.4:40000"), []byte("other UDP"))
+	handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}
+	select {
+	case out := <-handle.sendCh:
+		if !bytes.Equal(out.Data, foreign) {
+			t.Fatal("the successfully relayed datagram was also sent directly")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unrelated UDP stopped after the write failure")
+	}
+	if st := tt.Stats(); st.Sent != 1 || st.Sockets != 1 {
+		t.Fatalf("the next datagram did not use a fresh relay socket: %+v", st)
+	}
+}
+
+type checkedFakeUDPTunnel struct {
+	fakeUDPTunnel
+	endpoint string
+	probeErr error
+	probes   atomic.Int32
+}
+
+func (f *checkedFakeUDPTunnel) Endpoint() string { return f.endpoint }
+
+func (f *checkedFakeUDPTunnel) ProbeUDP(ctx context.Context) error {
+	f.probes.Add(1)
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) <= telegramCallProbeWait {
+		return errors.New("startup probe did not receive the normal readiness budget")
+	}
+	return f.probeErr
+}
+
+func TestTelegramCallTunnelRechecksUDPBeforeCapture(t *testing.T) {
+	probeTimeout := errors.New("no UDP response after selecting peer")
+	for _, tc := range []struct {
+		name      string
+		firstErr  error
+		secondErr error
+		wantOpens int32
+		active    bool
+	}{
+		{name: "first peer still responds", wantOpens: 1, active: true},
+		{name: "first peer stopped responding", firstErr: probeTimeout, wantOpens: 2, active: true},
+		{name: "both peers stopped responding", firstErr: probeTimeout, secondErr: probeTimeout, wantOpens: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := &checkedFakeUDPTunnel{endpoint: "192.0.2.1:2408", probeErr: tc.firstErr}
+			second := &checkedFakeUDPTunnel{endpoint: "192.0.2.2:2408", probeErr: tc.secondErr}
+			handle := newFakeTunnelHandle()
+			tt := newTelegramCallTunnel(t.Context(), fakeTunnelOwner{}, nil)
+			tt.supported = true
+			var opens, captures atomic.Int32
+			var firstClosedBeforeRetry atomic.Bool
+			tt.openTunnel = func(ctx context.Context, deprioritized map[string]struct{}) (tgUDPTunnel, error) {
+				switch opens.Add(1) {
+				case 1:
+					return first, nil
+				case 2:
+					_, deprioritizeFirst := deprioritized[first.Endpoint()]
+					_, retryBounded := ctx.Deadline()
+					first.mu.Lock()
+					firstClosedBeforeRetry.Store(first.closed && deprioritizeFirst && retryBounded)
+					first.mu.Unlock()
+					return second, nil
+				default:
+					return nil, errors.New("too many attempts")
+				}
+			}
+			tt.openHandle = func() (tgTunnelConn, error) {
+				captures.Add(1)
+				if tc.firstErr == nil && first.probes.Load() != 1 || tc.firstErr != nil && second.probes.Load() != 1 {
+					return nil, errors.New("capture started before the chosen peer was verified")
+				}
+				return handle, nil
+			}
+			defer tt.Close()
+			tt.NotifyUnanswered()
+			deadline := time.Now().Add(time.Second)
+			for tt.Stats().Opening && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			st := tt.Stats()
+			if st.Opening || st.Active != tc.active || opens.Load() != tc.wantOpens || first.probes.Load() != 1 {
+				t.Fatalf("unexpected relay startup: stats=%+v opens=%d, first probes=%d", st, opens.Load(), first.probes.Load())
+			}
+			if tc.firstErr != nil && (!firstClosedBeforeRetry.Load() || second.probes.Load() != 1) {
+				t.Fatal("the first peer was not closed and deprioritized before a bounded retry")
+			}
+			if !tc.active {
+				second.mu.Lock()
+				secondClosed := second.closed
+				second.mu.Unlock()
+				if !secondClosed || captures.Load() != 0 || st.Failures != 1 {
+					t.Fatalf("an unhealthy relay intercepted packets or leaked: %+v", st)
+				}
+			}
+		})
 	}
 }
 
@@ -487,12 +628,23 @@ func TestWarpMultiHostEndpointsExclude(t *testing.T) {
 }
 
 func TestTelegramCallTunnelReleasesCaptureWhenCallEnds(t *testing.T) {
+	t.Run("graceful receive shutdown", func(t *testing.T) {
+		testTelegramCallTunnelReleasesCaptureWhenCallEnds(t, nil)
+	})
+	t.Run("failed receive shutdown", func(t *testing.T) {
+		testTelegramCallTunnelReleasesCaptureWhenCallEnds(t, errors.New("receive shutdown failed"))
+	})
+}
+
+func testTelegramCallTunnelReleasesCaptureWhenCallEnds(t *testing.T, shutdownErr error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	fakeTn := &fakeUDPTunnel{}
 	var handleMu sync.Mutex
 	fakeHandle := newFakeTunnelHandle()
+	fakeHandle.shutdownErr = shutdownErr
 
 	var nowMu sync.Mutex
 	curNow := time.Now()

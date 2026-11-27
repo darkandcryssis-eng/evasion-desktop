@@ -147,3 +147,25 @@ func TestReportContext(t *testing.T) {
 		t.Errorf("конфликты: %+v", c)
 	}
 }
+
+func TestTelegramCallDiagnosticsAreSeparateFromProxyAndPrivate(t *testing.T) {
+	engine := &engineManager{phase: phaseRunning}
+	engine.consumeLogLine(`{"time":"2026-11-27T02:07:20Z","level":"INFO","msg":"telegram_call_diagnostics","stun":5,"dtls":2,"legacy":-1,"directReplies":0,"relayActive":true,"relayAttempts":2,"relayFailures":1,"relayTx":7,"relayRx":2,"peer":"203.0.113.9:443","error":"PRIVATE"}`)
+	state := engine.snapshot()
+	report := buildSafeReport(state.Phase, TelegramState{}, nil, nil)
+	report.TelegramCalls = state.telegramCalls
+	stats := report.TelegramCalls
+	if stats == nil || stats.STUN != 5 || stats.DTLS != 2 || stats.Legacy != 0 || stats.DirectReplies != 0 ||
+		stats.RelayAttempts != 2 || stats.RelayFailures != 1 || !stats.RelayActive || stats.RelayTX != 7 || stats.RelayRX != 2 ||
+		stats.LastChange != "2026-11-27T02:07:20Z" || report.Telegram.Running {
+		t.Fatalf("unexpected Telegram call report: %+v", stats)
+	}
+	b, err := json.Marshal(report)
+	if err != nil || strings.Contains(string(b), "203.0.113.9") || strings.Contains(string(b), "PRIVATE") || len(state.Logs) != 0 {
+		t.Fatalf("private telemetry leaked into report or journal: %s, %v", b, err)
+	}
+	engine.phase = phaseStopped
+	if engine.snapshot().telegramCalls != nil {
+		t.Fatal("stopped engine reported stale call statistics")
+	}
+}

@@ -55,3 +55,14 @@ func TestYouTubeHealthRequiresObservedVideoServerForHealthyStatus(t *testing.T) 
 		t.Fatal("actual video check was lost", v)
 	}
 }
+
+func TestYouTubeHealthKeepsOnlyKnownDNSReasons(t *testing.T) {
+	v := sanitizeYouTubeHealth(YouTubeHealthView{Phase: "dns_error", Checks: []YouTubeCheck{
+		{Target: "site", Stage: "dns", DNS: "not_found"},
+		{Target: "image", Stage: "dns", DNS: "private server address"},
+		{Target: "media_transport", Stage: "tls", DNS: "timeout"},
+	}})
+	if v.Phase != "dns_error" || v.Checks[0].DNS != "not_found" || v.Checks[1].DNS != "" || v.Checks[2].DNS != "" {
+		t.Fatalf("Unexpected DNS diagnostics: %+v", v)
+	}
+}

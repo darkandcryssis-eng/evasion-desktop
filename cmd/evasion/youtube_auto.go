@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,6 +35,7 @@ type youtubeCheck struct {
 	OK     bool   `json:"ok"`
 	Code   int    `json:"code"`
 	MS     int64  `json:"ms"`
+	DNS    string `json:"dns,omitempty"`
 }
 type youtubeHealth struct {
 	CheckedAt     time.Time      `json:"checkedAt"`
@@ -216,12 +218,12 @@ func (p *youtubeMux) lease(c net.Conn, name string) net.Conn {
 // Each probe registers its connected socket before net/http sends ClientHello.
 // Candidate selection is limited to that exact endpoint; user flows keep active.
 func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short bool) youtubeCheck {
-	r := youtubeCheck{Target: target, Stage: "dns"}
+	r := youtubeCheck{Target: target, Stage: "tcp"}
 	if target == "site_page" {
 		r.Target = "site"
 	}
 	var traceMu sync.Mutex
-	phase := "dns"
+	phase := "tcp"
 	stage := func(s string) { traceMu.Lock(); phase = s; traceMu.Unlock() }
 	tc := &tls.Config{MinVersion: tls.VersionTLS12}
 	if short {
@@ -244,11 +246,7 @@ func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short 
 	defer tr.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	trace := &httptrace.ClientTrace{DNSDone: func(d httptrace.DNSDoneInfo) {
-		if d.Err == nil {
-			stage("tcp")
-		}
-	}, ConnectStart: func(string, string) { stage("tcp") }, TLSHandshakeStart: func() { stage("tls") }, TLSHandshakeDone: func(_ tls.ConnectionState, e error) {
+	trace := &httptrace.ClientTrace{ConnectStart: func(string, string) { stage("tcp") }, TLSHandshakeStart: func() { stage("tls") }, TLSHandshakeDone: func(_ tls.ConnectionState, e error) {
 		if e == nil {
 			stage("http")
 		}
@@ -268,6 +266,17 @@ func (p *youtubeMux) probe(ctx context.Context, name, target, url string, short 
 		traceMu.Lock()
 		r.Stage = phase
 		traceMu.Unlock()
+		if dns, ok := errors.AsType[*net.DNSError](e); ok {
+			r.Stage = "dns"
+			switch {
+			case dns.IsTimeout:
+				r.DNS = "timeout"
+			case dns.IsNotFound:
+				r.DNS = "not_found"
+			default:
+				r.DNS = "error"
+			}
+		}
 		r.MS = time.Since(start).Milliseconds()
 		return r
 	}
@@ -325,6 +334,20 @@ func youtubeHealthy(checks []youtubeCheck) bool {
 		seen[v.Target] = true
 	}
 	return seen["site"] && seen["image"] && seen["media_transport"]
+}
+
+func youtubeOnlyDNSFailures(checks []youtubeCheck) bool {
+	failed := false
+	for _, check := range checks {
+		if check.OK {
+			continue
+		}
+		if check.Stage != "dns" || check.DNS == "" {
+			return false
+		}
+		failed = true
+	}
+	return failed
 }
 
 type youtubeRecovery struct {
@@ -581,6 +604,15 @@ func (a *youtubeRecovery) round(ctx context.Context) time.Duration {
 		return 30 * time.Second
 	}
 	a.enableFallback(ctx, a.nextShort)
+	if ctx.Err() != nil || a.identity() != id {
+		return 0
+	}
+	if youtubeOnlyDNSFailures(checks) {
+		// A different TLS profile cannot change name resolution.
+		a.state.Phase = "dns_error"
+		a.emit()
+		return 30 * time.Second
+	}
 	if !a.lastScan.IsZero() && time.Since(a.lastScan) < 2*time.Minute {
 		a.state.Phase = "unavailable"
 		a.emit()

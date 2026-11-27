@@ -18,19 +18,20 @@ import (
 )
 
 const (
-	telegramCallTunnelFilter    = "outbound and udp and udp.DstPort != 443 and udp.DstPort != 53 and not loopback and not impostor"
-	telegramCallTunnelPriority  = 150
-	telegramCallWARPTrigger     = 4
-	telegramCallWARPRetry       = 30 * time.Second
-	telegramCallWARPDeadRetry   = 1 * time.Second
-	telegramCallWARPBadPeerTTL  = 10 * time.Minute
-	telegramCallWARPPortWait    = 1800 * time.Millisecond
-	telegramCallWARPBatch       = 10
-	telegramCallWARPJunk        = 4
-	telegramCallWARPStateFile   = "warp-telegram.json"
-	telegramCallWARPDeadPackets = 8
-	telegramCallWARPDeadWindow  = 5 * time.Second
-	telegramCallSocketIdle      = 90 * time.Second
+	telegramCallTunnelFilter         = "outbound and udp and udp.DstPort != 443 and udp.DstPort != 53 and not loopback and not impostor"
+	telegramCallTunnelPriority       = 150
+	telegramCallWARPTrigger          = 4
+	telegramCallWARPRetry            = 30 * time.Second
+	telegramCallWARPStartupRetryWait = 3 * time.Second
+	telegramCallWARPDeadRetry        = 1 * time.Second
+	telegramCallWARPBadPeerTTL       = 10 * time.Minute
+	telegramCallWARPPortWait         = 1800 * time.Millisecond
+	telegramCallWARPBatch            = 10
+	telegramCallWARPJunk             = 4
+	telegramCallWARPStateFile        = "warp-telegram.json"
+	telegramCallWARPDeadPackets      = 8
+	telegramCallWARPDeadWindow       = 5 * time.Second
+	telegramCallSocketIdle           = 90 * time.Second
 	// telegramCallWARPIdle releases the capture of all outbound UDP once no call
 	// packet has been relayed for this long, so games and Discord voice stop
 	// passing through userspace after the call ends.
@@ -113,6 +114,8 @@ type tgTunnelConn interface {
 type tgCallTunnelStats struct {
 	Active   bool
 	Opening  bool
+	Attempts int
+	Failures int
 	Peer     string
 	Sent     int64
 	Received int64
@@ -152,6 +155,8 @@ type telegramCallTunnel struct {
 	closed   bool
 	opening  bool
 	active   bool
+	attempts int
+	failures int
 	retryAt  time.Time
 	peer     string
 	badPeers map[string]time.Time
@@ -203,6 +208,7 @@ func (t *telegramCallTunnel) NotifyUnanswered() {
 		return
 	}
 	t.opening = true
+	t.attempts++
 	t.wg.Add(1)
 	t.mu.Unlock()
 
@@ -227,6 +233,47 @@ func (t *telegramCallTunnel) activeBadPeersLocked(now time.Time) map[string]stru
 	return out
 }
 
+func (t *telegramCallTunnel) openVerifiedTunnel(deprioritized map[string]struct{}) (tgUDPTunnel, error) {
+	ctx := t.ctx
+	var probeErr error
+	for attempt := range 2 {
+		if attempt == 1 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, telegramCallWARPStartupRetryWait)
+			defer cancel()
+		}
+		tn, err := t.openTunnel(ctx, deprioritized)
+		if err != nil {
+			return nil, err
+		}
+		prober, ok := tn.(tgTunnelProber)
+		if !ok {
+			return tn, nil
+		}
+		// The initial probe ran while candidates were still being selected.
+		probeErr = probeTelegramRelay(ctx, prober, telegramCallWARPPortWait)
+		if probeErr == nil {
+			return tn, nil
+		}
+		peer := tn.Endpoint()
+		_ = tn.Close()
+		if err := t.ctx.Err(); err != nil {
+			return nil, err
+		}
+		t.logger.Warn("звонок Telegram: резерв WARP не прошёл повторную проверку UDP", "пир", peer, "err", probeErr)
+		if peer != "" {
+			t.mu.Lock()
+			t.badPeers[peer] = t.now().Add(telegramCallWARPBadPeerTTL)
+			t.mu.Unlock()
+			if deprioritized == nil {
+				deprioritized = make(map[string]struct{})
+			}
+			deprioritized[peer] = struct{}{}
+		}
+	}
+	return nil, fmt.Errorf("повторная проверка UDP перед звонком: %w", probeErr)
+}
+
 func (t *telegramCallTunnel) activate() {
 	defer t.wg.Done()
 
@@ -235,11 +282,12 @@ func (t *telegramCallTunnel) activate() {
 	t.mu.Unlock()
 
 	t.logger.Info("звонок Telegram: запуск резервного UDP-туннеля WARP")
-	tn, err := t.openTunnel(t.ctx, exclude)
+	tn, err := t.openVerifiedTunnel(exclude)
 	if err != nil {
 		t.mu.Lock()
 		t.opening = false
 		if !t.closed {
+			t.failures++
 			t.retryAt = t.now().Add(telegramCallWARPRetry)
 		}
 		closed := t.closed
@@ -265,6 +313,7 @@ func (t *telegramCallTunnel) activate() {
 		t.mu.Lock()
 		t.opening = false
 		if !t.closed {
+			t.failures++
 			t.retryAt = t.now().Add(telegramCallWARPRetry)
 		}
 		closed := t.closed
@@ -373,8 +422,11 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 		}
 		dstAP := netip.AddrPortFrom(dstIP, dstPort)
 		dstAddr := net.UDPAddrFromAddrPort(dstAP)
-		if _, err := relay.pc.WriteTo(payload, dstAddr); err != nil {
+		if n, err := relay.pc.WriteTo(payload, dstAddr); err != nil {
 			t.removeSocket(relay)
+			if n == 0 {
+				t.sendPacket(handle, pkt)
+			}
 			continue
 		}
 		t.sent.Add(1)
@@ -439,9 +491,11 @@ func (t *telegramCallTunnel) releaseWhenIdle(handle tgTunnelConn, done <-chan st
 			if idle < t.idleAfter {
 				continue
 			}
+			if err := handle.ShutdownReceive(); err != nil {
+				_ = handle.Close()
+			}
 			t.logger.Info("звонок Telegram: звонок завершён, резервный UDP-туннель WARP снят",
 				"тишина", idle.Round(time.Second).String())
-			_ = handle.ShutdownReceive()
 			return
 		}
 	}
@@ -455,12 +509,16 @@ func (t *telegramCallTunnel) diagnoseStall(tn tgUDPTunnel) string {
 	if !ok {
 		return "проверка недоступна"
 	}
-	ctx, cancel := context.WithTimeout(t.ctx, telegramCallProbeWait)
-	defer cancel()
-	if err := prober.ProbeUDP(ctx); err != nil {
+	if err := probeTelegramRelay(t.ctx, prober, telegramCallProbeWait); err != nil {
 		return "туннель перестал пропускать данные (контрольный UDP без ответа)"
 	}
 	return "туннель жив (контрольный UDP прошёл), молчат адреса Telegram"
+}
+
+func probeTelegramRelay(ctx context.Context, prober tgTunnelProber, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	return prober.ProbeUDP(ctx)
 }
 
 func (t *telegramCallTunnel) logExitInfo(tn tgUDPTunnel) {
@@ -630,6 +688,8 @@ func (t *telegramCallTunnel) Stats() tgCallTunnelStats {
 	return tgCallTunnelStats{
 		Active:   t.active,
 		Opening:  t.opening,
+		Attempts: t.attempts,
+		Failures: t.failures,
 		Peer:     t.peer,
 		Sent:     t.sent.Load(),
 		Received: t.received.Load(),

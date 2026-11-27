@@ -376,9 +376,10 @@ export function DiagnosticsScreen({ state }: { state: AppState | null }) {
 
 /* ═════════════ Настройки ═════════════ */
 const ytProfiles: Record<string, string> = { current: "Базовый способ", "media-sld": "Защита видеоподключений", "split-sld": "Разделение домена", "fake-sld": "Защита домена", split: "Разделение соединения", "split-forward": "Совместимый способ", overlap: "Альтернативный способ", "fake-forward": "Совместимая защита", "fake-split": "Дополнительная защита", "fake-overlap": "Альтернативная защита" };
-const ytPhases: Record<string, string> = { waiting: "Проверка запускается", awaiting_media: "Сайт доступен — откройте видео для проверки видеосервера", stopped: "Начнёт работу после включения обхода", disabled: "YouTube исключён из текущего обхода", checking: "Проверяем соединение", healthy: "Проверенные подключения доступны", degraded: "Перепроверяем сбой", recovering: "Подбираем рабочий способ в фоне", recovered: "Рабочий способ заменён и проверен", network_down: "Контрольные сайты тоже недоступны", unavailable: "Проверенные способы пока не помогли — повторим автоматически" };
+const ytPhases: Record<string, string> = { waiting: "Проверка запускается", awaiting_media: "Сайт доступен — откройте видео для проверки видеосервера", stopped: "Начнёт работу после включения обхода", disabled: "YouTube исключён из текущего обхода", checking: "Проверяем соединение", healthy: "Проверенные подключения доступны", degraded: "Перепроверяем сбой", recovering: "Подбираем рабочий способ в фоне", recovered: "Рабочий способ заменён и проверен", network_down: "Контрольные сайты тоже недоступны", dns_error: "Прямое подключение к YouTube остановилось на DNS. Проверим адрес снова автоматически.", unavailable: "Проверенные способы пока не помогли — повторим автоматически" };
 const ytTargets: Record<string, string> = { site: "YouTube", image: "Изображения", media_transport: "Видеосеть" };
-const ytStages: Record<string, string> = { dns: "не найден адрес", tcp: "нет соединения", tls: "не отвечает HTTPS", http: "нет ответа" };
+const ytStages: Record<string, string> = { dns: "ошибка DNS", tcp: "нет соединения", tls: "не отвечает HTTPS", http: "нет ответа" };
+const ytDNS: Record<string, string> = { not_found: "адрес не найден", timeout: "DNS не ответил", error: "ошибка DNS" };
 
 export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }: { motion: boolean; startup: boolean; onMotion: (v: boolean) => void; onStartup: (v: boolean) => void; baseDir?: string }) {
   const tuning = usePoll<NetworkTuningView>(() => api.getNetworkTuning(loadOptions()), 1500);
@@ -389,7 +390,7 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
   const change = async (fn: () => Promise<void>) => { setBusy(true); setError(""); try { await fn(); } catch (e) { setError(String(e)); } finally { setBusy(false); } };
   const health = tuning.value?.health;
   const phase = health?.phase ?? "waiting";
-  const tone: Tone = phase === "healthy" || phase === "recovered" ? "success" : phase === "unavailable" || phase === "network_down" || phase === "degraded" ? "warning" : "neutral";
+  const tone: Tone = phase === "healthy" || phase === "recovered" ? "success" : phase === "unavailable" || phase === "network_down" || phase === "dns_error" || phase === "degraded" ? "warning" : "neutral";
   return (
     <div className="page-body">
       <PageHead kicker="Под себя" title="Настройки" note="Оформление, запуск и автоматическое восстановление связи." />
@@ -405,7 +406,7 @@ export function SettingsScreen({ motion, startup, onMotion, onStartup, baseDir }
         {health?.fresh && <div className="meta"><span>{ytProfiles[health.profile] ?? "Способ проверяется"}</span><span>{health.checkedAt ? `проверено в ${new Date(health.checkedAt).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" })}` : "проверяется"}</span>{health.switches > 0 && <span>замен: {health.switches}</span>}{health.rollbacks > 0 && <span>откатов: {health.rollbacks}</span>}</div>}
         {health?.fresh && health.checks.length > 0 && <div className="stages">{health.checks.map((c) => {
           const waitingMedia = c.target === "media_transport" && !health.mediaObserved;
-          return <span key={c.target} className={`chip chip--${waitingMedia ? "idle" : c.ok ? "ok" : "fail"}`}><i />{ytTargets[c.target] ?? "Проверка"}<small>{waitingMedia ? "ждём видео" : c.ok ? `${c.ms} мс` : ytStages[c.stage] ?? "сбой"}</small></span>;
+          return <span key={c.target} className={`chip chip--${waitingMedia ? "idle" : c.ok ? "ok" : "fail"}`}><i />{ytTargets[c.target] ?? "Проверка"}<small>{waitingMedia ? "ждём видео" : c.ok ? `${c.ms} мс` : ytDNS[c.dns ?? ""] ?? ytStages[c.stage] ?? "сбой"}</small></span>;
         })}</div>}
         <Note>При повторном сбое Evasion проверяет другие способы на тестовых соединениях; подходящий применяется сразу, неудачная замена откатывается. Без интернета стратегии вслепую не переключаются.</Note>
         <Row title="Память проверенных маршрутов Telegram" note="Ускоряет следующий запуск; доступность каналов всё равно проверяется заново."><Toggle label="Память маршрутов Telegram" checked={tuning.value?.telegram ?? true} disabled={!tuning.value || busy} onChange={(v) => void change(async () => { await api.setNetworkTuningSettings(true, v); await tuning.refresh(); })} /></Row>

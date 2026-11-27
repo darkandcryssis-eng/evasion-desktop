@@ -13,6 +13,7 @@ type YouTubeCheck struct {
 	OK     bool   `json:"ok"`
 	Code   int    `json:"code"`
 	MS     int64  `json:"ms"`
+	DNS    string `json:"dns,omitempty"`
 }
 type YouTubeHealthView struct {
 	Running       bool           `json:"running"`
@@ -29,7 +30,7 @@ type YouTubeHealthView struct {
 }
 
 func sanitizeYouTubeHealth(v YouTubeHealthView) YouTubeHealthView {
-	v.Phase = allowed(v.Phase, "waiting", "awaiting_media", "stopped", "disabled", "checking", "healthy", "degraded", "network_down", "recovering", "recovered", "unavailable")
+	v.Phase = allowed(v.Phase, "waiting", "awaiting_media", "stopped", "disabled", "checking", "healthy", "degraded", "network_down", "recovering", "recovered", "unavailable", "dns_error")
 	if !v.MediaObserved && (v.Phase == "healthy" || v.Phase == "recovered") {
 		v.Phase = "awaiting_media"
 	}
@@ -52,6 +53,9 @@ func sanitizeYouTubeHealth(v YouTubeHealthView) YouTubeHealthView {
 		seen[target] = true
 		c.Target = target
 		c.Stage = allowed(c.Stage, "dns", "tcp", "tls", "http")
+		if c.OK || c.Stage != "dns" || allowed(c.DNS, "timeout", "not_found", "error") == "unknown" {
+			c.DNS = ""
+		}
 		c.Code = max(0, min(599, c.Code))
 		c.MS = max(0, min(60000, c.MS))
 		checks = append(checks, c)

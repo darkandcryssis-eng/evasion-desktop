@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +47,76 @@ func TestYouTubeCanaryDoesNotConfirmPlaybackOrSaveProfile(t *testing.T) {
 	a.round(context.Background())
 	if a.state.Phase != "awaiting_media" || *saved != 0 || a.state.MediaObserved {
 		t.Fatal("canary promoted to verified video connectivity", a.state)
+	}
+}
+
+func TestYouTubeProbeDistinguishesDNSFromOtherDialErrors(t *testing.T) {
+	a, _ := recoveryFixture(t)
+	for _, tt := range []struct {
+		err   error
+		stage string
+		dns   string
+	}{
+		{&net.DNSError{IsNotFound: true}, "dns", "not_found"},
+		{&net.DNSError{IsTimeout: true}, "dns", "timeout"},
+		{&net.DNSError{Err: "resolver error"}, "dns", "error"},
+		{errors.New("dial rejected"), "tcp", ""},
+	} {
+		a.p.dial = func(context.Context, string, string) (net.Conn, error) { return nil, tt.err }
+		check := a.p.probe(t.Context(), "active", "site", "https://www.youtube.com/generate_204", false)
+		if check.OK || check.Stage != tt.stage || check.DNS != tt.dns {
+			t.Errorf("dial error %v: got %+v, want %s / %s", tt.err, check, tt.stage, tt.dns)
+		}
+	}
+}
+
+func TestYouTubeDNSFailureKeepsProfileAndChecksConfiguredFallback(t *testing.T) {
+	a, _ := recoveryFixture(t)
+	a.p.media = ""
+	a.p.set("media-sld")
+	routed := false
+	a.route = func(on bool) { routed = on }
+	fallbackProbes := 0
+	a.tunnelMeasure = func(context.Context, bool) []youtubeCheck {
+		fallbackProbes++
+		return goodYouTubeChecks(fallbackProbes > 1)
+	}
+	dnsChecks := goodYouTubeChecks(true)
+	dnsChecks[0] = youtubeCheck{Target: "site", Stage: "dns", DNS: "not_found"}
+	a.measure = func(_ context.Context, name string, _ bool) []youtubeCheck {
+		if name != "active" {
+			t.Errorf("TLS candidate probed despite a DNS-only failure: %s", name)
+		}
+		return dnsChecks
+	}
+	a.round(t.Context())
+	a.round(t.Context())
+	if routed || a.state.Phase != "dns_error" || a.state.MediaObserved {
+		t.Fatalf("unverified fallback or media: %+v", a.state)
+	}
+	a.round(t.Context())
+	if !routed || fallbackProbes != 2 || a.p.current() != "media-sld" || !a.lastScan.IsZero() || a.state.Switches != 0 {
+		t.Fatalf("DNS-only recovery changed the TLS profile or missed a verified fallback: %+v", a.state)
+	}
+	a.measure = func(context.Context, string, bool) []youtubeCheck { return goodYouTubeChecks(true) }
+	for range 4 {
+		a.round(t.Context())
+	}
+	if routed || a.state.Phase != "awaiting_media" {
+		t.Fatalf("stable DNS should return to direct without claiming playback: %+v", a.state)
+	}
+}
+
+func TestYouTubeMixedDNSAndTLSFailuresStillTryProfiles(t *testing.T) {
+	a, _ := recoveryFixture(t)
+	checks := goodYouTubeChecks(true)
+	checks[0] = youtubeCheck{Target: "site", Stage: "dns", DNS: "timeout"}
+	checks[1] = youtubeCheck{Target: "image", Stage: "tls"}
+	a.measure = func(context.Context, string, bool) []youtubeCheck { return checks }
+	a.round(t.Context())
+	a.round(t.Context())
+	if a.lastScan.IsZero() || a.state.Phase == "dns_error" {
+		t.Fatalf("mixed failures suppressed TLS profile recovery: %+v", a.state)
 	}
 }
 

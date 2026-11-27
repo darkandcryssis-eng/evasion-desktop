@@ -168,7 +168,7 @@ export type PortfolioHolder = {
 
 export type PortfolioView = { found: boolean; updatedAt: string; holdings: PortfolioHolder[] };
 
-export type NetworkTuningView = { health?: { running: boolean; fresh: boolean; phase: string; profile: string; checkedAt: string; switches: number; rollbacks: number; failures: number; mediaObserved: boolean; checks: { target: string; stage: string; ok: boolean; code: number; ms: number }[] }; youtube: boolean; telegram: boolean; busy: boolean; phase: string; profile: string; quic: string; checkedAt: string; error: string };
+export type NetworkTuningView = { health?: { running: boolean; fresh: boolean; phase: string; profile: string; checkedAt: string; switches: number; rollbacks: number; failures: number; mediaObserved: boolean; checks: { target: string; stage: string; ok: boolean; code: number; ms: number; dns?: string }[] }; youtube: boolean; telegram: boolean; busy: boolean; phase: string; profile: string; quic: string; checkedAt: string; error: string };
 
 export type GameFilterSettings = { adaptive: boolean; mode: string; protocol: string; executables: string[]; onDemand: boolean };
 export type GameRouteView = { configured: boolean; nodes: number };

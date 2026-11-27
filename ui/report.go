@@ -78,27 +78,54 @@ type reportEngine struct {
 	Skipped     int64  `json:"helloSkipped"`
 	Retransmits int64  `json:"helloRetransmits"`
 }
+type reportTelegramCalls struct {
+	LastChange    string `json:"lastChange"`
+	STUN          int64  `json:"stun"`
+	DTLS          int64  `json:"dtls"`
+	Legacy        int64  `json:"legacy"`
+	DirectReplies int64  `json:"directReplies"`
+	RelayOpening  bool   `json:"relayOpening"`
+	RelayActive   bool   `json:"relayActive"`
+	RelayAttempts int64  `json:"relayAttempts"`
+	RelayFailures int64  `json:"relayFailures"`
+	RelayTX       int64  `json:"relayTx"`
+	RelayRX       int64  `json:"relayRx"`
+}
+
+func readCallDiagnostics(at string, rec map[string]any) *reportTelegramCalls {
+	opening, _ := rec["relayOpening"].(bool)
+	active, _ := rec["relayActive"].(bool)
+	return &reportTelegramCalls{
+		LastChange: reportTime(at),
+		STUN:       max(0, num(rec["stun"])), DTLS: max(0, num(rec["dtls"])), Legacy: max(0, num(rec["legacy"])),
+		DirectReplies: max(0, num(rec["directReplies"])), RelayOpening: opening, RelayActive: active,
+		RelayAttempts: max(0, num(rec["relayAttempts"])), RelayFailures: max(0, num(rec["relayFailures"])),
+		RelayTX: max(0, num(rec["relayTx"])), RelayRX: max(0, num(rec["relayRx"])),
+	}
+}
+
 type reportConflicts struct {
 	Stopped []string `json:"stopped"`
 	Failed  []string `json:"failed"`
 }
 type safeReport struct {
-	Version         string             `json:"version,omitempty"`
-	Build           string             `json:"build,omitempty"`
-	Elevated        bool               `json:"elevated"`
-	PreviousUnclean bool               `json:"previousUnclean"`
-	Engine          *reportEngine      `json:"engine,omitempty"`
-	Conflicts       *reportConflicts   `json:"conflicts,omitempty"`
-	YouTube         *YouTubeHealthView `json:"youtube,omitempty"`
-	Games           *reportGames       `json:"games,omitempty"`
-	Driver          *reportDriver      `json:"driver,omitempty"`
-	Schema          int                `json:"schema"`
-	GeneratedAt     string             `json:"generatedAt"`
-	Platform        string             `json:"platform"`
-	EnginePhase     string             `json:"enginePhase"`
-	Services        []reportService    `json:"services"`
-	Routes          []reportRoute      `json:"routes"`
-	Telegram        reportTraffic      `json:"telegram"`
+	Version         string               `json:"version,omitempty"`
+	Build           string               `json:"build,omitempty"`
+	Elevated        bool                 `json:"elevated"`
+	PreviousUnclean bool                 `json:"previousUnclean"`
+	Engine          *reportEngine        `json:"engine,omitempty"`
+	Conflicts       *reportConflicts     `json:"conflicts,omitempty"`
+	YouTube         *YouTubeHealthView   `json:"youtube,omitempty"`
+	Games           *reportGames         `json:"games,omitempty"`
+	Driver          *reportDriver        `json:"driver,omitempty"`
+	Schema          int                  `json:"schema"`
+	GeneratedAt     string               `json:"generatedAt"`
+	Platform        string               `json:"platform"`
+	EnginePhase     string               `json:"enginePhase"`
+	Services        []reportService      `json:"services"`
+	Routes          []reportRoute        `json:"routes"`
+	Telegram        reportTraffic        `json:"telegram"`
+	TelegramCalls   *reportTelegramCalls `json:"telegramCalls,omitempty"`
 }
 
 func allowed(value string, values ...string) string {
@@ -301,12 +328,14 @@ func (a *App) ExportDiagnosticReport() (string, error) {
 	// запускаем её сами.
 	if engine.Phase == phaseRunning && len(a.GetServiceDiagnostics()) == 0 {
 		_, _ = a.RunServiceDiagnostics()
+		engine = a.engine.snapshot()
 	}
 	report := buildSafeReport(string(engine.Phase), a.GetTelegramState(), a.GetServiceDiagnostics(), a.GetTelegramRoutes(), a.driverDiagnostic())
 	report.Version = safeVersion(appVersion)
 	report.Build = currentBuild()
 	report.Elevated, _ = isElevated()
 	report.Engine = safeEngineReport(engine)
+	report.TelegramCalls = engine.telegramCalls
 	a.settingsMu.Lock()
 	report.PreviousUnclean = a.previousUnclean
 	report.Conflicts = safeConflicts(a.conflicts)

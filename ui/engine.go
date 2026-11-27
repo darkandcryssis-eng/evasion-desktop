@@ -100,30 +100,32 @@ type EngineState struct {
 	Discord    string          `json:"discord"`
 	Logs       []LogLine       `json:"logs"`
 	// Сторож: число автоподъёмов после внезапного выхода и его сообщение.
-	Restarts int    `json:"restarts"`
-	Guard    string `json:"guard"`
+	Restarts      int    `json:"restarts"`
+	Guard         string `json:"guard"`
+	telegramCalls *reportTelegramCalls
 }
 
 // engineManager владеет единственным подпроцессом evasion.exe.
 type engineManager struct {
-	mu           sync.Mutex
-	phase        string
-	cmd          *exec.Cmd
-	stdin        io.WriteCloser
-	done         chan struct{}
-	startedAt    time.Time
-	opts         StartOptions
-	lastErr      string
-	filter       string
-	quicMode     string
-	strategies   map[string]string
-	hello        *HelloStats
-	discord      string
-	discordProxy string
-	discordForce bool
-	logs         []LogLine
-	ready        chan struct{}
-	stopAsked    bool
+	mu            sync.Mutex
+	phase         string
+	cmd           *exec.Cmd
+	stdin         io.WriteCloser
+	done          chan struct{}
+	startedAt     time.Time
+	opts          StartOptions
+	lastErr       string
+	filter        string
+	quicMode      string
+	strategies    map[string]string
+	hello         *HelloStats
+	telegramCalls *reportTelegramCalls
+	discord       string
+	discordProxy  string
+	discordForce  bool
+	logs          []LogLine
+	ready         chan struct{}
+	stopAsked     bool
 	// Сторож (supervisor.go).
 	crashedAt time.Time
 	revived   bool
@@ -240,6 +242,7 @@ func (m *engineManager) start(l layout, opts StartOptions, gameFlags ...string) 
 	m.discordForce = false
 	m.strategies = map[string]string{}
 	m.hello = nil
+	m.telegramCalls = nil
 	m.logs = nil
 	m.stopAsked = false
 	m.crashedAt = time.Time{}
@@ -409,6 +412,10 @@ func (m *engineManager) consumeLogLine(text string) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if line.Msg == "telegram_call_diagnostics" && rec != nil {
+		m.telegramCalls = readCallDiagnostics(line.At, rec)
+		return
+	}
 	m.logs = append(m.logs, line)
 	if len(m.logs) > logRingSize {
 		m.logs = m.logs[len(m.logs)-logRingSize:]
@@ -511,6 +518,10 @@ func (m *engineManager) snapshot() EngineState {
 	if m.hello != nil {
 		h := *m.hello
 		st.Hello = &h
+	}
+	if m.phase == phaseRunning && m.telegramCalls != nil {
+		stats := *m.telegramCalls
+		st.telegramCalls = &stats
 	}
 	for g, s := range m.strategies {
 		st.Strategies = append(st.Strategies, GroupStrategy{Group: g, Strategy: s})
