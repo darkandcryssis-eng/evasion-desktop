@@ -6,7 +6,7 @@ import "errors"
 
 const telegramCallTunnelSupported = false
 
-func openTelegramCallTunnelHandle() (tgTunnelConn, error) {
+func openTelegramCallTunnelHandle(_ string) (tgTunnelConn, error) {
 	return nil, errors.ErrUnsupported
 }
 

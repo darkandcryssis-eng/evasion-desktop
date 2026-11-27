@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -263,7 +264,7 @@ func TestTelegramCallTunnelRelaysAndPassesThrough(t *testing.T) {
 	tt := newTelegramCallTunnel(ctx, fakeTunnelOwner{}, nil)
 	tt.supported = true
 	tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) { return fakeTn, nil }
-	tt.openHandle = func() (tgTunnelConn, error) { return fakeHandle, nil }
+	tt.openHandle = func(string) (tgTunnelConn, error) { return fakeHandle, nil }
 	defer tt.Close()
 
 	tt.NotifyUnanswered()
@@ -366,7 +367,7 @@ func TestTelegramCallTunnelPreservesPacketOnFailedWrite(t *testing.T) {
 	tt := newTelegramCallTunnel(t.Context(), fakeTunnelOwner{}, nil)
 	tt.supported = true
 	tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) { return fakeTn, nil }
-	tt.openHandle = func() (tgTunnelConn, error) { return handle, nil }
+	tt.openHandle = func(string) (tgTunnelConn, error) { return handle, nil }
 	defer tt.Close()
 	tt.NotifyUnanswered()
 
@@ -457,7 +458,7 @@ func TestTelegramCallTunnelRechecksUDPBeforeCapture(t *testing.T) {
 					return nil, errors.New("too many attempts")
 				}
 			}
-			tt.openHandle = func() (tgTunnelConn, error) {
+			tt.openHandle = func(string) (tgTunnelConn, error) {
 				captures.Add(1)
 				if tc.firstErr == nil && first.probes.Load() != 1 || tc.firstErr != nil && second.probes.Load() != 1 {
 					return nil, errors.New("capture started before the chosen peer was verified")
@@ -550,7 +551,7 @@ func TestTelegramCallTunnelReleasesDeadTunnel(t *testing.T) {
 		exclMu.Unlock()
 		return fakeTn, nil
 	}
-	tt.openHandle = func() (tgTunnelConn, error) { return fakeHandle, nil }
+	tt.openHandle = func(string) (tgTunnelConn, error) { return fakeHandle, nil }
 	defer tt.Close()
 
 	tt.NotifyUnanswered()
@@ -617,16 +618,24 @@ type relayHealthFakeTunnel struct {
 
 func (f *relayHealthFakeTunnel) ProbeUDP(ctx context.Context) error { return f.probe(ctx) }
 
-func TestTelegramCallTunnelChecksHealthBeforeReplacingPeer(t *testing.T) {
+type telegramRelayLogWriter func([]byte) (int, error)
+
+func (f telegramRelayLogWriter) Write(p []byte) (int, error) { return f(p) }
+
+func TestTelegramCallTunnelObservesStallsWithoutAnotherPacket(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		initialReply bool
-		probeErr     error
+		name       string
+		initialRx  bool
+		lateRx     bool
+		sent       int
+		controlErr error
 	}{
-		{name: "healthy path gets a bounded grace period", initialReply: true},
-		{name: "failed health check rotates", initialReply: true, probeErr: errors.New("no control reply")},
-		{name: "no replies and failed health check rotates early", probeErr: errors.New("no control reply")},
-		{name: "no replies and healthy control keeps the normal window"},
+		{name: "early failure", sent: telegramCallWARPDeadPackets, controlErr: errors.New("no control reply")},
+		{name: "short attempt still releases dead capture", sent: 2, controlErr: errors.New("no control reply")},
+		{name: "healthy control keeps normal window", sent: telegramCallWARPDeadPackets},
+		{name: "reply while a failed probe was pending", lateRx: true, sent: telegramCallWARPDeadPackets, controlErr: errors.New("no control reply")},
+		{name: "previously responsive path gets grace", initialRx: true, sent: telegramCallWARPDeadPackets},
+		{name: "previously responsive path with failed control", initialRx: true, sent: telegramCallWARPDeadPackets, controlErr: errors.New("no control reply")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var clock atomic.Int64
@@ -649,33 +658,39 @@ func TestTelegramCallTunnelChecksHealthBeforeReplacingPeer(t *testing.T) {
 						return ctx.Err()
 					}
 				}
-				return tc.probeErr
+				return tc.controlErr
 			}}
 			handle := newFakeTunnelHandle()
-			tt := newTelegramCallTunnel(t.Context(), fakeTunnelOwner{}, nil)
+			gotGrace := make(chan struct{}, 1)
+			logger := slog.New(slog.NewTextHandler(telegramRelayLogWriter(func(p []byte) (int, error) {
+				if bytes.Contains(p, []byte("резерв WARP отвечает, ждём ответа звонка")) {
+					gotGrace <- struct{}{}
+				}
+				return len(p), nil
+			}), nil))
+			tt := newTelegramCallTunnel(t.Context(), fakeTunnelOwner{}, logger)
 			tt.supported = true
+			tt.watchEvery = time.Millisecond
 			tt.now = func() time.Time { return time.Unix(0, clock.Load()) }
 			tt.openTunnel = func(context.Context, map[string]struct{}) (tgUDPTunnel, error) { return fakeTn, nil }
-			tt.openHandle = func() (tgTunnelConn, error) { return handle, nil }
+			tt.openHandle = func(string) (tgTunnelConn, error) { return handle, nil }
 			defer tt.Close()
-			waitFor := func(ready func() bool) {
+
+			waitFor := func(ready func() bool, message string) {
 				t.Helper()
 				deadline := time.Now().Add(time.Second)
 				for !ready() {
 					if time.Now().After(deadline) {
-						t.Fatal("timed out waiting for relay")
+						t.Fatal(message)
 					}
 					time.Sleep(time.Millisecond)
 				}
 			}
-			tt.NotifyUnanswered()
 			src := netip.MustParseAddrPort("192.168.1.50:54321")
 			dst := netip.MustParseAddrPort("91.108.16.100:599")
 			raw, _ := buildInboundUDPPacket(src, dst, []byte("call request"))
 			pkt := capture.Packet{Data: raw, Dir: core.DirectionOutbound}
-			handle.recvCh <- pkt
-			waitFor(func() bool { return tt.unansweredTx.Load() == 1 })
-			if tc.initialReply {
+			reply := func() {
 				fakeTn.mu.Lock()
 				pc := fakeTn.conns[0]
 				fakeTn.mu.Unlock()
@@ -683,24 +698,38 @@ func TestTelegramCallTunnelChecksHealthBeforeReplacingPeer(t *testing.T) {
 					data []byte
 					addr net.Addr
 				}{[]byte("call response"), net.UDPAddrFromAddrPort(dst)}
-				waitFor(func() bool { return tt.Stats().Received == 1 })
-				<-handle.sendCh
-				handle.recvCh <- pkt
-				waitFor(func() bool { return tt.unansweredTx.Load() == 1 })
-				clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
-			} else {
-				clock.Add(int64(telegramCallWARPEarlyProbeAfter + 100*time.Millisecond))
+				select {
+				case <-handle.sendCh:
+				case <-time.After(time.Second):
+					t.Fatal("expected a relayed reply")
+				}
+				waitFor(func() bool { return tt.Stats().Received == 1 }, "reply not recorded")
 			}
-			for range telegramCallWARPDeadPackets - 1 {
+			tt.NotifyUnanswered()
+			var prior int64
+			if tc.initialRx {
 				handle.recvCh <- pkt
+				waitFor(func() bool { return tt.Stats().Sent == 1 }, "initial send not recorded")
+				reply()
+				prior = 1
+			}
+			for range tc.sent {
+				handle.recvCh <- pkt
+			}
+			waitFor(func() bool { return tt.Stats().Sent == prior+int64(tc.sent) }, "burst not recorded")
+			// No more Telegram packets are sent while the watchdog runs.
+			if !tc.initialRx && tc.sent >= telegramCallWARPDeadPackets {
+				clock.Add(int64(telegramCallWARPEarlyProbeAfter + 100*time.Millisecond))
+			} else {
+				clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
 			}
 			select {
 			case <-probeStarted:
 			case <-time.After(time.Second):
-				t.Fatal("no runtime UDP probe was started")
+				t.Fatal("no runtime probe without further outgoing call packets")
 			}
-			if !tc.initialReply && !fullEarlyBudget.Load() {
-				t.Fatal("early probe used the shorter diagnostic timeout")
+			if !tc.initialRx && !fullEarlyBudget.Load() {
+				t.Fatal("first-reply probe used the shorter diagnostic timeout")
 			}
 			foreign, _ := buildInboundUDPPacket(src, netip.MustParseAddrPort("8.8.4.4:40000"), []byte("other UDP"))
 			handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}
@@ -712,73 +741,41 @@ func TestTelegramCallTunnelChecksHealthBeforeReplacingPeer(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("UDP stopped flowing during the health check")
 			}
+			if tc.lateRx {
+				reply()
+			}
 			close(completeProbe)
-			if !tc.initialReply && tc.probeErr == nil {
-				// A live control pathway must not be rotated early, but it also
-				// must not receive the extra grace reserved for real call replies.
-				for range 3 {
-					handle.recvCh <- pkt
-					handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}
-					select {
-					case <-handle.sendCh:
-					case <-time.After(time.Second):
-						t.Fatal("healthy relay rotated before the usual silence window")
-					}
+			if tc.lateRx {
+				select {
+				case <-handle.closed:
+					t.Fatal("a failed but obsolete probe closed a relay with a fresh reply")
+				case <-time.After(25 * time.Millisecond):
 				}
-				if tt.unansweredTx.Load() < telegramCallWARPDeadPackets || probes.Load() != 2 {
-					t.Fatal("control success reset the timer or caused an extra early check")
-				}
-				clock.Store(start + int64(telegramCallWARPDeadWindow+time.Second))
-				waitFor(func() bool {
-					if !tt.Stats().Active {
-						return true
-					}
-					select {
-					case handle.recvCh <- pkt:
-					default:
-					}
-					return false
-				})
 				return
 			}
-			waitFor(func() bool {
-				if !tt.Stats().Active || tt.unansweredTx.Load() == 0 {
-					return true
-				}
+			if tc.controlErr == nil && tc.initialRx {
 				select {
-				case handle.recvCh <- pkt:
-				case <-handle.closed:
-					return false
-				}
-				select {
-				case handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}:
-				case <-handle.closed:
-					return false
-				}
-				select {
-				case <-handle.sendCh:
-				case <-handle.closed:
+				case <-gotGrace:
 				case <-time.After(time.Second):
-					t.Fatal("relay did not finish processing packets")
+					t.Fatal("expected one grace period for an earlier reply")
 				}
-				return false
-			})
-			if tc.probeErr != nil {
-				if tt.Stats().Active {
-					t.Fatal("failed relay remained active")
+				if st := tt.Stats(); !st.Active || st.Sockets != 1 {
+					t.Fatalf("healthy relay discarded its socket: %+v", st)
 				}
-			} else {
-				if st := tt.Stats(); !st.Active || st.Sockets != 1 || probes.Load() != 2 {
-					t.Fatalf("healthy relay discarded its active socket: %+v", st)
-				}
-				handle.recvCh <- pkt
-				waitFor(func() bool { return tt.unansweredTx.Load() > 0 })
-				clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
 				for range telegramCallWARPDeadPackets {
 					handle.recvCh <- pkt
 				}
-				waitFor(func() bool { return !tt.Stats().Active })
+				waitFor(func() bool { return tt.Stats().Sent == prior+int64(tc.sent+telegramCallWARPDeadPackets) }, "new burst not recorded")
+				clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
+			} else if tc.controlErr == nil {
+				select {
+				case <-handle.closed:
+					t.Fatal("healthy control caused early failover")
+				case <-time.After(25 * time.Millisecond):
+				}
+				clock.Store(start + int64(telegramCallWARPDeadWindow+time.Second))
 			}
+			waitFor(func() bool { return !tt.Stats().Active }, "relay not retired without further packets")
 		})
 	}
 }
@@ -825,7 +822,7 @@ func testTelegramCallTunnelReleasesCaptureWhenCallEnds(t *testing.T, shutdownErr
 	curNow := time.Now()
 	tt := newTelegramCallTunnel(ctx, fakeTunnelOwner{}, nil)
 	tt.supported = true
-	tt.idleCheck = 5 * time.Millisecond
+	tt.watchEvery = 5 * time.Millisecond
 	tt.now = func() time.Time {
 		nowMu.Lock()
 		defer nowMu.Unlock()
@@ -836,7 +833,7 @@ func testTelegramCallTunnelReleasesCaptureWhenCallEnds(t *testing.T, shutdownErr
 		openCalls.Add(1)
 		return fakeTn, nil
 	}
-	tt.openHandle = func() (tgTunnelConn, error) {
+	tt.openHandle = func(string) (tgTunnelConn, error) {
 		handleMu.Lock()
 		defer handleMu.Unlock()
 		return fakeHandle, nil
