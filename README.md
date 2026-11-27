@@ -1,34 +1,36 @@
 <p align="center">
-  <img src="docs/readme/hero.svg" alt="Evasion" width="100%">
+  <img src="docs/readme/hero.svg" alt="Главное окно Evasion: кольцо подключения, сервисы на орбите и журнал сессии" width="100%">
 </p>
 
-<p align="center"><strong>Discord, YouTube и Telegram при сетевых ограничениях.</strong><br>
-Нажмите на кольцо, чтобы включить подключение. Evasion подберёт рабочий способ для вашей сети.</p>
-
 <p align="center">
-  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion.exe"><img src="docs/readme/download.svg" alt="Скачать Evasion для Windows 10 или 11, x64" width="278"></a>
-  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion-macOS.zip"><img src="docs/readme/download-mac.svg" alt="Скачать Evasion для macOS 11 и новее, Intel и Apple Silicon" width="278"></a>
+  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion.exe"><picture><source media="(prefers-color-scheme: light)" srcset="docs/readme/download-light.svg"><img src="docs/readme/download.svg" alt="Скачать Evasion для Windows 10 или 11, x64" width="300"></picture></a>
+  &nbsp;
+  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases/latest/download/Evasion-macOS.zip"><picture><source media="(prefers-color-scheme: light)" srcset="docs/readme/download-mac-light.svg"><img src="docs/readme/download-mac.svg" alt="Скачать Evasion для macOS 11 и новее, Intel и Apple Silicon" width="300"></picture></a>
 </p>
 
 <p align="center">
   <a href="#как-начать">Первый запуск</a> ·
-  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases">Версии и контрольные суммы</a> ·
-  <a href="#частые-вопросы">Частые вопросы</a>
+  <a href="#звонки-telegram">Звонки Telegram</a> ·
+  <a href="#как-это-работает">Как это работает</a> ·
+  <a href="#частые-вопросы">Вопросы</a> ·
+  <a href="https://github.com/darkandcryssis-eng/evasion-desktop/releases">Версии и контрольные суммы</a>
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/app-on.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/readme/app-light.png">
-    <img src="docs/readme/app-on.png" alt="Главное окно Evasion. Слева кольцо и статус подключения, справа таймер и счётчики текущей сессии." width="780">
-  </picture>
+  <img src="docs/readme/features.svg" alt="Discord: чат, голос и демонстрация экрана. YouTube: видео и эфиры. Telegram: прокси и звонки через туннель с маскировкой. Игры. Автоподбор способа. Без следов в системе." width="100%">
 </p>
 
-<p align="center">
-  <a href="docs/readme/app-on.png">Тёмная тема</a> ·
-  <a href="docs/readme/app-light.png">Светлая тема</a> ·
-  <a href="docs/readme/app-off.png">До подключения</a>
-</p>
+| Возможность | Что доступно |
+| --- | --- |
+| **Discord** | Вход в аккаунт, чат, картинки, голос и демонстрация экрана. |
+| **YouTube** | Видео и прямые эфиры. Evasion проверяет доступность воспроизведения. |
+| **Telegram** | Встроенный прокси одной кнопкой. Звонки уходят в резервный туннель, если провайдер режет UDP. |
+| **Игры на Windows** | Добавьте файл игры или лаунчера. Обход работает, пока запущена выбранная игра. |
+| **Подбор подключения** | Если текущий способ перестаёт работать, Evasion проверяет другие. Discord и YouTube идут напрямую с вашим обычным IP. |
+| **Работа в фоне** | На Windows Evasion сворачивается в трей и может запускаться вместе с системой. |
+| **Диагностика** | Проверка связи и журнал подключений с событиями сессии — в одном разделе. |
+
+Evasion сам проверяет наличие новых версий. В Windows нажмите «Доступно обновление», чтобы установить новую версию.
 
 ## Как начать
 
@@ -60,19 +62,25 @@
 
 </details>
 
-## Что умеет
+## Звонки Telegram
 
-| Возможность | Что доступно |
-| --- | --- |
-| **Discord** | Вход в аккаунт, чат, картинки, голос и демонстрация экрана. |
-| **YouTube** | Видео и прямые эфиры. Evasion проверяет доступность воспроизведения. |
-| **Telegram** | Встроенный прокси включается одной кнопкой. Сообщения остаются зашифрованными. |
-| **Игры на Windows** | Добавьте файл игры или лаунчера. Обход работает, пока запущена выбранная игра. |
-| **Подбор подключения** | Если текущий способ перестаёт работать, Evasion проверяет другие. Discord и YouTube подключаются напрямую с вашим обычным IP. |
-| **Работа в фоне** | На Windows можно свернуть Evasion в трей и включить автозапуск вместе с системой. |
-| **Диагностика** | В одном разделе доступны проверка связи и журнал подключений с событиями сессии. |
+<p align="center">
+  <img src="docs/readme/telegram-calls.svg" alt="Схема звонка Telegram: прямой путь с десинком, а если фильтр провайдера режет UDP — туннель Cloudflare WARP с подбором маскировки" width="100%">
+</p>
 
-Evasion сам проверяет наличие новых версий. В Windows нажмите «Доступно обновление», чтобы установить новую версию.
+Звонок Telegram — это UDP. Сначала Evasion пробует прямой путь и подмешивает к началу звонка
+ложные пакеты. Если провайдер всё равно не пропускает ни одного ответа, звонок прозрачно
+переводится в UDP-туннель Cloudflare WARP, который поднимается прямо внутри приложения.
+
+Часть провайдеров узнаёт WireGuard (на нём работает WARP): рукопожатие проходит, а через
+секунду-две поток обрывается. Evasion замечает это по контрольному пакету и меняет
+**маскировку** — что отправить перед рукопожатием, чтобы фильтр принял поток за обычный
+трафик: случайный мусор, имитацию QUIC-подключения к ya.ru, DNS-запрос к vk.com или их
+усиленную смесь. Маскировка, на которой звонок соединился, запоминается и используется
+первой в следующий раз.
+
+Адреса собеседника в локальной сети, Radmin VPN, Hamachi и CGNAT в туннель не уходят:
+до них из Cloudflare не достать, а напрямую они часто работают.
 
 ## Как это работает
 
@@ -119,7 +127,17 @@ Evasion вмешивается ровно в этот момент:
 
 </details>
 
-## В трее и в двух темах
+## Две темы и трей
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/app-on.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/readme/app-light.png">
+    <img src="docs/readme/app-on.png" alt="Главное окно Evasion. Слева кольцо и статус подключения, справа таймер и счётчики текущей сессии." width="820">
+  </picture>
+  <br>
+  <sub><a href="docs/readme/app-on.png">Тёмная тема</a> · <a href="docs/readme/app-light.png">Светлая тема</a> · <a href="docs/readme/app-off.png">До подключения</a></sub>
+</p>
 
 <p align="center">
   <img src="docs/readme/tray.png" alt="Панель Evasion в трее: выключено, работает, светлая тема, ошибка драйвера" width="100%">
@@ -130,29 +148,70 @@ Evasion вмешивается ровно в этот момент:
 
 ## Частые вопросы
 
-**Это VPN?**
+<details>
+<summary><b>Это VPN?</b></summary>
+<br>
+
 Нет. Трафик идёт напрямую к сайту, IP-адрес остаётся вашим, скорость не режется чужим сервером.
 Для Telegram используется встроенный локальный прокси; если прямой маршрут закрыт, он
-может пойти через резервные узлы сообщества (отключается в параметрах Telegram).
+может пойти через резервные узлы сообщества (отключается в параметрах Telegram). Звонки
+Telegram уходят в туннель Cloudflare WARP только тогда, когда прямой путь не отвечает.
 
-**Нужно ли что-то настраивать?**
+</details>
+
+<details>
+<summary><b>Нужно ли что-то настраивать?</b></summary>
+<br>
+
 Нет. Дополнительные параметры есть, но для большинства сетей менять ничего не нужно.
 
-**Антивирус ругается на WinDivert.**
+</details>
+
+<details>
+<summary><b>Не проходят звонки Telegram</b></summary>
+<br>
+
+Откройте журнал в разделе «Диагностика» и позвоните ещё раз. Строка «пробуем маскировку …»
+значит, что провайдер режет туннель и Evasion подбирает обход — дайте звонку 10–20 секунд.
+Если проблема не уходит, пришлите журнал вместе с названием провайдера в
+[Issues](https://github.com/darkandcryssis-eng/evasion-desktop/issues).
+
+</details>
+
+<details>
+<summary><b>Антивирус ругается на WinDivert</b></summary>
+<br>
+
 WinDivert — открытый драйвер для работы с сетевыми пакетами, он лежит внутри `Evasion.exe`.
 Некоторые антивирусы помечают его как потенциально нежелательный инструмент; при
 необходимости добавьте папку Evasion в исключения.
 
-**Не заработало. Что делать?**
+</details>
+
+<details>
+<summary><b>Не заработало. Что делать?</b></summary>
+<br>
+
 Откройте раздел «Диагностика» и нажмите «Проверить связь»: приложение покажет, что именно
 не отвечает. Блокировки у провайдеров разные и меняются, поэтому гарантии для каждой
 сети нет.
 
-**Как удалить?**
+</details>
+
+<details>
+<summary><b>Как удалить?</b></summary>
+<br>
+
 Выключите обход, выйдите через трей и удалите `Evasion.exe`. Данные приложения лежат
 в `%LOCALAPPDATA%\Evasion`.
 
-## Настройка конфигурации
+</details>
+
+## Для разработчиков
+
+<details>
+<summary><b>Настройка конфигурации</b></summary>
+<br>
 
 Пример конфига — [`examples/config.json`](examples/config.json), подробности —
 в [документации движка](docs/ENGINE.md). `radius.mode` по умолчанию равен
@@ -166,7 +225,11 @@ groups|all`.
 первый здоровый; если не проходит ни один, остаётся первый адрес из списка,
 а проверка повторяется каждые 10 минут.
 
-## Сборка из исходников
+</details>
+
+<details>
+<summary><b>Сборка из исходников</b></summary>
+<br>
 
 Нужны Go 1.27, Node.js и [Wails v2](https://wails.io). На Windows:
 
@@ -178,8 +241,15 @@ ui\build-and-run.bat
 `Evasion.exe`. Подробности — в [`ui/README.md`](ui/README.md), работа с движком без
 окна — в [`docs/ENGINE.md`](docs/ENGINE.md).
 
-## Лицензии
+</details>
+
+<details>
+<summary><b>Лицензии</b></summary>
+<br>
 
 - WinDivert поставляется под LGPLv3 и связывается только динамически.
 - Принципы устройства стратегий взяты из академических источников (Geneva, CCS 2019);
   параметры стратегий существующих инструментов не используются.
+
+</details>
+
