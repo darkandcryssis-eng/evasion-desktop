@@ -31,6 +31,7 @@ const (
 	telegramCallWARPStateFile        = "warp-telegram.json"
 	telegramCallWARPDeadPackets      = 8
 	telegramCallWARPDeadWindow       = 5 * time.Second
+	telegramCallWARPEarlyProbeAfter  = 1 * time.Second
 	telegramCallSocketIdle           = 90 * time.Second
 	// telegramCallWARPIdle releases the capture of all outbound UDP once no call
 	// packet has been relayed for this long, so games and Discord voice stop
@@ -389,8 +390,9 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 	targets := &tgTargetStats{}
 	sentBase, recvBase := t.sent.Load(), t.received.Load()
 	lastReplies := recvBase
-	var graceUsed bool
+	var checkedGap bool
 	var check chan tgRelayHealthCheck
+	prober, canProbe := tn.(tgTunnelProber)
 	checkCtx, cancelCheck := context.WithCancel(t.ctx)
 	defer cancelCheck()
 	lastReport := t.now()
@@ -451,19 +453,23 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 		}
 		replies := t.received.Load()
 		if replies != lastReplies {
-			lastReplies, graceUsed = replies, false
+			lastReplies, checkedGap = replies, false
 		}
-		if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= telegramCallWARPDeadWindow {
+		wait, probeWait := telegramCallWARPDeadWindow, telegramCallProbeWait
+		if canProbe && !checkedGap && replies == recvBase {
+			wait, probeWait = telegramCallWARPEarlyProbeAfter, telegramCallWARPPortWait
+		}
+		if n >= telegramCallWARPDeadPackets && !stalledSince.IsZero() && t.now().Sub(stalledSince) >= wait {
 			if t.unansweredTx.Load() < telegramCallWARPDeadPackets {
 				continue
 			}
-			if prober, ok := tn.(tgTunnelProber); ok && replies > recvBase && !graceUsed {
+			if canProbe && !checkedGap {
 				// Keep draining WinDivert while the probe runs: it carries the tunnel's own UDP.
 				if check == nil {
 					result := make(chan tgRelayHealthCheck, 1)
 					check = result
 					t.wg.Go(func() {
-						result <- tgRelayHealthCheck{replies: replies, healthy: probeTelegramRelay(checkCtx, prober, telegramCallProbeWait) == nil}
+						result <- tgRelayHealthCheck{replies: replies, healthy: probeTelegramRelay(checkCtx, prober, probeWait) == nil}
 					})
 				}
 				select {
@@ -472,10 +478,12 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 					if t.received.Load() != result.replies || t.unansweredTx.Load() < telegramCallWARPDeadPackets {
 						continue
 					}
+					checkedGap = true
 					if result.healthy {
-						graceUsed = true
-						t.unansweredTx.Store(0)
-						t.logger.Info("звонок Telegram: резерв WARP отвечает, ждём ответа звонка")
+						if replies > recvBase {
+							t.unansweredTx.Store(0)
+							t.logger.Info("звонок Telegram: резерв WARP отвечает, ждём ответа звонка")
+						}
 						continue
 					}
 				default:
@@ -497,6 +505,7 @@ func (t *telegramCallTunnel) serve(handle tgTunnelConn, tn tgUDPTunnel) {
 			t.mu.Unlock()
 			t.logger.Warn("звонок Telegram: резервный UDP-туннель WARP не отвечает, смена адреса",
 				"пир", peer,
+				"тишина_мс", t.now().Sub(stalledSince).Milliseconds(),
 				"отправлено_без_ответа", n,
 				"получено_всего", t.received.Load()-recvBase,
 				"цели_отпр/получ", targets.String(),

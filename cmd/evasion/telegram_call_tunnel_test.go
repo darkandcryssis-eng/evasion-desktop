@@ -617,24 +617,31 @@ type relayHealthFakeTunnel struct {
 
 func (f *relayHealthFakeTunnel) ProbeUDP(ctx context.Context) error { return f.probe(ctx) }
 
-func TestTelegramCallTunnelChecksHealthBeforeReplacingPreviouslyResponsivePeer(t *testing.T) {
+func TestTelegramCallTunnelChecksHealthBeforeReplacingPeer(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		probeErr error
+		name         string
+		initialReply bool
+		probeErr     error
 	}{
-		{name: "healthy path gets a bounded grace period"},
-		{name: "failed health check rotates", probeErr: errors.New("no control reply")},
+		{name: "healthy path gets a bounded grace period", initialReply: true},
+		{name: "failed health check rotates", initialReply: true, probeErr: errors.New("no control reply")},
+		{name: "no replies and failed health check rotates early", probeErr: errors.New("no control reply")},
+		{name: "no replies and healthy control keeps the normal window"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var clock atomic.Int64
-			clock.Store(time.Now().UnixNano())
+			start := time.Now().UnixNano()
+			clock.Store(start)
 			probeStarted, completeProbe := make(chan struct{}), make(chan struct{})
 			var probes atomic.Int32
+			var fullEarlyBudget atomic.Bool
 			fakeTn := &relayHealthFakeTunnel{probe: func(ctx context.Context) error {
 				switch probes.Add(1) {
 				case 1:
 					return nil
 				case 2:
+					deadline, ok := ctx.Deadline()
+					fullEarlyBudget.Store(ok && time.Until(deadline) > telegramCallProbeWait)
 					close(probeStarted)
 					select {
 					case <-completeProbe:
@@ -668,18 +675,22 @@ func TestTelegramCallTunnelChecksHealthBeforeReplacingPreviouslyResponsivePeer(t
 			pkt := capture.Packet{Data: raw, Dir: core.DirectionOutbound}
 			handle.recvCh <- pkt
 			waitFor(func() bool { return tt.unansweredTx.Load() == 1 })
-			fakeTn.mu.Lock()
-			pc := fakeTn.conns[0]
-			fakeTn.mu.Unlock()
-			pc.inCh <- struct {
-				data []byte
-				addr net.Addr
-			}{[]byte("call response"), net.UDPAddrFromAddrPort(dst)}
-			waitFor(func() bool { return tt.Stats().Received == 1 })
-			<-handle.sendCh
-			handle.recvCh <- pkt
-			waitFor(func() bool { return tt.unansweredTx.Load() == 1 })
-			clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
+			if tc.initialReply {
+				fakeTn.mu.Lock()
+				pc := fakeTn.conns[0]
+				fakeTn.mu.Unlock()
+				pc.inCh <- struct {
+					data []byte
+					addr net.Addr
+				}{[]byte("call response"), net.UDPAddrFromAddrPort(dst)}
+				waitFor(func() bool { return tt.Stats().Received == 1 })
+				<-handle.sendCh
+				handle.recvCh <- pkt
+				waitFor(func() bool { return tt.unansweredTx.Load() == 1 })
+				clock.Add(int64(telegramCallWARPDeadWindow + time.Second))
+			} else {
+				clock.Add(int64(telegramCallWARPEarlyProbeAfter + 100*time.Millisecond))
+			}
 			for range telegramCallWARPDeadPackets - 1 {
 				handle.recvCh <- pkt
 			}
@@ -687,6 +698,9 @@ func TestTelegramCallTunnelChecksHealthBeforeReplacingPreviouslyResponsivePeer(t
 			case <-probeStarted:
 			case <-time.After(time.Second):
 				t.Fatal("no runtime UDP probe was started")
+			}
+			if !tc.initialReply && !fullEarlyBudget.Load() {
+				t.Fatal("early probe used the shorter diagnostic timeout")
 			}
 			foreign, _ := buildInboundUDPPacket(src, netip.MustParseAddrPort("8.8.4.4:40000"), []byte("other UDP"))
 			handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}
@@ -699,6 +713,34 @@ func TestTelegramCallTunnelChecksHealthBeforeReplacingPreviouslyResponsivePeer(t
 				t.Fatal("UDP stopped flowing during the health check")
 			}
 			close(completeProbe)
+			if !tc.initialReply && tc.probeErr == nil {
+				// A live control pathway must not be rotated early, but it also
+				// must not receive the extra grace reserved for real call replies.
+				for range 3 {
+					handle.recvCh <- pkt
+					handle.recvCh <- capture.Packet{Data: foreign, Dir: core.DirectionOutbound}
+					select {
+					case <-handle.sendCh:
+					case <-time.After(time.Second):
+						t.Fatal("healthy relay rotated before the usual silence window")
+					}
+				}
+				if tt.unansweredTx.Load() < telegramCallWARPDeadPackets || probes.Load() != 2 {
+					t.Fatal("control success reset the timer or caused an extra early check")
+				}
+				clock.Store(start + int64(telegramCallWARPDeadWindow+time.Second))
+				waitFor(func() bool {
+					if !tt.Stats().Active {
+						return true
+					}
+					select {
+					case handle.recvCh <- pkt:
+					default:
+					}
+					return false
+				})
+				return
+			}
 			waitFor(func() bool {
 				if !tt.Stats().Active || tt.unansweredTx.Load() == 0 {
 					return true
