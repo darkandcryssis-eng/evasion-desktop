@@ -307,7 +307,12 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 	if multiHost {
 		endpoints := warpMultiHostEndpoints(acc.PeerEndpoint, exclude)
 		logger.Info("резерв WARP: перебор адресов", "адресов", len(endpoints), "параллельно", max(1, parallelBatch), "мусор", handshakeJunk, "исключено", len(exclude))
-		tn, err = tunnel.OpenWithFallbackEndpoints(ctx, opts, endpoints, portWait, parallelBatch)
+		tn, err = selectTelegramWARP(ctx, endpoints, parallelBatch, func(ctx context.Context, candidates []string, batch int) (*tunnel.Tunnel, error) {
+			if len(candidates) == 1 {
+				logger.Info("резерв WARP: отдельное подключение для звонка", "пир", candidates[0])
+			}
+			return tunnel.OpenWithFallbackEndpoints(ctx, opts, candidates, portWait, batch)
+		})
 	} else {
 		ports := warpPorts(acc.PeerEndpoint)
 		logger.Info("резерв WARP: перебор портов", "портов", len(ports), "параллельно", max(1, parallelBatch), "пир", acc.PeerEndpoint)
@@ -335,6 +340,50 @@ func openWARPTunnelFile(ctx context.Context, dir, stateFile string, portWait tim
 	}
 	logger.Info("резерв WARP: туннель готов", "пир", tn.Endpoint(), "подъём_мс", time.Since(started).Milliseconds())
 	return tn, nil
+}
+
+type warpCandidateSession interface {
+	Endpoint() string
+	Close() error
+}
+
+const warpDiscoverySettle = 40 * time.Millisecond
+
+func selectTelegramWARP[T warpCandidateSession](ctx context.Context, endpoints []string, batch int, open func(context.Context, []string, int) (T, error)) (T, error) {
+	if len(endpoints) < 2 || batch <= 1 {
+		return open(ctx, endpoints, 1)
+	}
+	preferred, err := open(ctx, endpoints[:1], 1)
+	if err == nil {
+		return preferred, nil
+	}
+	var none T
+	if ctx.Err() != nil {
+		return none, ctx.Err()
+	}
+	// Keep the preferred peer as a last fallback in case the first failure
+	// was brief. Discovery sessions all share one WireGuard identity.
+	remaining := make([]string, 0, len(endpoints))
+	remaining = append(remaining, endpoints[1:]...)
+	remaining = append(remaining, endpoints[0])
+	discovery, err := open(ctx, remaining, batch)
+	if err != nil {
+		return none, err
+	}
+	endpoint := discovery.Endpoint()
+	if err := discovery.Close(); err != nil {
+		return none, fmt.Errorf("закрытие пробной сессии WARP: %w", err)
+	}
+	// A same-key handshake immediately after discovery can be rate limited.
+	settle := time.NewTimer(warpDiscoverySettle)
+	defer settle.Stop()
+	select {
+	case <-ctx.Done():
+		return none, ctx.Err()
+	case <-settle.C:
+	}
+	// Negotiate fresh keys once no discovery session shares the identity.
+	return open(ctx, []string{endpoint}, 1)
 }
 
 // addWARPRegistrationHost вносит узел регистрации WARP в радиус обхода: там,

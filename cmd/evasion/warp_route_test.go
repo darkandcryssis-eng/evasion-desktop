@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,86 @@ import (
 type fakeWARP struct {
 	dials atomic.Int32
 	fail  atomic.Bool
+}
+
+type fakeWARPCandidate struct {
+	endpoint string
+	closed   bool
+	onClose  func()
+}
+
+func (s *fakeWARPCandidate) Endpoint() string { return s.endpoint }
+
+func (s *fakeWARPCandidate) Close() error {
+	s.closed = true
+	if s.onClose != nil {
+		s.onClose()
+	}
+	return nil
+}
+
+func TestTelegramWARPPrefersOneSession(t *testing.T) {
+	endpoints := []string{"192.0.2.1:2408", "192.0.2.2:500"}
+	want := &fakeWARPCandidate{endpoint: endpoints[0]}
+	calls := 0
+	got, err := selectTelegramWARP(t.Context(), endpoints, 10, func(_ context.Context, selected []string, batch int) (*fakeWARPCandidate, error) {
+		calls++
+		if !slices.Equal(selected, endpoints[:1]) || batch != 1 {
+			t.Fatalf("preferred route was not tested alone: %v, batch=%d", selected, batch)
+		}
+		return want, nil
+	})
+	if err != nil || got != want || calls != 1 || want.closed {
+		t.Fatalf("single route should be used as is: got=%v err=%v calls=%d", got, err, calls)
+	}
+}
+
+func TestTelegramWARPReconnectsAfterDiscovery(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(t.Context())
+		endpoints := []string{"192.0.2.1:2408", "192.0.2.2:500", "192.0.2.3:1701"}
+		discovery := &fakeWARPCandidate{endpoint: endpoints[1]}
+		working := &fakeWARPCandidate{endpoint: endpoints[1]}
+		if canceled {
+			discovery.onClose = cancel
+		}
+		calls := 0
+		got, err := selectTelegramWARP(ctx, endpoints, 10, func(_ context.Context, selected []string, batch int) (*fakeWARPCandidate, error) {
+			calls++
+			switch calls {
+			case 1:
+				if batch != 1 || !slices.Equal(selected, endpoints[:1]) {
+					t.Fatalf("wrong initial candidate: %v/%d", selected, batch)
+				}
+				return nil, errors.New("preferred endpoint unavailable")
+			case 2:
+				want := []string{endpoints[1], endpoints[2], endpoints[0]}
+				if batch != 10 || !slices.Equal(selected, want) {
+					t.Fatalf("wrong discovery candidates: %v/%d", selected, batch)
+				}
+				return discovery, nil
+			case 3:
+				if !discovery.closed || batch != 1 || !slices.Equal(selected, endpoints[1:2]) {
+					t.Fatalf("fresh session started before discovery was closed: %v/%d", selected, batch)
+				}
+				return working, nil
+			default:
+				t.Fatalf("unexpected extra call: %d", calls)
+				return nil, nil
+			}
+		})
+		cancel()
+		if !discovery.closed {
+			t.Fatal("discovery session leaked")
+		}
+		if canceled {
+			if !errors.Is(err, context.Canceled) || got != nil || calls != 2 {
+				t.Fatalf("opened a session after cancellation: got=%v err=%v calls=%d", got, err, calls)
+			}
+		} else if err != nil || got != working || calls != 3 || working.closed {
+			t.Fatalf("unexpected final session: got=%v err=%v calls=%d", got, err, calls)
+		}
+	}
 }
 
 func (f *fakeWARP) DialContext(context.Context, string, string) (net.Conn, error) {
